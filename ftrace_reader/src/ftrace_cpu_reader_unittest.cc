@@ -15,13 +15,16 @@
  */
 
 #include "ftrace_reader/ftrace_cpu_reader.h"
+#include "ftrace_to_proto_translation_table.h"
 #include "gtest/gtest.h"
 
 namespace perfetto {
 namespace {
 
-TEST(LibFtrace, SomePublicApi) {
-  EXPECT_EQ(42, SomePublicApi());
+TEST(FtraceCpuReader, ParseEmpty) {
+  std::string path = "ftrace_reader/test/data/android_seed_N2F62_3.10.49/";
+  auto table = FtraceToProtoTranslationTable::Create(path);
+  FtraceCpuReader(table.get(), 42, base::ScopedFile());
 }
 
 }  // namespace
