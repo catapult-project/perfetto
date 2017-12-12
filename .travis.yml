@@ -13,9 +13,7 @@
 # limitations under the License.
 
 notifications:
-  email:
-    on_success: never
-    on_failure: always
+  email: false
 
 language: cpp
 
@@ -84,11 +82,6 @@ matrix:
     - os: linux
       dist: trusty
       sudo: false
-      compiler: gcc
-      env: CFG=linux_trusty-gcc-x86_64-release GN_ARGS="is_debug=false is_clang=false"
-    - os: linux
-      dist: trusty
-      sudo: false
       addons:
         apt:
           sources:
@@ -137,33 +130,28 @@ before_install:
 install:
   - |
     if [[ "$CFG" != android-* ]]; then
-      build/install-build-deps --no-android
+      tools/install-build-deps --no-android
     else
-      build/install-build-deps
+      tools/install-build-deps
     fi
 
 script:
-  - build/gn gen out/dist --args="${GN_ARGS}" --check
-  - build/ninja -C out/dist -j8 all
+  - tools/gn gen out/dist --args="${GN_ARGS}" --check
+  - tools/ninja -C out/dist -j8 all
   - |
     TEST_TARGETS="
-    base_unittests
-    protozero_unittests
-    tracing_unittests
-    tracing_benchmarks
-    sanitizers_unittests
-    ftrace_reader_unittests
+    perfetto_tests
+    perfetto_benchmarks
     "
-
     if [[ "$CFG" != android-* ]]; then
       for TEST_TARGET in $TEST_TARGETS; do
         "out/dist/$TEST_TARGET"
       done
     else
       TARGET_ARCH=$(echo $CFG | cut -d- -f3)
-      build/run_android_emulator $TARGET_ARCH --pid /tmp/emulator.pid -v &
+      tools/run_android_emulator $TARGET_ARCH --pid /tmp/emulator.pid -v &
       for TEST_TARGET in $TEST_TARGETS; do
-        build/run_android_test out/dist "$TEST_TARGET"
+        tools/run_android_test out/dist "$TEST_TARGET"
       done
     fi
 

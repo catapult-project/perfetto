@@ -12,29 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import("gn/perfetto.gni")
+
 group("all") {
   testonly = true  # allow to build also test targets
   deps = [
-    ":tests",
-    "//buildtools:protobuf_lite",
-    "//buildtools:protoc($host_toolchain)",
-    "//ftrace_reader:ftrace_reader_demo",
-    "//protos/ftrace",
-    "//protozero/src/protoc_plugin($host_toolchain)",
-    "//tools/ftrace_proto_gen:ftrace_proto_gen",
+    ":perfetto_tests",
+    "src/ftrace_reader:ftrace_reader_demo",
+    "src/ipc/protoc_plugin:ipc_plugin($host_toolchain)",
+    "src/protozero/protoc_plugin($host_toolchain)",
+    "tools/ftrace_proto_gen:ftrace_proto_gen",
+    "tools/proto_to_cpp",
+  ]
+  if (!build_with_chromium) {
+    deps += [
+      ":perfetto_benchmarks",
+      "src/ftrace_reader:ftrace_reader_integrationtests",
+    ]
+  }
+}
+
+executable("perfetto_tests") {
+  testonly = true
+  deps = [
+    "gn:default_deps",
+    "src/base:base_unittests",
+    "src/ftrace_reader:ftrace_reader_unittests",
+    "src/ipc:perfetto_ipc_unittests",
+    "src/protozero:protozero_unittests",
+    "src/tracing:tracing_unittests",
+    "tools/sanitizers_unittests",
   ]
 }
 
-group("tests") {
-  testonly = true
-  deps = [
-    "//base:base_unittests",
-    "//ftrace_reader:ftrace_reader_integrationtests",
-    "//ftrace_reader:ftrace_reader_unittests",
-    "//ipc:ipc_unittests",
-    "//protozero:protozero_unittests",
-    "//tools/sanitizers_unittests",
-    "//tracing:tracing_benchmarks",
-    "//tracing:tracing_unittests",
-  ]
+if (!build_with_chromium) {
+  executable("perfetto_benchmarks") {
+    testonly = true
+    deps = [
+      "gn:default_deps",
+      "src/tracing:tracing_benchmarks",
+    ]
+  }
 }

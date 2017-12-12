@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-executable("sanitizers_unittests") {
+source_set("sanitizers_unittests") {
   testonly = true
-  deps += [
-    "//buildtools:gtest",
-    "//buildtools:gtest_main",
+  deps = [
+    "../../gn:default_deps",
+    "../../gn:gtest_deps",
   ]
   sources = [
     "sanitizers_unittest.cc",
