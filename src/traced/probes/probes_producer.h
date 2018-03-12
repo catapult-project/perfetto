@@ -49,6 +49,7 @@ class ProbesProducer : public Producer {
   void CreateFtraceDataSourceInstance(DataSourceInstanceID id,
                                       const DataSourceConfig& source_config);
   void CreateProcessStatsDataSourceInstance(
+      DataSourceInstanceID id,
       const DataSourceConfig& source_config);
   void CreateInodeFileMapDataSourceInstance(
       DataSourceInstanceID id,
@@ -59,6 +60,10 @@ class ProbesProducer : public Producer {
  private:
   using FtraceBundleHandle =
       protozero::MessageHandle<protos::pbzero::FtraceEventBundle>;
+  using Type = protos::pbzero::InodeFileMap_Entry_Type;
+  using InodeMap = std::map<uint64_t,
+                            std::pair<protos::pbzero::InodeFileMap_Entry_Type,
+                                      std::set<std::string>>>;
 
   class SinkDelegate : public FtraceSink::Delegate {
    public:
@@ -73,7 +78,7 @@ class ProbesProducer : public Producer {
                           const FtraceMetadata& metadata) override;
 
     void sink(std::unique_ptr<FtraceSink> sink) { sink_ = std::move(sink); }
-    void OnInodes(const std::vector<uint64_t>& inodes);
+    void OnInodes(const std::vector<std::pair<uint64_t, uint32_t>>& inodes);
 
    private:
     base::TaskRunner* task_runner_;
@@ -89,12 +94,15 @@ class ProbesProducer : public Producer {
 
   class InodeFileMapDataSource {
    public:
-    explicit InodeFileMapDataSource(std::unique_ptr<TraceWriter> writer);
+    explicit InodeFileMapDataSource(
+        std::map<uint32_t, InodeMap>* file_system_inodes,
+        std::unique_ptr<TraceWriter> writer);
     ~InodeFileMapDataSource();
 
     void WriteInodes(const FtraceMetadata& metadata);
 
    private:
+    std::map<uint32_t, InodeMap>* file_system_inodes_;
     std::unique_ptr<TraceWriter> writer_;
   };
 
@@ -110,6 +118,9 @@ class ProbesProducer : public Producer {
   void IncreaseConnectionBackoff();
   void AddWatchdogsTimer(DataSourceInstanceID id,
                          const DataSourceConfig& source_config);
+  static void CreateDeviceToInodeMap(
+      const std::string& root_directory,
+      std::map<uint32_t, InodeMap>* block_device_map);
 
   State state_ = kNotStarted;
   base::TaskRunner* task_runner_;
@@ -118,12 +129,12 @@ class ProbesProducer : public Producer {
   bool ftrace_creation_failed_ = false;
   uint64_t connection_backoff_ms_ = 0;
   const char* socket_name_ = nullptr;
-  // Keeps track of id for each type of data source.
-  std::map<DataSourceInstanceID, std::string> instances_;
+  std::set<DataSourceInstanceID> process_stats_sources_;
   std::map<DataSourceInstanceID, std::unique_ptr<SinkDelegate>> delegates_;
   std::map<DataSourceInstanceID, base::Watchdog::Timer> watchdogs_;
   std::map<DataSourceInstanceID, std::unique_ptr<InodeFileMapDataSource>>
       file_map_sources_;
+  std::map<uint32_t, InodeMap> system_inodes_;
 };
 }  // namespace perfetto
 

@@ -17,6 +17,7 @@
 #include "src/traced/probes/probes_producer.h"
 
 #include <stdio.h>
+#include <sys/stat.h>
 #include <queue>
 #include <string>
 
@@ -93,13 +94,12 @@ void ProbesProducer::OnDisconnect() {
 void ProbesProducer::CreateDataSourceInstance(
     DataSourceInstanceID id,
     const DataSourceConfig& source_config) {
-  instances_[id] = source_config.name();
   if (source_config.name() == kFtraceSourceName) {
     CreateFtraceDataSourceInstance(id, source_config);
-  } else if (source_config.name() == kProcessStatsSourceName) {
-    CreateProcessStatsDataSourceInstance(source_config);
   } else if (source_config.name() == kInodeFileMapSourceName) {
     CreateInodeFileMapDataSourceInstance(id, source_config);
+  } else if (source_config.name() == kProcessStatsSourceName) {
+    CreateProcessStatsDataSourceInstance(id, source_config);
   } else {
     PERFETTO_ELOG("Data source name: %s not recognised.",
                   source_config.name().c_str());
@@ -163,14 +163,18 @@ void ProbesProducer::CreateInodeFileMapDataSourceInstance(
                id, source_config.target_buffer());
   auto trace_writer = endpoint_->CreateTraceWriter(
       static_cast<BufferID>(source_config.target_buffer()));
+  CreateDeviceToInodeMap("/system/", &system_inodes_);
   auto file_map_source = std::unique_ptr<InodeFileMapDataSource>(
-      new InodeFileMapDataSource(std::move(trace_writer)));
+      new InodeFileMapDataSource(&system_inodes_, std::move(trace_writer)));
   file_map_sources_.emplace(id, std::move(file_map_source));
   AddWatchdogsTimer(id, source_config);
 }
 
 void ProbesProducer::CreateProcessStatsDataSourceInstance(
+    DataSourceInstanceID id,
     const DataSourceConfig& source_config) {
+  PERFETTO_DCHECK(process_stats_sources_.count(id) == 0);
+  process_stats_sources_.insert(id);
   auto trace_writer = endpoint_->CreateTraceWriter(
       static_cast<BufferID>(source_config.target_buffer()));
   procfs_utils::ProcessMap processes;
@@ -200,19 +204,59 @@ void ProbesProducer::CreateProcessStatsDataSourceInstance(
   trace_packet->Finalize();
 }
 
+// static
+void ProbesProducer::CreateDeviceToInodeMap(
+    const std::string& root_directory,
+    std::map<uint32_t, InodeMap>* block_device_map) {
+  // Return immediately if we've already filled in the system map
+  if (!block_device_map->empty())
+    return;
+  std::queue<std::string> queue;
+  queue.push(root_directory);
+  while (!queue.empty()) {
+    struct dirent* entry;
+    std::string filepath = queue.front();
+    queue.pop();
+    DIR* dir = opendir(filepath.c_str());
+    filepath += "/";
+    if (dir == nullptr)
+      continue;
+    while ((entry = readdir(dir)) != nullptr) {
+      std::string filename = entry->d_name;
+      if (filename == "." || filename == "..")
+        continue;
+      uint64_t inode_number = entry->d_ino;
+      struct stat buf;
+      if (lstat(filepath.c_str(), &buf) != 0)
+        continue;
+      uint32_t block_device_id = buf.st_dev;
+      InodeMap& inode_map = (*block_device_map)[block_device_id];
+      // Default
+      Type type = protos::pbzero::InodeFileMap_Entry_Type_UNKNOWN;
+      // Readdir and stat not guaranteed to have directory info for all systems
+      if (entry->d_type == DT_DIR || S_ISDIR(buf.st_mode)) {
+        // Continue iterating through files if current entry is a directory
+        queue.push(filepath + filename);
+        type = protos::pbzero::InodeFileMap_Entry_Type_DIRECTORY;
+      } else if (entry->d_type == DT_REG || S_ISREG(buf.st_mode)) {
+        type = protos::pbzero::InodeFileMap_Entry_Type_FILE;
+      }
+      inode_map[inode_number].first = type;
+      inode_map[inode_number].second.emplace(filepath + filename);
+    }
+    closedir(dir);
+  }
+}
+
 void ProbesProducer::TearDownDataSourceInstance(DataSourceInstanceID id) {
   PERFETTO_LOG("Producer stop (id=%" PRIu64 ")", id);
-  PERFETTO_DCHECK(instances_.count(id));
-  if (instances_[id] == kFtraceSourceName) {
-    size_t removed = delegates_.erase(id);
-    PERFETTO_DCHECK(removed == 1);
-    // Might return 0 if trace_duration_ms == 0.
-    watchdogs_.erase(id);
-  } else if (instances_[id] == kInodeFileMapSourceName) {
-    size_t removed = file_map_sources_.erase(id);
-    PERFETTO_DCHECK(removed == 1);
-    watchdogs_.erase(id);
-  }
+  // |id| could be the id of any of the datasources we handle:
+  PERFETTO_DCHECK((delegates_.count(id) + process_stats_sources_.count(id) +
+                   file_map_sources_.count(id)) == 1);
+  delegates_.erase(id);
+  process_stats_sources_.erase(id);
+  file_map_sources_.erase(id);
+  watchdogs_.erase(id);
 }
 
 void ProbesProducer::ConnectWithRetries(const char* socket_name,
@@ -273,13 +317,14 @@ void ProbesProducer::SinkDelegate::OnBundleComplete(
 }
 
 void ProbesProducer::SinkDelegate::OnInodes(
-    const std::vector<uint64_t>& inodes) {
+    const std::vector<std::pair<uint64_t, uint32_t>>& inodes) {
   PERFETTO_DLOG("Saw FtraceBundle with %zu inodes.", inodes.size());
 }
 
 ProbesProducer::InodeFileMapDataSource::InodeFileMapDataSource(
+    std::map<uint32_t, InodeMap>* file_system_inodes,
     std::unique_ptr<TraceWriter> writer)
-    : writer_(std::move(writer)) {}
+    : file_system_inodes_(file_system_inodes), writer_(std::move(writer)) {}
 
 ProbesProducer::InodeFileMapDataSource::~InodeFileMapDataSource() = default;
 
@@ -287,12 +332,22 @@ void ProbesProducer::InodeFileMapDataSource::WriteInodes(
     const FtraceMetadata& metadata) {
   auto trace_packet = writer_->NewTracePacket();
   auto inode_file_map = trace_packet->set_inode_file_map();
-  // TODO(azappone): Add block_device_id and mount_points
+  // TODO(azappone): Get mount_points & add to the proto
   auto inodes = metadata.inodes;
   for (const auto& inode : inodes) {
+    uint32_t block_device_id = inode.first;
+    uint64_t inode_number = inode.second;
     auto* entry = inode_file_map->add_entries();
-    entry->set_inode_number(inode);
-    // TODO(azappone): Add resolving filepaths and type
+    entry->set_inode_number(inode_number);
+    auto block_device_map = file_system_inodes_->find(block_device_id);
+    if (block_device_map != file_system_inodes_->end()) {
+      auto inode_map = block_device_map->second.find(inode_number);
+      if (inode_map != block_device_map->second.end()) {
+        entry->set_type(inode_map->second.first);
+        for (const auto& path : inode_map->second.second)
+          entry->add_paths(path.c_str());
+      }
+    }
   }
   trace_packet->Finalize();
 }
