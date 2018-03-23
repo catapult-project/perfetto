@@ -31,6 +31,7 @@
 #include "perfetto/base/thread_checker.h"
 #include "perfetto/ftrace_reader/ftrace_controller.h"
 #include "perfetto/protozero/message.h"
+#include "perfetto/traced/data_source_types.h"
 #include "src/ftrace_reader/proto_translation_table.h"
 
 namespace perfetto {
@@ -128,7 +129,6 @@ class CpuReader {
     memcpy(&t, reinterpret_cast<const void*>(start), sizeof(T));
     BlockDeviceID dev_id = TranslateBlockDeviceIDToUserspace<T>(t);
     out->AppendVarInt<BlockDeviceID>(field_id, dev_id);
-    PERFETTO_DCHECK(t != 0);
     metadata->AddDevice(dev_id);
   }
 
@@ -138,6 +138,14 @@ class CpuReader {
                       FtraceMetadata* metadata) {
     int32_t pid = ReadIntoVarInt<int32_t>(start, field_id, out);
     metadata->AddPid(pid);
+  }
+
+  static void ReadCommonPid(const uint8_t* start,
+                            size_t field_id,
+                            protozero::Message* out,
+                            FtraceMetadata* metadata) {
+    int32_t pid = ReadIntoVarInt<int32_t>(start, field_id, out);
+    metadata->AddCommonPid(pid);
   }
 
   // Internally the kernel stores device ids in a different layout to that

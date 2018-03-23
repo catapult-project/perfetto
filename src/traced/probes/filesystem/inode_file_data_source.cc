@@ -23,6 +23,7 @@
 #include <queue>
 
 #include "perfetto/base/logging.h"
+#include "perfetto/base/scoped_file.h"
 #include "perfetto/tracing/core/trace_packet.h"
 #include "perfetto/tracing/core/trace_writer.h"
 
@@ -30,48 +31,71 @@
 
 namespace perfetto {
 
-void CreateDeviceToInodeMap(
+void ScanFilesDFS(
     const std::string& root_directory,
-    std::map<BlockDeviceID, std::map<Inode, InodeMapValue>>* block_device_map) {
-  std::queue<std::string> queue;
-  queue.push(root_directory);
+    const std::function<bool(BlockDeviceID block_device_id,
+                             Inode inode_number,
+                             const std::string& path,
+                             protos::pbzero::InodeFileMap_Entry_Type type)>&
+        fn) {
+  std::vector<std::string> queue{root_directory};
   while (!queue.empty()) {
     struct dirent* entry;
-    std::string filepath = queue.front();
-    queue.pop();
-    DIR* dir = opendir(filepath.c_str());
-    filepath += "/";
-    if (dir == nullptr)
+    std::string directory = queue.back();
+    queue.pop_back();
+    base::ScopedDir dir(opendir(directory.c_str()));
+    directory += "/";
+    if (!dir)
       continue;
-    while ((entry = readdir(dir)) != nullptr) {
+    while ((entry = readdir(dir.get())) != nullptr) {
       std::string filename = entry->d_name;
       if (filename == "." || filename == "..")
         continue;
-      Inode inode_number = static_cast<Inode>(entry->d_ino);
+      std::string filepath = directory + filename;
+
       struct stat buf;
       if (lstat(filepath.c_str(), &buf) != 0)
         continue;
+
+      // This might happen on filesystems that do not return
+      // information in entry->d_type.
+      if (S_ISLNK(buf.st_mode))
+        continue;
+
+      Inode inode_number = entry->d_ino;
       BlockDeviceID block_device_id = buf.st_dev;
-      // Default
+
       protos::pbzero::InodeFileMap_Entry_Type type =
           protos::pbzero::InodeFileMap_Entry_Type_UNKNOWN;
       // Readdir and stat not guaranteed to have directory info for all systems
       if (entry->d_type == DT_DIR || S_ISDIR(buf.st_mode)) {
         // Continue iterating through files if current entry is a directory
-        queue.push(filepath + filename);
+        queue.push_back(filepath);
         type = protos::pbzero::InodeFileMap_Entry_Type_DIRECTORY;
       } else if (entry->d_type == DT_REG || S_ISREG(buf.st_mode)) {
         type = protos::pbzero::InodeFileMap_Entry_Type_FILE;
       }
 
-      // Update map
-      std::map<Inode, InodeMapValue>& inode_map =
-          (*block_device_map)[block_device_id];
-      inode_map[inode_number].SetType(type);
-      inode_map[inode_number].AddPath(filepath + filename);
+      if (!fn(block_device_id, inode_number, filepath, type))
+        return;
     }
-    closedir(dir);
   }
+}
+
+void CreateDeviceToInodeMap(
+    const std::string& root_directory,
+    std::map<BlockDeviceID, std::map<Inode, InodeMapValue>>* block_device_map) {
+  ScanFilesDFS(
+      root_directory,
+      [&block_device_map](BlockDeviceID block_device_id, Inode inode_number,
+                          const std::string& path,
+                          protos::pbzero::InodeFileMap_Entry_Type type) {
+        std::map<Inode, InodeMapValue>& inode_map =
+            (*block_device_map)[block_device_id];
+        inode_map[inode_number].SetType(type);
+        inode_map[inode_number].AddPath(path);
+        return true;
+      });
 }
 
 InodeFileDataSource::InodeFileDataSource(
@@ -108,7 +132,6 @@ bool InodeFileDataSource::AddInodeFileMapEntry(
 void InodeFileDataSource::OnInodes(
     const std::vector<std::pair<Inode, BlockDeviceID>>& inodes) {
   PERFETTO_DLOG("Saw FtraceBundle with %zu inodes.", inodes.size());
-
   if (mount_points_.empty()) {
     mount_points_ = ParseMounts();
   }

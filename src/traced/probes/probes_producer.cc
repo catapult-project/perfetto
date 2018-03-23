@@ -40,9 +40,9 @@ namespace {
 
 uint64_t kInitialConnectionBackoffMs = 100;
 uint64_t kMaxConnectionBackoffMs = 30 * 1000;
-const char* kFtraceSourceName = "com.google.perfetto.ftrace";
-const char* kProcessStatsSourceName = "com.google.perfetto.process_stats";
-const char* kInodeMapSourceName = "com.google.perfetto.inode_file_map";
+constexpr char kFtraceSourceName[] = "com.google.perfetto.ftrace";
+constexpr char kProcessStatsSourceName[] = "com.google.perfetto.process_stats";
+constexpr char kInodeMapSourceName[] = "com.google.perfetto.inode_file_map";
 
 }  // namespace.
 
@@ -218,6 +218,9 @@ void ProbesProducer::TearDownDataSourceInstance(DataSourceInstanceID id) {
   file_map_sources_.erase(id);
   watchdogs_.erase(id);
 }
+
+void ProbesProducer::OnTracingStart() {}
+void ProbesProducer::OnTracingStop() {}
 
 void ProbesProducer::ConnectWithRetries(const char* socket_name,
                                         base::TaskRunner* task_runner) {

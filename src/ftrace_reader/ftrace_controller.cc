@@ -45,18 +45,18 @@ namespace perfetto {
 namespace {
 
 #if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID)
-const char* kTracingPaths[] = {
+constexpr const char* kTracingPaths[] = {
     "/sys/kernel/tracing/", "/sys/kernel/debug/tracing/", nullptr,
 };
 #else
-const char* kTracingPaths[] = {
+constexpr const char* kTracingPaths[] = {
     "/sys/kernel/debug/tracing/", nullptr,
 };
 #endif
 
-const int kDefaultDrainPeriodMs = 100;
-const int kMinDrainPeriodMs = 1;
-const int kMaxDrainPeriodMs = 1000 * 60;
+constexpr int kDefaultDrainPeriodMs = 100;
+constexpr int kMinDrainPeriodMs = 1;
+constexpr int kMaxDrainPeriodMs = 1000 * 60;
 
 uint32_t ClampDrainPeriodMs(uint32_t drain_period_ms) {
   if (drain_period_ms == 0) {
@@ -373,7 +373,25 @@ void FtraceMetadata::AddDevice(BlockDeviceID device_id) {
 }
 
 void FtraceMetadata::AddInode(Inode inode_number) {
-  inode_and_device.push_back(std::make_pair(inode_number, last_seen_device_id));
+  PERFETTO_DCHECK(last_seen_device_id != 0);
+  static int32_t cached_pid = 0;
+  if (!cached_pid)
+    cached_pid = getpid();
+
+  PERFETTO_DCHECK(last_seen_common_pid);
+  PERFETTO_DCHECK(cached_pid == getpid());
+  // Ignore own scanning activity.
+  if (cached_pid != last_seen_common_pid) {
+    inode_and_device.push_back(
+        std::make_pair(inode_number, last_seen_device_id));
+  }
+#if PERFETTO_DCHECK_IS_ON()
+  last_seen_device_id = 0;
+#endif
+}
+
+void FtraceMetadata::AddCommonPid(int32_t pid) {
+  last_seen_common_pid = pid;
 }
 
 void FtraceMetadata::AddPid(int32_t pid) {
@@ -389,6 +407,7 @@ void FtraceMetadata::Clear() {
   pids.clear();
   overwrite_count = 0;
   last_seen_device_id = 0;
+  last_seen_common_pid = 0;
 }
 
 }  // namespace perfetto

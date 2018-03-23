@@ -25,6 +25,7 @@
 #include <string>
 
 #include "perfetto/base/weak_ptr.h"
+#include "perfetto/traced/data_source_types.h"
 #include "perfetto/tracing/core/basic_types.h"
 #include "perfetto/tracing/core/trace_writer.h"
 #include "src/traced/probes/filesystem/fs_mount.h"
@@ -50,6 +51,13 @@ class InodeMapValue {
   protos::pbzero::InodeFileMap_Entry_Type entry_type_;
   std::set<std::string> paths_;
 };
+
+void ScanFilesDFS(
+    const std::string& root_directory,
+    const std::function<bool(BlockDeviceID block_device_id,
+                             Inode inode_number,
+                             const std::string& path,
+                             protos::pbzero::InodeFileMap_Entry_Type type)>&);
 
 void CreateDeviceToInodeMap(
     const std::string& root_directory,

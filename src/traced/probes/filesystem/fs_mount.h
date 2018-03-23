@@ -21,11 +21,9 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "perfetto/traced/data_source_types.h"
 
 namespace perfetto {
-
-using BlockDeviceID = decltype(stat::st_dev);
-using Inode = decltype(stat::st_ino);
 
 constexpr char kMountsPath[] = "/proc/mounts";
 
