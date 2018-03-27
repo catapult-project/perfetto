@@ -71,6 +71,25 @@ void TraceConfig::FromProto(const perfetto::protos::TraceConfig& proto) {
     producers_.emplace_back();
     producers_.back().FromProto(field);
   }
+
+  statsd_metadata_.FromProto(proto.statsd_metadata());
+
+  static_assert(sizeof(write_into_file_) == sizeof(proto.write_into_file()),
+                "size mismatch");
+  write_into_file_ =
+      static_cast<decltype(write_into_file_)>(proto.write_into_file());
+
+  static_assert(
+      sizeof(file_write_period_ms_) == sizeof(proto.file_write_period_ms()),
+      "size mismatch");
+  file_write_period_ms_ = static_cast<decltype(file_write_period_ms_)>(
+      proto.file_write_period_ms());
+
+  static_assert(
+      sizeof(max_file_size_bytes_) == sizeof(proto.max_file_size_bytes()),
+      "size mismatch");
+  max_file_size_bytes_ =
+      static_cast<decltype(max_file_size_bytes_)>(proto.max_file_size_bytes());
   unknown_fields_ = proto.unknown_fields();
 }
 
@@ -108,6 +127,27 @@ void TraceConfig::ToProto(perfetto::protos::TraceConfig* proto) const {
     auto* entry = proto->add_producers();
     it.ToProto(entry);
   }
+
+  statsd_metadata_.ToProto(proto->mutable_statsd_metadata());
+
+  static_assert(sizeof(write_into_file_) == sizeof(proto->write_into_file()),
+                "size mismatch");
+  proto->set_write_into_file(
+      static_cast<decltype(proto->write_into_file())>(write_into_file_));
+
+  static_assert(
+      sizeof(file_write_period_ms_) == sizeof(proto->file_write_period_ms()),
+      "size mismatch");
+  proto->set_file_write_period_ms(
+      static_cast<decltype(proto->file_write_period_ms())>(
+          file_write_period_ms_));
+
+  static_assert(
+      sizeof(max_file_size_bytes_) == sizeof(proto->max_file_size_bytes()),
+      "size mismatch");
+  proto->set_max_file_size_bytes(
+      static_cast<decltype(proto->max_file_size_bytes())>(
+          max_file_size_bytes_));
   *(proto->mutable_unknown_fields()) = unknown_fields_;
 }
 
@@ -127,10 +167,6 @@ void TraceConfig::BufferConfig::FromProto(
   static_assert(sizeof(size_kb_) == sizeof(proto.size_kb()), "size mismatch");
   size_kb_ = static_cast<decltype(size_kb_)>(proto.size_kb());
 
-  static_assert(sizeof(optimize_for_) == sizeof(proto.optimize_for()),
-                "size mismatch");
-  optimize_for_ = static_cast<decltype(optimize_for_)>(proto.optimize_for());
-
   static_assert(sizeof(fill_policy_) == sizeof(proto.fill_policy()),
                 "size mismatch");
   fill_policy_ = static_cast<decltype(fill_policy_)>(proto.fill_policy());
@@ -143,11 +179,6 @@ void TraceConfig::BufferConfig::ToProto(
 
   static_assert(sizeof(size_kb_) == sizeof(proto->size_kb()), "size mismatch");
   proto->set_size_kb(static_cast<decltype(proto->size_kb())>(size_kb_));
-
-  static_assert(sizeof(optimize_for_) == sizeof(proto->optimize_for()),
-                "size mismatch");
-  proto->set_optimize_for(
-      static_cast<decltype(proto->optimize_for())>(optimize_for_));
 
   static_assert(sizeof(fill_policy_) == sizeof(proto->fill_policy()),
                 "size mismatch");
@@ -241,6 +272,66 @@ void TraceConfig::ProducerConfig::ToProto(
                 "size mismatch");
   proto->set_page_size_kb(
       static_cast<decltype(proto->page_size_kb())>(page_size_kb_));
+  *(proto->mutable_unknown_fields()) = unknown_fields_;
+}
+
+TraceConfig::StatsdMetadata::StatsdMetadata() = default;
+TraceConfig::StatsdMetadata::~StatsdMetadata() = default;
+TraceConfig::StatsdMetadata::StatsdMetadata(
+    const TraceConfig::StatsdMetadata&) = default;
+TraceConfig::StatsdMetadata& TraceConfig::StatsdMetadata::operator=(
+    const TraceConfig::StatsdMetadata&) = default;
+TraceConfig::StatsdMetadata::StatsdMetadata(
+    TraceConfig::StatsdMetadata&&) noexcept = default;
+TraceConfig::StatsdMetadata& TraceConfig::StatsdMetadata::operator=(
+    TraceConfig::StatsdMetadata&&) = default;
+
+void TraceConfig::StatsdMetadata::FromProto(
+    const perfetto::protos::TraceConfig_StatsdMetadata& proto) {
+  static_assert(
+      sizeof(triggering_alert_id_) == sizeof(proto.triggering_alert_id()),
+      "size mismatch");
+  triggering_alert_id_ =
+      static_cast<decltype(triggering_alert_id_)>(proto.triggering_alert_id());
+
+  static_assert(
+      sizeof(triggering_config_uid_) == sizeof(proto.triggering_config_uid()),
+      "size mismatch");
+  triggering_config_uid_ = static_cast<decltype(triggering_config_uid_)>(
+      proto.triggering_config_uid());
+
+  static_assert(
+      sizeof(triggering_config_id_) == sizeof(proto.triggering_config_id()),
+      "size mismatch");
+  triggering_config_id_ = static_cast<decltype(triggering_config_id_)>(
+      proto.triggering_config_id());
+  unknown_fields_ = proto.unknown_fields();
+}
+
+void TraceConfig::StatsdMetadata::ToProto(
+    perfetto::protos::TraceConfig_StatsdMetadata* proto) const {
+  proto->Clear();
+
+  static_assert(
+      sizeof(triggering_alert_id_) == sizeof(proto->triggering_alert_id()),
+      "size mismatch");
+  proto->set_triggering_alert_id(
+      static_cast<decltype(proto->triggering_alert_id())>(
+          triggering_alert_id_));
+
+  static_assert(
+      sizeof(triggering_config_uid_) == sizeof(proto->triggering_config_uid()),
+      "size mismatch");
+  proto->set_triggering_config_uid(
+      static_cast<decltype(proto->triggering_config_uid())>(
+          triggering_config_uid_));
+
+  static_assert(
+      sizeof(triggering_config_id_) == sizeof(proto->triggering_config_id()),
+      "size mismatch");
+  proto->set_triggering_config_id(
+      static_cast<decltype(proto->triggering_config_id())>(
+          triggering_config_id_));
   *(proto->mutable_unknown_fields()) = unknown_fields_;
 }
 
