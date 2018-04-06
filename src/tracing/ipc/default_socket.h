@@ -14,20 +14,14 @@
  * limitations under the License.
  */
 
-syntax = "proto2";
-option optimize_for = LITE_RUNTIME;
+#ifndef SRC_TRACING_IPC_DEFAULT_SOCKET_H_
+#define SRC_TRACING_IPC_DEFAULT_SOCKET_H_
 
-package perfetto.protos;
+namespace perfetto {
 
-// When editing this file run ./tools/gen_tracing_cpp_headers_from_protos.py
-// to reflect changes in the corresponding C++ headers.
+const char* GetConsumerSocket();
+const char* GetProducerSocket();
 
-message ProcessStatsConfig {
-  enum Quirks {
-    QUIRKS_UNSPECIFIED = 0;
-    DISABLE_INITIAL_DUMP = 1;
-    DISABLE_ON_DEMAND = 2;
-  }
+}  // namespace perfetto
 
-  repeated Quirks quirks = 1;
-}
+#endif  // SRC_TRACING_IPC_DEFAULT_SOCKET_H_

@@ -14,20 +14,12 @@
  * limitations under the License.
  */
 
-syntax = "proto2";
-option optimize_for = LITE_RUNTIME;
+#ifndef BUILDTOOLS_LIBBACKTRACE_CONFIG_BACKTRACE_SUPPORTED_H_
+#define BUILDTOOLS_LIBBACKTRACE_CONFIG_BACKTRACE_SUPPORTED_H_
 
-package perfetto.protos;
+#define BACKTRACE_SUPPORTED 1
+#define BACKTRACE_USES_MALLOC 0
+#define BACKTRACE_SUPPORTS_THREADS 1
+#define BACKTRACE_SUPPORTS_DATA 1
 
-// When editing this file run ./tools/gen_tracing_cpp_headers_from_protos.py
-// to reflect changes in the corresponding C++ headers.
-
-message ProcessStatsConfig {
-  enum Quirks {
-    QUIRKS_UNSPECIFIED = 0;
-    DISABLE_INITIAL_DUMP = 1;
-    DISABLE_ON_DEMAND = 2;
-  }
-
-  repeated Quirks quirks = 1;
-}
+#endif  // BUILDTOOLS_LIBBACKTRACE_CONFIG_BACKTRACE_SUPPORTED_H_
