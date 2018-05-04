@@ -50,6 +50,33 @@ bool ReadIntoString(const uint8_t* start,
   return false;
 }
 
+bool ReadDataLoc(const uint8_t* start,
+                 const uint8_t* field_start,
+                 const uint8_t* end,
+                 const Field& field,
+                 protozero::Message* message) {
+  PERFETTO_DCHECK(field.ftrace_size == 4);
+  // See
+  // https://github.com/torvalds/linux/blob/master/include/trace/trace_events.h
+  uint32_t data = 0;
+  const uint8_t* ptr = field_start;
+  if (!CpuReader::ReadAndAdvance(&ptr, end, &data)) {
+    PERFETTO_DCHECK(false);
+    return false;
+  }
+
+  const uint16_t offset = data & 0xffff;
+  const uint16_t len = (data >> 16) & 0xffff;
+  const uint8_t* const string_start = start + offset;
+  const uint8_t* const string_end = string_start + len;
+  if (string_start < start || string_end >= end) {
+    PERFETTO_DCHECK(false);
+    return false;
+  }
+  ReadIntoString(string_start, string_end, field.proto_field_id, message);
+  return true;
+}
+
 using BundleHandle =
     protozero::MessageHandle<protos::pbzero::FtraceEventBundle>;
 
@@ -466,6 +493,8 @@ bool CpuReader::ParseField(const Field& field,
     case kStringPtrToString:
       // TODO(hjd): Figure out how to read these.
       return true;
+    case kDataLocToString:
+      return ReadDataLoc(start, field_start, end, field, message);
     case kBoolToUint32:
       ReadIntoVarInt<uint32_t>(field_start, field_id, message);
       return true;
