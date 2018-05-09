@@ -213,7 +213,9 @@ TEST(EventFilterTest, EventFilter) {
     events.push_back(event);
   }
 
-  ProtoTranslationTable table(events, std::move(common_fields));
+  ProtoTranslationTable table(
+      events, std::move(common_fields),
+      ProtoTranslationTable::DefaultPageHeaderSpecForTesting());
   EventFilter filter(table, {"foo"});
 
   EXPECT_TRUE(filter.IsEventEnabled(1));
@@ -815,7 +817,9 @@ TEST(CpuReaderTest, ParseAllFields) {
     }
   }
 
-  ProtoTranslationTable table(events, std::move(common_fields));
+  ProtoTranslationTable table(
+      events, std::move(common_fields),
+      ProtoTranslationTable::DefaultPageHeaderSpecForTesting());
 
   FakeEventProvider provider(base::kPageSize);
 
