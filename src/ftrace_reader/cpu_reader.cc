@@ -26,6 +26,7 @@
 
 #include "perfetto/base/build_config.h"
 #include "perfetto/base/logging.h"
+#include "perfetto/base/metatrace.h"
 #include "perfetto/base/utils.h"
 #include "src/ftrace_reader/proto_translation_table.h"
 
@@ -209,8 +210,12 @@ void CpuReader::RunWorkerThread(
     // First do a blocking splice which sleeps until there is at least one
     // page of data available and enough space to write it into the staging
     // pipe.
-    ssize_t splice_res = splice(trace_fd, nullptr, staging_write_fd, nullptr,
-                                base::kPageSize, SPLICE_F_MOVE);
+    ssize_t splice_res;
+    {
+      PERFETTO_METATRACE("name", "splice_blocking", "pid", cpu);
+      splice_res = splice(trace_fd, nullptr, staging_write_fd, nullptr,
+                          base::kPageSize, SPLICE_F_MOVE);
+    }
     if (splice_res < 0) {
       // The kernel ftrace code has its own splice() implementation that can
       // occasionally fail with transient errors not reported in man 2 splice.
@@ -228,17 +233,22 @@ void CpuReader::RunWorkerThread(
     // pages from the trace pipe into the staging pipe as long as there is
     // data in the former and space in the latter.
     while (true) {
-      splice_res = splice(trace_fd, nullptr, staging_write_fd, nullptr,
-                          base::kPageSize, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+      {
+        PERFETTO_METATRACE("name", "splice_nonblocking", "pid", cpu);
+        splice_res = splice(trace_fd, nullptr, staging_write_fd, nullptr,
+                            base::kPageSize, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+      }
       if (splice_res < 0) {
         if (errno != EAGAIN && errno != ENOMEM && errno != EBUSY)
           PERFETTO_PLOG("splice");
         break;
       }
     }
-
-    // This callback will block until we are allowed to read more data.
-    on_data_available();
+    {
+      PERFETTO_METATRACE("name", "splice_waitcallback", "pid", cpu);
+      // This callback will block until we are allowed to read more data.
+      on_data_available();
+    }
   }
 #else
   base::ignore_result(cpu);
@@ -305,18 +315,24 @@ size_t CpuReader::ParsePage(const uint8_t* ptr,
   const uint8_t* const start_of_page = ptr;
   const uint8_t* const end_of_page = ptr + base::kPageSize;
 
-  // TODO(hjd): Read this format dynamically?
   PageHeader page_header;
-  uint64_t overwrite_and_size;
   if (!ReadAndAdvance<uint64_t>(&ptr, end_of_page, &page_header.timestamp))
     return 0;
-  if (!ReadAndAdvance<uint64_t>(&ptr, end_of_page, &overwrite_and_size))
+
+  // TODO(fmayer): Do kernel deepdive to double check this.
+  uint16_t size_bytes = table->ftrace_page_header_spec().size.size;
+  PERFETTO_CHECK(size_bytes >= 4);
+  uint32_t overwrite_and_size;
+  if (!ReadAndAdvance<uint32_t>(&ptr, end_of_page, &overwrite_and_size))
     return 0;
 
   page_header.size = (overwrite_and_size & 0x000000000000ffffull) >> 0;
   page_header.overwrite = (overwrite_and_size & 0x00000000ff000000ull) >> 24;
-
   metadata->overwrite_count = static_cast<uint32_t>(page_header.overwrite);
+
+  PERFETTO_DCHECK(page_header.size <= base::kPageSize);
+
+  ptr += size_bytes - 4;
 
   const uint8_t* const end = ptr + page_header.size;
   if (end > end_of_page)

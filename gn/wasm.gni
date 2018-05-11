@@ -12,33 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-copy("copy_protoc_helper") {
-  testonly = true
-  sources = [
-    "protoc_helper.py",
-  ]
-  outputs = [
-    "${root_out_dir}/protoc_helper",
-  ]
-}
+import("//build_overrides/build.gni")
+import("//gn/perfetto.gni")
 
-group("protoc_helper") {
-  testonly = true
-  public_deps = [
-    ":copy_protoc_helper",
-  ]
-  deps = [
-    "../buildtools:protoc($host_toolchain)",
-  ]
-}
-
-executable("pipestats") {
-  testonly = true
-  sources = [
-    "pipestats.cc",
-  ]
-  deps = [
-    "../gn:default_deps",
-    "../src/base",
-  ]
+if (build_standalone) {
+  import("//gn/standalone/wasm.gni")
+} else {
+  is_wasm = false  # The WASM toolchain is supported only in standalone builds.
 }
