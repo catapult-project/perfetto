@@ -14,6 +14,13 @@
 
 import("gn/perfetto.gni")
 
+# For use_libfuzzer.
+if (!build_with_chromium) {
+  import("//gn/standalone/sanitizers/vars.gni")
+} else {
+  import("//build/config/sanitizers/sanitizers.gni")
+}
+
 declare_args() {
   # Only for local development. When true the binaries (perfetto, traced, ...)
   # are monolithic and don't use a common shared library. This is mainly to
@@ -51,6 +58,27 @@ group("all") {
     if (is_linux) {
       deps += [ "tools:pipestats" ]
     }
+    if (use_libfuzzer) {
+      deps += [ ":fuzzers" ]
+    }
+  }
+}
+
+# TODO(primiano): temporary workaround to:
+# 1) Prevent that the UI gets build automatically when doing ninja -C out/xx .
+# 2) Avoid breaking the chrome build, that right now depends on "all".
+group("default") {
+  testonly = true  # allow to build also test targets
+  deps = [
+    ":all",
+  ]
+}
+
+if (build_standalone) {
+  group("ui") {
+    deps = [
+      "ui",
+    ]
   }
 }
 
@@ -126,6 +154,7 @@ if (!build_with_chromium) {
     deps = [
       ":libtraced_shared",
       "gn:default_deps",
+      "include/perfetto/traced",
     ]
     sources = [
       "src/traced/service/main.cc",
@@ -138,6 +167,7 @@ if (!build_with_chromium) {
     deps = [
       ":libtraced_shared",
       "gn:default_deps",
+      "include/perfetto/traced",
     ]
     sources = [
       "src/traced/probes/main.cc",
@@ -197,6 +227,17 @@ if (build_with_chromium) {
     configs += [ "//build/config/compiler:no_chromium_code" ]
     public_deps = [
       "include/perfetto/tracing/core",
+    ]
+  }
+}
+
+if (use_libfuzzer) {
+  group("fuzzers") {
+    testonly = true
+    deps = [
+      "src/ftrace_reader:cpu_reader_fuzzer",
+      "src/ipc:buffered_frame_deserializer_fuzzer",
+      "test:end_to_end_shared_memory_fuzzer",
     ]
   }
 }

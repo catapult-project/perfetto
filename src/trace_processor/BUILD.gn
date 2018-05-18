@@ -1,4 +1,4 @@
-# Copyright (C) 2017 The Android Open Source Project
+# Copyright (C) 2018 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,9 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-source_set("traced") {
+import("../../gn/perfetto.gni")
+import("../../gn/wasm.gni")
+
+wasm_lib("trace_processor") {
   sources = [
-    "data_source_types.h",
-    "traced.h",
+    "wasm_bridge.cc",
+  ]
+
+  # All the deps below are implicitly xxx($wasm_toolchain) because of the
+  # outer "is_wasm" block.
+  deps = [
+    "../../gn:default_deps",
+    "../../protos/perfetto/trace_processor:lite",
   ]
 }

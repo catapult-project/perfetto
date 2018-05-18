@@ -1,4 +1,5 @@
-# Copyright (C) 2017 The Android Open Source Project
+#!/usr/bin/env python
+# Copyright (C) 2018 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,9 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-source_set("traced") {
-  sources = [
-    "data_source_types.h",
-    "traced.h",
-  ]
-}
+""" Script to check whether a given buildtool folder exists.
+
+Prints a user-friendly message if it doesn't.
+"""
+
+import os
+import sys
+
+def main():
+  if not os.path.exists(sys.argv[1]):
+    err = '\x1b[31mCannot find %s/%s\nRun tools/install-build-deps --ui\x1b[0m'
+    print >>sys.stderr,  err % (os.path.abspath('.'), sys.argv[1])
+    return 127
+
+if __name__ == '__main__':
+  sys.exit(main())
