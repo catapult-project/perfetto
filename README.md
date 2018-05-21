@@ -1,130 +1,102 @@
-# Perfetto - Performance instrumentation and logging for POSIX platforms
+# Perfetto - Performance instrumentation and tracing
 
-This project is meant to be built both as part of the Android tree and
-from a standalone checkout
+Perfetto is an open-source project for performance instrumentation and tracing
+of Linux/Android/Chrome platforms and user-space apps.  
+It consists of:
 
-For internal docs see [this page][internal-docs]
+**A portable, high efficiency, user-space tracing library**  
+designed for tracing of multi-process systems, based on zero-alloc zero-copy
+zero-syscall (on fast-paths) writing of protobufs over shared memory.
+
+**OS-wide Linux/Android probes for platform debugging**
+* Kernel tracing: a daemon that converts Kernel [Ftrace][ftrace] events into
+  API-stable protobufs, on device, with low overhead.
+* I/O tracing
+* Many new probes coming soon: heap profiling, perf sampling, syscall tracing.
+
+**Web-based frontend**  
+A UI for inspection and analysis of traces (coming soon).
+
+**Batch processing of traces**  
+A python / C++ (TBD) library for trace-based metrics (coming soon).
 
 
-Supported platforms
--------------------
-Android is the platform targeted in the first milestones.
-Right now Linux desktop and OSX are maintained best-effort.
+![Perfetto Stack](https://storage.googleapis.com/perfetto/markdown_img/perfetto-stack.png)
 
+Goals
+-----
+Perfetto is building the next-gen unified tracing ecosystem for:
+- Android platform tracing ([Systrace][systrace])
+- Chrome platform tracing ([chrome://tracing][chrome-tracing])
+- App-defined user-space tracing (including support for non-Android apps).
 
-Get the code
+The goal is to create an open, portable and developer friendly tracing ecosystem
+for app and platform performance debugging.
+
+Key features
 ------------
-### Prerequisites
-All dependent libraries are self-hosted and pulled by the
-`tools/install-build-deps` script.  
-The only requirements on the host are
-python, git and a compiler (preferably clang, gcc is maintained best-effort):  
-`$ sudo apt-get update && sudo apt-get install git clang python`
+**Designed for production**  
+Perfetto's tracing library and daemons are designed for use in production.
+Privilege isolation is a key design goal:
+* The interface for writing trace events are decoupled from the interface for
+  read-back and control and can be subjected to different ACLs.
+* Despite being based on shared memory, Perfetto is designed to prevent
+  cross-talk between data sources, even in case of arbitrary code execution
+  (memory is shared point-to-point, memory is never shared between processes).
+* Perfetto daemons are designed following to the principle of least privilege,
+  in order to allow strong sandboxing (via SELinux on Android).
 
-Then:  
-`$ git clone https://android.googlesource.com/platform/external/perfetto.git`
+See [docs/security-model.md](docs/security-model.md) for more details.
 
+**Long traces**  
+Pefetto aims at supporting hours-long / O(100GB) traces, both in terms of
+recording backend and UI frontend.
 
-Contributing
-------------
-This project uses [Android AOSP Gerrit][perfetto-gerrit] for code reviews and
-uses the [Google C++ style][google-cpp-style].
-Currently targets `-std=c++11`.
+**Interoperability**  
+Perfetto traces (output) and configuration (input) consists of protobuf
+messages, in order to allow interoperability with several languages.
 
-You can use both `git cl upload` from [Chromium depot tools][depot-tools] or
-[Android repo][repo] to upload patches.
+See [docs/trace-format.md](docs/trace-format.md) for more details.
 
-`git cl` is quite convenient as it supports code auto-formatting via
-`git cl format`.
+**Composability**  
+As Perfetto is designed both for OS-level tracing and app-level tracing, its
+design allows to compose several instances of the Perfetto tracing library,
+allowing to nest multiple layers of tracing and drive then with the same
+frontend. This allows powerful blending of app-specific and OS-wide trace
+events.
+See [docs/multi-layer-tracing.md](docs/multi-layer-tracing.md) for more details.
 
-See https://source.android.com/source/contributing for more details about external contributions and CLA signing.
+**Portability**  
+The only dependencies of Perfetto's tracing libraries are C++11 and [Protobuf lite][protobuf] (plus google-test, google-benchmark, libprotobuf-full for testing).
 
+**Extensibility**  
+Perfetto allows third parties to defined their own protobufs for:
+* [(input) Configuration](/protos/perfetto/config/data_source_config.proto#52)
+* [(output) Trace packets](/protos/perfetto/trace/trace_packet.proto#36)
 
-Build instructions
-------------------
-### Build from a standalone checkout
-If you are a chromium developer and have depot_tools installed you can avoid
-the `tools/` prefix below and just use gn/ninja from depot_tools.
-
-`$ tools/install-build-deps` to install third-party build deps (NDK etc)
-
-`$ tools/gn args out/android` to generate build files and enter in the editor:
-```
-target_os = "android"          # Leave empty for local testing
-target_cpu = "arm" or "arm64"  # Only when building for Android
-```
-(See the [Build Configurations](#build-configurations) section below for more)
-
-`$ tools/ninja -C out/android all`
-
-
-### Build from the Android tree
-TODO. The plan is to autogenerate the Android.bp build files from the master GN build files (or temporarily maintain both until we can autogenerate them).
+Allowing apps to define their own strongly-typed input and output schema.
+See [docs/trace-format.md](docs/trace-format.md) for more details.
 
 
-Run tests
----------
-### On the host (Linux / OSX)
-```
-$ tools/ninja -C out/default (tracing_unittests | tracing_benchmarks)
-$ out/default/tracing_unittests --gtest_help
-```
+Docs
+----
+* [Contributing](docs/contributing.md)
+* [Build instructions](docs/build-instructions.md)
+* [Running tests](docs/testing.md)
+* [Running Perfetto](docs/running.md)
+* [Key concepts and architecture](docs/architecture.md)
+* [Life of a tracing session](docs/life-of-a-tracing-session.md)
+* [Ftrace interop](docs/ftrace.md)
+* [Performance benchmarks](docs/benchmarks.md)
+* [Trace config](docs/trace-config.md)
+* [Trace format](docs/trace-format.md)
+* [Multi-layer tracing](docs/multi-layer-tracing.md)
+* [Security model](docs/security-model.md)
+* [Embedding Perfetto in your own project](docs/embedder-guide.md)
+* [ProtoZero internals](docs/protozero.md)
+* [IPC internals](docs/ipc.md)
 
-### On Android
-Either connect a device in [ADB mode][adb-docs] or use the bundled emulator.
-
-To start the emulator:  
-`$ tools/run_android_emulator (arm | arm64) &`
-
-To run the tests (either on the emulator or physical device):  
-`$ tools/run_android_test out/default tracing_unittests`
-
-
-Build configurations
---------------------
-The following [GN args][gn-quickstart] are supported:
-
-`target_os = "android" | "linux" | "mac"`:  
-Defaults to the current host, set "android" to build for Android.
-
-`target_cpu = "arm" | "arm64" | "x86" | "x64"`:  
-Defaults to `"arm"` when `target_os` == `"android"`, `"x64"` when targeting the
-host. 32-bit host builds are not supported.
-
-`is_debug = true | false`:  
-Toggles Debug (default) / Release mode.
-
-`is_clang = true | false`:  
-Use Clang (default) / GCC. It requires clang 3.5+ to be installed on the host.
-Clang is the default compiler on Mac (% having installed Xcode).
-On Linux: `sudo apt-get update && sudo apt-get install clang`
-
-`cc = "gcc" / cxx = "g++"`:  
-Uses a different compiler binary (default: autodetected depending on is_clang).
-
-`is_asan = true`:  
-Enables [Address Sanitizer](https://github.com/google/sanitizers/wiki/AddressSanitizer)
-
-`is_lsan = true`:  
-Enables [Leak Sanitizer](https://github.com/google/sanitizers/wiki/AddressSanitizerLeakSanitizer)
-(Linux/Mac only)
-
-`is_msan = true`:  
-Enables [Memory Sanitizer](https://github.com/google/sanitizers/wiki/MemorySanitizer)
-(Linux only)
-
-`is_tsan = true`:  
-Enables [Thread Sanitizer](https://github.com/google/sanitizers/wiki/ThreadSanitizerCppManual)
-(Linux/Mac only)
-
-`is_ubsan = true`:  
-Enables [Undefined Behavior Sanitizer](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)
-
-
-[internal-docs]: https://goo.gl/pNTTpC
-[perfetto-gerrit]: https://android-review.googlesource.com/q/project:platform%252Fexternal%252Fperfetto+status:open
-[google-cpp-style]: https://google.github.io/styleguide/cppguide.html
-[depot-tools]: https://dev.chromium.org/developers/how-tos/depottools
-[repo]: https://source.android.com/source/using-repo
-[gn-quickstart]: https://chromium.googlesource.com/chromium/src/+/lkgr/tools/gn/docs/quick_start.md
-[adb-docs]: https://developer.android.com/studio/command-line/adb.html
+[ftrace]: https://www.kernel.org/doc/Documentation/trace/ftrace.txt
+[systrace]: https://developer.android.com/studio/command-line/systrace.html
+[chrome-tracing]: https://www.chromium.org/developers/how-tos/trace-event-profiling-tool
+[protobuf]: https://developers.google.com/protocol-buffers/

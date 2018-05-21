@@ -14,40 +14,78 @@
  * limitations under the License.
  */
 
-#include "event_info.h"
+#include "src/ftrace_reader/event_info.h"
 
 #include "gtest/gtest.h"
 
 namespace perfetto {
 namespace {
 
-TEST(GetStaticEventInfo, SanityCheck) {
+TEST(EventInfoTest, GetStaticEventInfoSanityCheck) {
   std::vector<Event> events = GetStaticEventInfo();
   for (const Event& event : events) {
     // For each event the following fields should be filled
     // statically:
-    // Non-empty name.
+
+    // Non-empty name, group, and proto field id.
     ASSERT_TRUE(event.name);
-    // Non-empty group.
     ASSERT_TRUE(event.group);
-    // Non-zero proto field id.
     ASSERT_TRUE(event.proto_field_id);
-    // Zero the ftrace id.
+
+    // Ftrace id and size should be zeroed.
     ASSERT_FALSE(event.ftrace_event_id);
+    ASSERT_FALSE(event.size);
 
     for (const Field& field : event.fields) {
-      // Non-empty name.
+      // Non-empty name, proto field id, and proto field type.
       ASSERT_TRUE(field.ftrace_name);
-      // Non-zero proto field id.
       ASSERT_TRUE(field.proto_field_id);
-      // Should have set the proto field type.
       ASSERT_TRUE(field.proto_field_type);
+
       // Other fields should be zeroed.
       ASSERT_FALSE(field.ftrace_offset);
       ASSERT_FALSE(field.ftrace_size);
+      ASSERT_FALSE(field.strategy);
       ASSERT_FALSE(field.ftrace_type);
     }
   }
+}
+
+TEST(EventInfoTest, GetStaticCommonFieldsInfoSanityCheck) {
+  std::vector<Field> fields = GetStaticCommonFieldsInfo();
+  for (const Field& field : fields) {
+    // Non-empty name, group, and proto field id.
+    ASSERT_TRUE(field.ftrace_name);
+    ASSERT_TRUE(field.proto_field_id);
+    ASSERT_TRUE(field.proto_field_type);
+
+    // Other fields should be zeroed.
+    ASSERT_FALSE(field.ftrace_offset);
+    ASSERT_FALSE(field.ftrace_size);
+    ASSERT_FALSE(field.strategy);
+    ASSERT_FALSE(field.ftrace_type);
+  }
+}
+
+TEST(EventInfoTest, SetTranslationStrategySanityCheck) {
+  TranslationStrategy strategy = kUint32ToUint32;
+  ASSERT_FALSE(SetTranslationStrategy(kFtraceCString, kProtoUint64, &strategy));
+  ASSERT_EQ(strategy, kUint32ToUint32);
+  ASSERT_TRUE(SetTranslationStrategy(kFtraceCString, kProtoString, &strategy));
+  ASSERT_EQ(strategy, kCStringToString);
+  ASSERT_TRUE(SetTranslationStrategy(kFtracePid32, kProtoInt32, &strategy));
+  ASSERT_EQ(strategy, kPid32ToInt32);
+  ASSERT_TRUE(SetTranslationStrategy(kFtraceInode32, kProtoUint64, &strategy));
+  ASSERT_EQ(strategy, kInode32ToUint64);
+  ASSERT_TRUE(SetTranslationStrategy(kFtraceInode64, kProtoUint64, &strategy));
+  ASSERT_EQ(strategy, kInode64ToUint64);
+  ASSERT_TRUE(SetTranslationStrategy(kFtraceDevId32, kProtoUint64, &strategy));
+  ASSERT_EQ(strategy, kDevId32ToUint64);
+  ASSERT_TRUE(SetTranslationStrategy(kFtraceDevId64, kProtoUint64, &strategy));
+  ASSERT_EQ(strategy, kDevId64ToUint64);
+  ASSERT_TRUE(
+      SetTranslationStrategy(kFtraceCommonPid32, kProtoInt32, &strategy));
+  ASSERT_EQ(strategy, kCommonPid32ToInt32);
 }
 
 }  // namespace

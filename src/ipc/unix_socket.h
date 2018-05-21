@@ -26,6 +26,7 @@
 #include "perfetto/base/logging.h"
 #include "perfetto/base/scoped_file.h"
 #include "perfetto/base/weak_ptr.h"
+#include "perfetto/ipc/basic_types.h"
 
 namespace perfetto {
 
@@ -116,12 +117,24 @@ class UnixSocket {
                                             EventListener*,
                                             base::TaskRunner*);
 
+  // Attaches to a pre-existing socket. The socket must have been created in
+  // SOCK_STREAM mode and the caller must have called bind() on it.
+  static std::unique_ptr<UnixSocket> Listen(base::ScopedFile socket_fd,
+                                            EventListener*,
+                                            base::TaskRunner*);
+
   // Creates a Unix domain socket and connects to the listening endpoint.
   // Returns always an instance. EventListener::OnConnect(bool success) will
   // be called always, whether the connection succeeded or not.
   static std::unique_ptr<UnixSocket> Connect(const std::string& socket_name,
                                              EventListener*,
                                              base::TaskRunner*);
+
+  // Creates a Unix domain socket and binds it to |socket_name| (see comment
+  // of Listen() above for the format). This file descriptor is suitable to be
+  // passed to Listen(ScopedFile, ...). Returns the file descriptor, or -1 in
+  // case of failure.
+  static base::ScopedFile CreateAndBind(const std::string& socket_name);
 
   // This class gives the hard guarantee that no callback is called on the
   // passed EventListener immediately after the object has been destroyed.
@@ -131,7 +144,7 @@ class UnixSocket {
   // Shuts down the current connection, if any. If the socket was Listen()-ing,
   // stops listening. The socket goes back to kNotInitialized state, so it can
   // be reused with Listen() or Connect().
-  void Shutdown();
+  void Shutdown(bool notify);
 
   // Returns true is the message was queued, false if there was no space in the
   // output buffer, in which case the client should retry or give up.
@@ -167,20 +180,19 @@ class UnixSocket {
   // User ID of the peer, as returned by the kernel. If the client disconnects
   // and the socket goes into the kDisconnected state, it retains the uid of
   // the last peer.
-  int peer_uid() const {
-    PERFETTO_DCHECK(!is_listening() && peer_uid_ >= 0);
+  uid_t peer_uid() const {
+    PERFETTO_DCHECK(!is_listening() && peer_uid_ != kInvalidUid);
     return peer_uid_;
   }
 
  private:
   UnixSocket(EventListener*, base::TaskRunner*);
-  UnixSocket(EventListener*, base::TaskRunner*, base::ScopedFile);
+  UnixSocket(EventListener*, base::TaskRunner*, base::ScopedFile, State);
   UnixSocket(const UnixSocket&) = delete;
   UnixSocket& operator=(const UnixSocket&) = delete;
 
   // Called once by the corresponding public static factory methods.
   void DoConnect(const std::string& socket_name);
-  void DoListen(const std::string& socket_name);
   void ReadPeerCredentials();
   void SetBlockingIO(bool is_blocking);
 
@@ -190,7 +202,7 @@ class UnixSocket {
   base::ScopedFile fd_;
   State state_ = State::kDisconnected;
   int last_error_ = 0;
-  int peer_uid_ = -1;
+  uid_t peer_uid_ = kInvalidUid;
   EventListener* event_listener_;
   base::TaskRunner* task_runner_;
   base::WeakPtrFactory<UnixSocket> weak_ptr_factory_;

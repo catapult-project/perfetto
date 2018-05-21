@@ -26,7 +26,7 @@
 #include "perfetto/tracing/core/producer.h"
 #include "perfetto/tracing/core/service.h"
 
-#include "protos/tracing_service/producer_port.ipc.h"
+#include "perfetto/ipc/producer_port.ipc.h"
 
 namespace perfetto {
 
@@ -37,23 +37,22 @@ class Host;
 // Implements the Producer port of the IPC service. This class proxies requests
 // and responses between the core service logic (|svc_|) and remote Producer(s)
 // on the IPC socket, through the methods overriddden from ProducerPort.
-class ProducerIPCService : public ProducerPort /* from producer_port.proto */ {
+class ProducerIPCService : public protos::ProducerPort {
  public:
   using Service = ::perfetto::Service;  // To avoid collisions w/ ipc::Service.
   explicit ProducerIPCService(Service* core_service);
   ~ProducerIPCService() override;
 
   // ProducerPort implementation (from .proto IPC definition).
-  void InitializeConnection(const InitializeConnectionRequest&,
+  void InitializeConnection(const protos::InitializeConnectionRequest&,
                             DeferredInitializeConnectionResponse) override;
-  void RegisterDataSource(const RegisterDataSourceRequest&,
+  void RegisterDataSource(const protos::RegisterDataSourceRequest&,
                           DeferredRegisterDataSourceResponse) override;
-  void UnregisterDataSource(const UnregisterDataSourceRequest&,
+  void UnregisterDataSource(const protos::UnregisterDataSourceRequest&,
                             DeferredUnregisterDataSourceResponse) override;
-  void NotifySharedMemoryUpdate(
-      const NotifySharedMemoryUpdateRequest&,
-      DeferredNotifySharedMemoryUpdateResponse) override;
-  void GetAsyncCommand(const GetAsyncCommandRequest&,
+  void CommitData(const protos::CommitDataRequest&,
+                  DeferredCommitDataResponse) override;
+  void GetAsyncCommand(const protos::GetAsyncCommandRequest&,
                        DeferredGetAsyncCommandResponse) override;
   void OnClientDisconnected() override;
 
@@ -73,10 +72,10 @@ class ProducerIPCService : public ProducerPort /* from producer_port.proto */ {
     void CreateDataSourceInstance(DataSourceInstanceID,
                                   const DataSourceConfig&) override;
     void TearDownDataSourceInstance(DataSourceInstanceID) override;
-
-    // RegisterDataSource requests that haven't been replied yet.
-    std::map<std::string, DeferredRegisterDataSourceResponse>
-        pending_data_sources;
+    void OnTracingSetup() override;
+    void Flush(FlushRequestID,
+               const DataSourceInstanceID* data_source_ids,
+               size_t num_data_sources) override;
 
     // The interface obtained from the core service business logic through
     // Service::ConnectProducer(this). This allows to invoke methods for a
@@ -96,16 +95,13 @@ class ProducerIPCService : public ProducerPort /* from producer_port.proto */ {
   // the current IPC request.
   RemoteProducer* GetProducerForCurrentRequest();
 
-  // Called back by the |core_service_| business logic, soon after a call to
-  // RegisterDataSource().
-  void OnDataSourceRegistered(ipc::ClientID, std::string, DataSourceID);
-
   Service* const core_service_;
-  base::WeakPtrFactory<ProducerIPCService> weak_ptr_factory_;
 
   // Maps IPC clients to ProducerEndpoint instances registered on the
   // |core_service_| business logic.
   std::map<ipc::ClientID, std::unique_ptr<RemoteProducer>> producers_;
+
+  base::WeakPtrFactory<ProducerIPCService> weak_ptr_factory_;
 };
 
 }  // namespace perfetto

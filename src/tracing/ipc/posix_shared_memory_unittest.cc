@@ -20,92 +20,70 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "gtest/gtest.h"
 #include "perfetto/base/build_config.h"
 #include "perfetto/base/scoped_file.h"
+#include "perfetto/base/temp_file.h"
 #include "perfetto/base/utils.h"
 #include "src/base/test/test_task_runner.h"
+#include "src/base/test/vm_test_utils.h"
 
 namespace perfetto {
 namespace {
-
-const size_t kPageSize = 4096;
 
 bool IsFileDescriptorClosed(int fd) {
   return lseek(fd, 0, SEEK_CUR) == -1 && errno == EBADF;
 }
 
-bool IsMapped(void* start, size_t size) {
-#if BUILDFLAG(OS_MACOSX)
-  using PageState = char;
-#else
-  using PageState = unsigned char;
-#endif
-  EXPECT_EQ(0u, size % kPageSize);
-  const size_t num_pages = size / kPageSize;
-  std::unique_ptr<PageState[]> page_states(new PageState[num_pages]);
-  memset(page_states.get(), 0, num_pages * sizeof(PageState));
-  int res = mincore(start, size, page_states.get());
-  // Linux returns ENOMEM when an unmapped memory range is passed.
-  // MacOS instead returns 0 but leaves the page_states empty.
-  if (res == -1 && errno == ENOMEM)
-    return false;
-  EXPECT_EQ(0, res);
-  for (size_t i = 0; i < num_pages; i++) {
-    if (!page_states[i])
-      return false;
-  }
-  return true;
-}
-
 TEST(PosixSharedMemoryTest, DestructorUnmapsMemory) {
   PosixSharedMemory::Factory factory;
-  std::unique_ptr<SharedMemory> shm = factory.CreateSharedMemory(kPageSize);
+  std::unique_ptr<SharedMemory> shm =
+      factory.CreateSharedMemory(base::kPageSize);
   void* const shm_start = shm->start();
   const size_t shm_size = shm->size();
   ASSERT_NE(nullptr, shm_start);
-  ASSERT_EQ(kPageSize, shm_size);
+  ASSERT_EQ(base::kPageSize, shm_size);
 
   memcpy(shm_start, "test", 5);
-  ASSERT_TRUE(IsMapped(shm_start, shm_size));
+  ASSERT_TRUE(base::vm_test_utils::IsMapped(shm_start, shm_size));
 
   shm.reset();
-  ASSERT_FALSE(IsMapped(shm_start, shm_size));
+  ASSERT_FALSE(base::vm_test_utils::IsMapped(shm_start, shm_size));
 }
 
 TEST(PosixSharedMemoryTest, DestructorClosesFD) {
-  std::unique_ptr<PosixSharedMemory> shm = PosixSharedMemory::Create(kPageSize);
+  std::unique_ptr<PosixSharedMemory> shm =
+      PosixSharedMemory::Create(base::kPageSize);
   int fd = shm->fd();
   ASSERT_GE(fd, 0);
-  ASSERT_EQ(static_cast<off_t>(kPageSize), lseek(fd, 0, SEEK_END));
+  ASSERT_EQ(static_cast<off_t>(base::kPageSize), lseek(fd, 0, SEEK_END));
 
   shm.reset();
   ASSERT_TRUE(IsFileDescriptorClosed(fd));
 }
 
 TEST(PosixSharedMemoryTest, AttachToFd) {
-  FILE* tmp_file = tmpfile();  // Creates an unlinked auto-deleting temp file.
-  const int fd_num = fileno(tmp_file);
-  ASSERT_EQ(0, ftruncate(fd_num, kPageSize));
+  base::TempFile tmp_file = base::TempFile::CreateUnlinked();
+  const int fd_num = tmp_file.fd();
+  ASSERT_EQ(0, ftruncate(fd_num, base::kPageSize));
   ASSERT_EQ(7, PERFETTO_EINTR(write(fd_num, "foobar", 7)));
 
   std::unique_ptr<PosixSharedMemory> shm =
-      PosixSharedMemory::AttachToFd(base::ScopedFile(fd_num));
+      PosixSharedMemory::AttachToFd(tmp_file.ReleaseFD());
   void* const shm_start = shm->start();
   const size_t shm_size = shm->size();
   ASSERT_NE(nullptr, shm_start);
-  ASSERT_EQ(kPageSize, shm_size);
+  ASSERT_EQ(base::kPageSize, shm_size);
   ASSERT_EQ(0, memcmp("foobar", shm_start, 7));
 
   ASSERT_FALSE(IsFileDescriptorClosed(fd_num));
 
   shm.reset();
   ASSERT_TRUE(IsFileDescriptorClosed(fd_num));
-  ASSERT_FALSE(IsMapped(shm_start, shm_size));
+  ASSERT_FALSE(base::vm_test_utils::IsMapped(shm_start, shm_size));
 }
 
 }  // namespace

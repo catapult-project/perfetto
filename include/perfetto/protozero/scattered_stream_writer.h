@@ -22,6 +22,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "perfetto/base/export.h"
+#include "perfetto/base/utils.h"
 #include "perfetto/protozero/contiguous_memory_range.h"
 
 namespace protozero {
@@ -39,7 +41,7 @@ namespace protozero {
 // The purpose of this class is to abstract away the non-contiguous write logic.
 // This class knows how to deal with writes as long as they fall in the same
 // ContiguousMemoryRange and defers the chunk-chaining logic to the Delegate.
-class ScatteredStreamWriter {
+class PERFETTO_EXPORT ScatteredStreamWriter {
  public:
   class Delegate {
    public:
@@ -70,7 +72,7 @@ class ScatteredStreamWriter {
 
   inline void WriteBytes(const uint8_t* src, size_t size) {
     uint8_t* const end = write_ptr_ + size;
-    if (__builtin_expect(end <= cur_range_.end, 1))
+    if (PERFETTO_LIKELY(end <= cur_range_.end))
       return WriteBytesUnsafe(src, size);
     WriteBytesSlowPath(src, size);
   }
@@ -80,7 +82,7 @@ class ScatteredStreamWriter {
   // Reserves a fixed amount of bytes to be backfilled later. The reserved range
   // is guaranteed to be contiguous and not span across chunks. |size| has to be
   // <= than the size of a new buffer returned by the Delegate::GetNewBuffer().
-  ContiguousMemoryRange ReserveBytes(size_t size);
+  uint8_t* ReserveBytes(size_t size);
 
   // Fast (but unsafe) version of the above. The caller must have previously
   // checked that there are at least |size| contiguous bytes available.

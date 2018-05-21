@@ -14,60 +14,21 @@
  * limitations under the License.
  */
 
-#ifndef SRC_FTRACE_READER_EVENT_PROTO_INFO_H_
-#define SRC_FTRACE_READER_EVENT_PROTO_INFO_H_
+#ifndef SRC_FTRACE_READER_EVENT_INFO_H_
+#define SRC_FTRACE_READER_EVENT_INFO_H_
 
-#include <stdint.h>
-
-#include <string>
 #include <vector>
 
+#include "perfetto/base/logging.h"
+#include "src/ftrace_reader/event_info_constants.h"
+
 namespace perfetto {
-
-enum ProtoFieldType {
-  kProtoNumber = 1,
-  kProtoString,
-  kProtoInt32,
-};
-
-enum FtraceFieldType {
-  kFtraceNumber = 1,
-};
-
-struct Field {
-  Field() = default;
-  Field(uint16_t offset, uint16_t size)
-      : ftrace_offset(offset), ftrace_size(size) {}
-
-  uint16_t ftrace_offset;
-  uint16_t ftrace_size;
-  FtraceFieldType ftrace_type;
-  const char* ftrace_name;
-
-  uint32_t proto_field_id;
-  ProtoFieldType proto_field_type;
-};
-
-struct Event {
-  Event() = default;
-  Event(const char* event_name, const char* event_group)
-      : name(event_name), group(event_group) {}
-
-  const char* name;
-  const char* group;
-  std::vector<Field> fields;
-  uint32_t ftrace_event_id;
-
-  // Field id of the subevent proto (e.g. PrintFtraceEvent) in the FtraceEvent
-  // parent proto.
-  uint32_t proto_field_id;
-};
 
 // The compile time information needed to read the raw ftrace buffer.
 // Specifically for each event we have a proto we fill:
 //  The event name (e.g. sched_switch)
 //  The event group  (e.g. sched)
-//  The the proto field ID of this event in the FtraceEvent proto.
+//  The proto field ID of this event in the FtraceEvent proto.
 //  For each field in the proto:
 //    The field name (e.g. prev_comm)
 //    The proto field id for this field
@@ -78,4 +39,4 @@ std::vector<Event> GetStaticEventInfo();
 
 }  // namespace perfetto
 
-#endif  // SRC_FTRACE_READER_EVENT_PROTO_INFO_H_
+#endif  // SRC_FTRACE_READER_EVENT_INFO_H_

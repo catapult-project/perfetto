@@ -34,7 +34,7 @@ ScatteredStreamWriter::~ScatteredStreamWriter() {}
 void ScatteredStreamWriter::Reset(ContiguousMemoryRange range) {
   cur_range_ = range;
   write_ptr_ = range.begin;
-  PERFETTO_DCHECK(write_ptr_ < cur_range_.end);
+  PERFETTO_DCHECK(!write_ptr_ || write_ptr_ < cur_range_.end);
 }
 
 void ScatteredStreamWriter::Extend() {
@@ -56,7 +56,7 @@ void ScatteredStreamWriter::WriteBytesSlowPath(const uint8_t* src,
 
 // TODO(primiano): perf optimization: I suspect that at the end this will always
 // be called with |size| == 4, in which case we might just hardcode it.
-ContiguousMemoryRange ScatteredStreamWriter::ReserveBytes(size_t size) {
+uint8_t* ScatteredStreamWriter::ReserveBytes(size_t size) {
   if (write_ptr_ + size > cur_range_.end) {
     // Assume the reservations are always < Delegate::GetNewBuffer().size(),
     // so that one single call to Extend() will definitely give enough headroom.
@@ -65,10 +65,10 @@ ContiguousMemoryRange ScatteredStreamWriter::ReserveBytes(size_t size) {
   }
   uint8_t* begin = write_ptr_;
   write_ptr_ += size;
-#ifndef NDEBUG
-  memset(begin, '\xFF', size);
+#if PERFETTO_DCHECK_IS_ON()
+  memset(begin, 0, size);
 #endif
-  return {begin, begin + size};
+  return begin;
 }
 
 }  // namespace protozero

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import("//gn/standalone/android.gni")
+import("//gn/standalone/wasm.gni")
 import("llvm.gni")
 
 declare_args() {
@@ -41,7 +42,7 @@ declare_args() {
   }
 
   if (is_android) {
-    target_ar = "$android_toolchain_root/bin/ar"
+    target_ar = "$android_toolchain_root/bin/$android_abi_target-ar"
     target_cc = "$android_llvm_dir/bin/clang"
     target_cxx = "$android_llvm_dir/bin/clang++"
   } else {
@@ -94,9 +95,13 @@ template("gcc_like_toolchain") {
     }
 
     tool("alink") {
-      rspfile = "{{output}}.rsp"
-      rspfile_content = "{{inputs}}"
-      command = "$ar {{output}} $rspfile"
+      if (is_mac && ar != "suppress_unused_ar_variable_warning") {
+        command = "rm -f {{output}} && libtool -static {{arflags}} -o {{output}} {{inputs}}"
+      } else {
+        rspfile = "{{output}}.rsp"
+        rspfile_content = "{{inputs}}"
+        command = "$ar rcsD {{output}} @$rspfile"
+      }
       outputs = [
         "{{root_out_dir}}/{{target_output_name}}{{output_extension}}",
       ]
@@ -161,4 +166,13 @@ gcc_like_toolchain("gcc_like_host") {
   ar = host_ar
   cc = host_cc
   cxx = host_cxx
+}
+
+gcc_like_toolchain("wasm") {
+  # emsdk_dir and em_config are defined in wasm.gni.
+  cpu = host_cpu
+  os = host_os
+  ar = "$emsdk_dir/emscripten/emar --em-config $em_config"
+  cc = "$emsdk_dir/emscripten/emcc --em-config $em_config"
+  cxx = "$emsdk_dir/emscripten/em++ --em-config $em_config"
 }

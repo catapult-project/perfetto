@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# When building perfetto in the android tree this variable becomes magically
+# When building perfetto in the Chromium tree this variable becomes magically
 # true by virtue of including //build_overrides by absolute path.
 # When false, instead, the build files can assume this is a Perfetto standalone
 # build.
 build_with_chromium = false
+# Do not declare other variables here, use perfetto.gni instead.
+# This file will *not* be picked up in the Chrome tree.

@@ -18,13 +18,20 @@ import subprocess
 import sys
 
 PROTOS = (
-  'protos/tracing_service/trace_config.proto',
-  'protos/tracing_service/data_source_config.proto',
-  'protos/tracing_service/data_source_descriptor.proto',
+  'perfetto/config/chrome/chrome_config.proto',
+  'perfetto/config/data_source_config.proto',
+  'perfetto/config/inode_file/inode_file_config.proto',
+  'perfetto/config/process_stats/process_stats_config.proto',
+  'perfetto/config/data_source_descriptor.proto',
+  'perfetto/config/ftrace/ftrace_config.proto',
+  'perfetto/config/trace_config.proto',
+  'perfetto/config/test_config.proto',
+  'perfetto/common/commit_data_request.proto',
 )
 
 HEADER_PATH = 'include/perfetto/tracing/core'
 CPP_PATH = 'src/tracing/core'
+INCLUDE_PATH = 'perfetto/tracing/core'
 
 
 def run(cmd):
@@ -34,7 +41,7 @@ def run(cmd):
 
 def main():
   if not os.path.exists('.gn'):
-    print('This script mast be executed from the perfetto root directory')
+    print('This script must be executed from the perfetto root directory')
     return 1
   if len(sys.argv) < 2:
     print('Usage: %s out/xxx' % sys.argv[0])
@@ -45,7 +52,7 @@ def main():
   if not os.path.exists(tool):
     print('Could not find %s, run ninja -C %s proto_to_cpp' % (tool, out_dir))
   for proto in PROTOS:
-    run([tool, proto] + [HEADER_PATH, CPP_PATH])
+    run([tool, proto] + [HEADER_PATH, CPP_PATH, INCLUDE_PATH])
     fname = os.path.basename(proto).replace('.proto', '')
     run(clang_format + [os.path.join(HEADER_PATH, fname + '.h')])
     run(clang_format + [os.path.join(CPP_PATH, fname + '.cc')])

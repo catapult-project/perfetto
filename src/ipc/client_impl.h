@@ -58,7 +58,9 @@ class ClientImpl : public Client, public UnixSocket::EventListener {
                         const std::string& method_name,
                         MethodID remote_method_id,
                         const ProtoMessage& method_args,
-                        base::WeakPtr<ServiceProxy>);
+                        bool drop_reply,
+                        base::WeakPtr<ServiceProxy>,
+                        int fd = -1);
 
  private:
   struct QueuedRequest {
@@ -74,11 +76,12 @@ class ClientImpl : public Client, public UnixSocket::EventListener {
   ClientImpl(const ClientImpl&) = delete;
   ClientImpl& operator=(const ClientImpl&) = delete;
 
-  bool SendFrame(const Frame&);
+  bool SendFrame(const Frame&, int fd = -1);
   void OnFrameReceived(const Frame&);
   void OnBindServiceReply(QueuedRequest, const Frame::BindServiceReply&);
   void OnInvokeMethodReply(QueuedRequest, const Frame::InvokeMethodReply&);
 
+  bool invoking_method_reply_ = false;
   std::unique_ptr<UnixSocket> sock_;
   base::TaskRunner* const task_runner_;
   RequestID last_request_id_ = 0;
@@ -86,10 +89,11 @@ class ClientImpl : public Client, public UnixSocket::EventListener {
   base::ScopedFile received_fd_;
   std::map<RequestID, QueuedRequest> queued_requests_;
   std::map<ServiceID, base::WeakPtr<ServiceProxy>> service_bindings_;
-  base::WeakPtrFactory<Client> weak_ptr_factory_;
 
   // Queue of calls to BindService() that happened before the socket connected.
   std::list<base::WeakPtr<ServiceProxy>> queued_bindings_;
+
+  base::WeakPtrFactory<Client> weak_ptr_factory_;
 };
 
 }  // namespace ipc

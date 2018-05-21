@@ -114,30 +114,36 @@ void GenFwdDecl(const Descriptor* msg, Printer* p) {
 
 class ProtoToCpp {
  public:
-  ProtoToCpp(const std::string& header_dir, const std::string& cpp_dir);
+  ProtoToCpp(const std::string& header_dir,
+             const std::string& cpp_dir,
+             const std::string& include_path);
 
   static std::string GetCppType(const FieldDescriptor* field, bool constref);
 
   void Convert(const std::string& src_proto);
   std::string GetHeaderPath(const FileDescriptor*);
   std::string GetCppPath(const FileDescriptor*);
+  std::string GetIncludePath(const FileDescriptor*);
   void GenHeader(const Descriptor*, Printer*);
   void GenCpp(const Descriptor*, Printer*, std::string prefix);
 
  private:
   std::string header_dir_;
   std::string cpp_dir_;
+  std::string include_path_;
   DiskSourceTree dst_;
   ErrorPrinter error_printer_;
   Importer importer_;
 };
 
 ProtoToCpp::ProtoToCpp(const std::string& header_dir,
-                       const std::string& cpp_dir)
+                       const std::string& cpp_dir,
+                       const std::string& include_path)
     : header_dir_(header_dir),
       cpp_dir_(cpp_dir),
+      include_path_(include_path),
       importer_(&dst_, &error_printer_) {
-  dst_.MapPath("protos", "protos");
+  dst_.MapPath("", "protos");
 }
 
 std::string ProtoToCpp::GetHeaderPath(const FileDescriptor* proto_file) {
@@ -148,6 +154,11 @@ std::string ProtoToCpp::GetHeaderPath(const FileDescriptor* proto_file) {
 std::string ProtoToCpp::GetCppPath(const FileDescriptor* proto_file) {
   std::string basename = Split(proto_file->name(), "/").back();
   return cpp_dir_ + "/" + StringReplace(basename, ".proto", ".cc", false);
+}
+
+std::string ProtoToCpp::GetIncludePath(const FileDescriptor* proto_file) {
+  std::string basename = Split(proto_file->name(), "/").back();
+  return include_path_ + "/" + StringReplace(basename, ".proto", ".h", false);
 }
 
 std::string ProtoToCpp::GetCppType(const FieldDescriptor* field,
@@ -182,8 +193,9 @@ std::string ProtoToCpp::GetCppType(const FieldDescriptor* field,
     case FieldDescriptor::TYPE_ENUM:
       return field->enum_type()->name();
     case FieldDescriptor::TYPE_GROUP:
-      PERFETTO_CHECK(false);
+      PERFETTO_FATAL("No cpp type for a group field.");
   }
+  PERFETTO_CHECK(false);
 }
 
 void ProtoToCpp::Convert(const std::string& src_proto) {
@@ -216,16 +228,18 @@ void ProtoToCpp::Convert(const std::string& src_proto) {
   header_printer.Print("#include <stdint.h>\n");
   header_printer.Print("#include <vector>\n");
   header_printer.Print("#include <string>\n");
-  header_printer.Print("#include <type_traits>\n");
-  header_printer.Print("#include \"perfetto/base/build_config.h\"\n\n");
+  header_printer.Print("#include <type_traits>\n\n");
+  header_printer.Print("#include \"perfetto/base/export.h\"\n\n");
 
   cpp_printer.Print(kHeader, "f", __FILE__, "p", src_proto);
-  cpp_printer.Print("#include \"$f$\"\n", "f", dst_header);
+  PERFETTO_CHECK(dst_header.find("include/") == 0);
+  cpp_printer.Print("#include \"$f$\"\n", "f",
+                    dst_header.substr(strlen("include/")));
 
   // Generate includes for translated types of dependencies.
   for (int i = 0; i < proto_file->dependency_count(); i++) {
     const FileDescriptor* dep = proto_file->dependency(i);
-    header_printer.Print("#include \"$f$\"\n", "f", GetHeaderPath(dep));
+    header_printer.Print("#include \"$f$\"\n", "f", GetIncludePath(dep));
   }
   header_printer.Print("\n");
 
@@ -261,18 +275,17 @@ void ProtoToCpp::Convert(const std::string& src_proto) {
 
 void ProtoToCpp::GenHeader(const Descriptor* msg, Printer* p) {
   PERFETTO_ILOG("GEN %s %s", msg->name().c_str(), msg->file()->name().c_str());
-  p->Print("\nclass $n$ {\n", "n", msg->name());
+  p->Print("\nclass PERFETTO_EXPORT $n$ {\n", "n", msg->name());
   p->Print(" public:\n");
   p->Indent();
   // Do a first pass to generate nested types.
   for (int i = 0; i < msg->field_count(); i++) {
     const FieldDescriptor* field = msg->field(i);
     if (field->has_default_value()) {
-      PERFETTO_ELOG(
+      PERFETTO_FATAL(
           "Error on field %s: Explicitly declared default values are not "
           "supported",
           field->name().c_str());
-      PERFETTO_CHECK(false);
     }
 
     if (field->type() == FieldDescriptor::TYPE_ENUM) {
@@ -294,8 +307,8 @@ void ProtoToCpp::GenHeader(const Descriptor* msg, Printer* p) {
   p->Print("~$n$();\n", "n", msg->name());
   p->Print("$n$($n$&&) noexcept;\n", "n", msg->name());
   p->Print("$n$& operator=($n$&&);\n", "n", msg->name());
-  p->Print("$n$(const $n$&) = delete;\n", "n", msg->name());
-  p->Print("$n$& operator=(const $n$&) = delete;\n", "n", msg->name());
+  p->Print("$n$(const $n$&);\n", "n", msg->name());
+  p->Print("$n$& operator=(const $n$&);\n", "n", msg->name());
   p->Print("\n");
 
   std::string proto_type = GetFwdDeclType(msg, true);
@@ -316,6 +329,12 @@ void ProtoToCpp::GenHeader(const Descriptor* msg, Printer* p) {
       } else {
         p->Print("void set_$n$($t$ value) { $n$_ = value; }\n", "t",
                  GetCppType(field, true), "n", field->lowercase_name());
+        if (field->type() == FieldDescriptor::TYPE_BYTES) {
+          p->Print(
+              "void set_$n$(const void* p, size_t s) { "
+              "$n$_.assign(reinterpret_cast<const char*>(p), s); }\n",
+              "n", field->lowercase_name());
+        }
       }
     } else {  // is_repeated()
       p->Print(
@@ -355,6 +374,10 @@ void ProtoToCpp::GenCpp(const Descriptor* msg, Printer* p, std::string prefix) {
   std::string full_name = prefix + msg->name();
   p->Print("$f$::$n$() = default;\n", "f", full_name, "n", msg->name());
   p->Print("$f$::~$n$() = default;\n", "f", full_name, "n", msg->name());
+  p->Print("$f$::$n$(const $f$&) = default;\n", "f", full_name, "n",
+           msg->name());
+  p->Print("$f$& $f$::operator=(const $f$&) = default;\n", "f", full_name, "n",
+           msg->name());
   p->Print("$f$::$n$($f$&&) noexcept = default;\n", "f", full_name, "n",
            msg->name());
   p->Print("$f$& $f$::operator=($f$&&) = default;\n", "f", full_name, "n",
@@ -425,16 +448,17 @@ void ProtoToCpp::GenCpp(const Descriptor* msg, Printer* p, std::string prefix) {
       }
     } else {  // is_repeated()
       p->Print("for (const auto& it : $n$_) {\n", "n", field->name());
-      p->Print("  auto* entry = proto->add_$n$();\n", "n", field->name());
       if (field->type() == FieldDescriptor::TYPE_MESSAGE) {
+        p->Print("  auto* entry = proto->add_$n$();\n", "n", field->name());
         p->Print("  it.ToProto(entry);\n");
       } else {
+        p->Print(
+            "  proto->add_$n$(static_cast<decltype(proto->$n$(0))>(it));\n",
+            "n", field->name());
         p->Print(
             "static_assert(sizeof(it) == sizeof(proto->$n$(0)), \"size "
             "mismatch\");\n",
             "n", field->name());
-        p->Print("  *entry = static_cast<decltype(proto->$n$(0))>(it);\n", "n",
-                 field->name());
       }
       p->Print("}\n");
     }
@@ -449,17 +473,20 @@ void ProtoToCpp::GenCpp(const Descriptor* msg, Printer* p, std::string prefix) {
 
     if (field->type() == FieldDescriptor::TYPE_MESSAGE &&
         field->message_type()->file() == msg->file()) {
-      GenCpp(field->message_type(), p, msg->name() + "::");
+      std::string child_prefix = prefix + msg->name() + "::";
+      GenCpp(field->message_type(), p, child_prefix);
     }
   }
 }
 
 int main(int argc, char** argv) {
-  if (argc <= 3) {
-    PERFETTO_ELOG("Usage: %s source.proto dir/for/header dir/for/cc", argv[0]);
+  if (argc <= 4) {
+    PERFETTO_ELOG(
+        "Usage: %s source.proto dir/for/header dir/for/cc include/path",
+        argv[0]);
     return 1;
   }
-  ProtoToCpp proto_to_cpp(argv[2], argv[3]);
+  ProtoToCpp proto_to_cpp(argv[2], argv[3], argv[4]);
   proto_to_cpp.Convert(argv[1]);
   return 0;
 }

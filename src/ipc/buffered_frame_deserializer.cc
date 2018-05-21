@@ -17,7 +17,6 @@
 #include "src/ipc/buffered_frame_deserializer.h"
 
 #include <inttypes.h>
-#include <sys/mman.h>
 
 #include <algorithm>
 #include <type_traits>
@@ -33,11 +32,6 @@ namespace perfetto {
 namespace ipc {
 
 namespace {
-constexpr size_t kPageSize = 4096;
-
-// Size of the PROT_NONE guard region, adjactent to the end of the buffer.
-// It's a safety net to spot any out-of-bounds writes early.
-constexpr size_t kGuardRegionSize = kPageSize;
 
 // The header is just the number of bytes of the Frame protobuf message.
 constexpr size_t kHeaderSize = sizeof(uint32_t);
@@ -45,16 +39,11 @@ constexpr size_t kHeaderSize = sizeof(uint32_t);
 
 BufferedFrameDeserializer::BufferedFrameDeserializer(size_t max_capacity)
     : capacity_(max_capacity) {
-  PERFETTO_CHECK(max_capacity % kPageSize == 0);
-  PERFETTO_CHECK(max_capacity > kPageSize);
+  PERFETTO_CHECK(max_capacity % base::kPageSize == 0);
+  PERFETTO_CHECK(max_capacity > base::kPageSize);
 }
 
-BufferedFrameDeserializer::~BufferedFrameDeserializer() {
-  if (!buf_)
-    return;
-  int res = munmap(buf_, capacity_ + kGuardRegionSize);
-  PERFETTO_DCHECK(res == 0);
-}
+BufferedFrameDeserializer::~BufferedFrameDeserializer() = default;
 
 BufferedFrameDeserializer::ReceiveBuffer
 BufferedFrameDeserializer::BeginReceive() {
@@ -63,24 +52,16 @@ BufferedFrameDeserializer::BeginReceive() {
   // automatically give us physical pages back as soon as we page-fault on them.
   if (!buf_) {
     PERFETTO_DCHECK(size_ == 0);
-    buf_ = reinterpret_cast<char*>(mmap(nullptr, capacity_ + kGuardRegionSize,
-                                        PROT_READ | PROT_WRITE,
-                                        MAP_ANONYMOUS | MAP_PRIVATE, 0, 0));
-    PERFETTO_CHECK(buf_ != MAP_FAILED);
+    buf_ = base::PageAllocator::Allocate(capacity_);
 
-    // Surely we are going to use at least the first page. There is very little
-    // point in madvising that as well and immedately after telling the kernel
-    // that we want it back (via recv()).
-    int res = madvise(buf_ + kPageSize,
-                      capacity_ + kGuardRegionSize - kPageSize, MADV_DONTNEED);
-    PERFETTO_DCHECK(res == 0);
-
-    res = mprotect(buf_ + capacity_, kGuardRegionSize, PROT_NONE);
-    PERFETTO_DCHECK(res == 0);
+    // Surely we are going to use at least the first page, but we may not need
+    // the rest for a bit.
+    base::PageAllocator::AdviseDontNeed(buf() + base::kPageSize,
+                                        capacity_ - base::kPageSize);
   }
 
   PERFETTO_CHECK(capacity_ > size_);
-  return ReceiveBuffer{buf_ + size_, capacity_ - size_};
+  return ReceiveBuffer{buf() + size_, capacity_ - size_};
 }
 
 bool BufferedFrameDeserializer::EndReceive(size_t recv_size) {
@@ -114,7 +95,7 @@ bool BufferedFrameDeserializer::EndReceive(size_t recv_size) {
 
     // Read the header into |payload_size|.
     uint32_t payload_size = 0;
-    const char* rd_ptr = buf_ + consumed_size;
+    const char* rd_ptr = buf() + consumed_size;
     memcpy(base::AssumeLittleEndian(&payload_size), rd_ptr, kHeaderSize);
 
     // Saturate the |payload_size| to prevent overflows. The > capacity_ check
@@ -151,23 +132,22 @@ bool BufferedFrameDeserializer::EndReceive(size_t recv_size) {
       // Case D. We consumed some frames but there is a leftover at the end of
       // the buffer. Shift out the consumed bytes, so that on the next round
       // |buf_| starts with the header of the next unconsumed frame.
-      const char* move_begin = buf_ + consumed_size;
-      PERFETTO_CHECK(move_begin > buf_);
-      PERFETTO_CHECK(move_begin + size_ <= buf_ + capacity_);
-      memmove(buf_, move_begin, size_);
+      const char* move_begin = buf() + consumed_size;
+      PERFETTO_CHECK(move_begin > buf());
+      PERFETTO_CHECK(move_begin + size_ <= buf() + capacity_);
+      memmove(buf(), move_begin, size_);
     }
     // If we just finished decoding a large frame that used more than one page,
     // release the extra memory in the buffer. Large frames should be quite
     // rare.
-    if (consumed_size > kPageSize) {
-      size_t size_rounded_up = (size_ / kPageSize + 1) * kPageSize;
+    if (consumed_size > base::kPageSize) {
+      size_t size_rounded_up = (size_ / base::kPageSize + 1) * base::kPageSize;
       if (size_rounded_up < capacity_) {
-        char* madvise_begin = buf_ + size_rounded_up;
+        char* madvise_begin = buf() + size_rounded_up;
         const size_t madvise_size = capacity_ - size_rounded_up;
-        PERFETTO_CHECK(madvise_begin > buf_ + size_);
-        PERFETTO_CHECK(madvise_begin + madvise_size <= buf_ + capacity_);
-        int res = madvise(madvise_begin, madvise_size, MADV_DONTNEED);
-        PERFETTO_DCHECK(res == 0);
+        PERFETTO_CHECK(madvise_begin > buf() + size_);
+        PERFETTO_CHECK(madvise_begin + madvise_size <= buf() + capacity_);
+        base::PageAllocator::AdviseDontNeed(madvise_begin, madvise_size);
       }
     }
   }
@@ -201,6 +181,8 @@ std::string BufferedFrameDeserializer::Serialize(const Frame& frame) {
   frame.AppendToString(&buf);
   const uint32_t payload_size = static_cast<uint32_t>(buf.size() - kHeaderSize);
   PERFETTO_DCHECK(payload_size == static_cast<uint32_t>(frame.GetCachedSize()));
+  // Don't send messages larger than what the receiver can handle.
+  PERFETTO_DCHECK(kHeaderSize + payload_size <= kIPCBufferSize);
   char header[kHeaderSize];
   memcpy(header, base::AssumeLittleEndian(&payload_size), kHeaderSize);
   buf.replace(0, kHeaderSize, header, kHeaderSize);
