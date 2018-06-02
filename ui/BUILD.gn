@@ -16,7 +16,7 @@ import("../gn/perfetto.gni")
 import("../gn/wasm.gni")
 import("../protos/perfetto/trace_processor/proto_files.gni")
 
-ui_dist_dir = "$root_build_dir/ui"
+ui_dir = "$root_build_dir/ui"
 nodejs_root = "../buildtools/nodejs"
 nodejs_bin = rebase_path("$nodejs_root/bin", root_build_dir)
 
@@ -25,9 +25,10 @@ nodejs_bin = rebase_path("$nodejs_root/bin", root_build_dir)
 # +----------------------------------------------------------------------------+
 group("ui") {
   deps = [
-    ":bundle",
-    ":index",
-    ":wasm",
+    ":index_release",
+    ":main_bundle_release",
+    ":wasm_release",
+    ":worker_bundle_release",
   ]
 }
 
@@ -49,11 +50,18 @@ template("node_bin") {
     }
     script = "../gn/standalone/build_tool_wrapper.py"
     _node_cmd = invoker.node_cmd
-    args = [
-             "--path=$nodejs_bin",
-             "node",
-             rebase_path("node_modules/.bin/$_node_cmd", root_build_dir),
-           ] + invoker.args
+    args = []
+    if (defined(invoker.suppress_stdout) && invoker.suppress_stdout) {
+      args += [ "--suppress_stdout" ]
+    }
+    if (defined(invoker.suppress_stderr) && invoker.suppress_stderr) {
+      args += [ "--suppress_stderr" ]
+    }
+    args += [
+              "--path=$nodejs_bin",
+              "node",
+              rebase_path("node_modules/.bin/$_node_cmd", root_build_dir),
+            ] + invoker.args
   }
 }
 
@@ -63,29 +71,61 @@ template("node_bin") {
 
 # Bundle together all js sources into a bundle.js file, that will ultimately be
 # included by the .html files.
-node_bin("bundle") {
+
+node_bin("main_bundle") {
   deps = [
     ":transpile_all_ts",
   ]
-  node_cmd = "browserify"
+  node_cmd = "rollup"
   inputs = [
-    "$ui_dist_dir/main.js",
+    "$target_out_dir/main.js",
+    "rollup.config.js",
   ]
   outputs = [
-    "$ui_dist_dir/bundle.js",
+    "$target_out_dir/main_bundle.js",
   ]
   args = [
+    "-c",
+    rebase_path("rollup.config.js", root_build_dir),
     rebase_path(inputs[0], root_build_dir),
-    "-d",
     "-o",
     rebase_path(outputs[0], root_build_dir),
+    "-f",
+    "iife",
+    "-m",
+    "--silent",
+  ]
+}
+
+node_bin("worker_bundle") {
+  deps = [
+    ":transpile_all_ts",
+  ]
+  node_cmd = "rollup"
+  inputs = [
+    "$target_out_dir/worker.js",
+    "rollup.config.js",
+  ]
+  outputs = [
+    "$target_out_dir/worker_bundle.js",
+  ]
+  args = [
+    "-c",
+    rebase_path("rollup.config.js", root_build_dir),
+    rebase_path(inputs[0], root_build_dir),
+    "-o",
+    rebase_path(outputs[0], root_build_dir),
+    "-f",
+    "iife",
+    "-m",
+    "--silent",
   ]
 }
 
 # +----------------------------------------------------------------------------+
 # | Protobuf: gen rules to create .js and .d.ts files from protos.             |
 # +----------------------------------------------------------------------------+
-proto_gen_dir = "$ui_dist_dir/gen"
+proto_gen_dir = "$target_out_dir/gen"
 
 node_bin("protos_to_js") {
   inputs = []
@@ -138,6 +178,7 @@ node_bin("protos_to_ts") {
 node_bin("transpile_all_ts") {
   sources = [
     "src/main.ts",
+    "src/worker.ts",
   ]
   deps = [
     ":dist_symlink",
@@ -145,7 +186,8 @@ node_bin("transpile_all_ts") {
   ]
   inputs = sources + [ "tsconfig.json" ]
   outputs = [
-    "$ui_dist_dir/main.js",
+    "$target_out_dir/main.js",
+    "$target_out_dir/worker.js",
   ]
 
   # Find all *.ts files and pass them as input triggers. This does NOT affect
@@ -167,23 +209,61 @@ node_bin("transpile_all_ts") {
     "--project",
     rebase_path(".", root_build_dir),
     "--outDir",
-    rebase_path(ui_dist_dir, root_build_dir),
+    rebase_path(target_out_dir, root_build_dir),
   ]
 }
 
 # +----------------------------------------------------------------------------+
-# | Copy rules: copy assets into the dist directory.                           |
+# | Copy rules: create the final output directory.                             |
 # +----------------------------------------------------------------------------+
-copy("index") {
+copy("index_release") {
   sources = [
     "index.html",
   ]
   outputs = [
-    "$ui_dist_dir/index.html",
+    "$ui_dir/index.html",
   ]
 }
 
-copy("wasm") {
+node_bin("main_bundle_release") {
+  deps = [
+    ":main_bundle",
+  ]
+  inputs = [
+    "$target_out_dir/main_bundle.js",
+  ]
+  outputs = [
+    "$ui_dir/main_bundle.js",
+  ]
+  node_cmd = "sorcery"
+  args = [
+    "-i",
+    rebase_path(inputs[0], root_build_dir),
+    "-o",
+    rebase_path(outputs[0], root_build_dir),
+  ]
+}
+
+node_bin("worker_bundle_release") {
+  deps = [
+    ":worker_bundle",
+  ]
+  inputs = [
+    "$target_out_dir/worker_bundle.js",
+  ]
+  outputs = [
+    "$ui_dir/worker_bundle.js",
+  ]
+  node_cmd = "sorcery"
+  args = [
+    "-i",
+    rebase_path(inputs[0], root_build_dir),
+    "-o",
+    rebase_path(outputs[0], root_build_dir),
+  ]
+}
+
+copy("wasm_release") {
   deps = [
     "//src/trace_processor:trace_processor.js($wasm_toolchain)",
     "//src/trace_processor:trace_processor.wasm($wasm_toolchain)",
@@ -193,7 +273,7 @@ copy("wasm") {
     "$root_build_dir/wasm/trace_processor.wasm",
   ]
   outputs = [
-    "$ui_dist_dir/wasm/{{source_file_part}}",
+    "$ui_dir/wasm/{{source_file_part}}",
   ]
 }
 
@@ -215,30 +295,31 @@ action("check_node_exists") {
 }
 
 # Creates a symlink from out/xxx/ui/node_modules -> ../../../ui/node_modules.
-# This allows to run browserify and other node tools from the out/xxx directory.
+# This allows to run rollup and other node tools from the out/xxx directory.
 action("node_modules_symlink") {
   deps = [
     ":check_node_exists",
   ]
-  inputs = [
-    "node_modules",
-  ]
-  outputs = [
-    "$ui_dist_dir/node_modules",
-  ]
+
   script = "../gn/standalone/build_tool_wrapper.py"
+  stamp_file = "$target_out_dir/.$target_name.stamp"
   args = [
+    "--stamp",
+    rebase_path(stamp_file, root_build_dir),
     "/bin/ln",
     "-fns",
-    rebase_path(inputs[0], ui_dist_dir),
-    rebase_path(outputs[0], root_build_dir),
+    rebase_path("node_modules", target_out_dir),
+    rebase_path("$target_out_dir/node_modules", root_build_dir),
+  ]
+  outputs = [
+    stamp_file,
   ]
 }
 
 # Runs npm install.
-action("node_modules") {
+action("node_modules_install") {
   script = "../gn/standalone/build_tool_wrapper.py"
-  stamp_file = "$ui_dist_dir/.$target_name.stamp"
+  stamp_file = "$target_out_dir/.$target_name.stamp"
   args = [
     "--chdir",
     rebase_path(".", root_build_dir),
@@ -260,7 +341,11 @@ action("node_modules") {
   outputs = [
     stamp_file,
   ]
+}
+
+group("node_modules") {
   deps = [
+    ":node_modules_install",
     ":node_modules_symlink",
   ]
 }
@@ -271,13 +356,13 @@ action("node_modules") {
 # outDir to "./dist" and create a symlink on the first build.
 action("dist_symlink") {
   script = "../gn/standalone/build_tool_wrapper.py"
-  stamp_file = "$ui_dist_dir/.$target_name.stamp"
+  stamp_file = "$target_out_dir/.$target_name.stamp"
   args = [
     "--stamp",
     rebase_path(stamp_file, root_build_dir),
     "/bin/ln",
     "-fns",
-    rebase_path(ui_dist_dir, "."),
+    rebase_path(target_out_dir, "."),
     rebase_path("dist", root_build_dir),
   ]
   inputs = [
