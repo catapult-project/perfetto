@@ -14,30 +14,27 @@
  * limitations under the License.
  */
 
-import * as m from 'mithril';
-import Frontend from './frontend';
+const fs = require('fs');
+const path = require('path');
+const NodeEnvironment = require('jest-environment-node');
+const puppeteer = require('puppeteer');
 
-console.log('Hello from the main thread!');
-
-function createController() {
-  const worker = new Worker("worker_bundle.js");
-  worker.onerror = e => {
-    console.error(e);
-  };
-}
-
-function createFrontend() {
-  const root = document.getElementById('frontend');
-  if (!root) {
-    console.error('root element not found.');
-    return;
+module.exports = class HeadlessEnvironment extends NodeEnvironment {
+  constructor(config) {
+    super(config);
   }
-  m.mount(root, Frontend);
-}
 
-function main() {
-  createController();
-  createFrontend();
-}
+  async setup() {
+    await super.setup();
+    this.global.__BROWSER__ = await puppeteer.launch();
+  }
 
-main();
+  async teardown() {
+    await this.global.__BROWSER__.close();
+    await super.teardown();
+  }
+
+  runScript(script) {
+    return super.runScript(script);
+  }
+}
