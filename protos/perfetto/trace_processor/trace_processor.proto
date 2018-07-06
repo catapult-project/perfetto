@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-import * as m from 'mithril';
-import {trackShell} from './track_shell';
+syntax = "proto2";
+option optimize_for = LITE_RUNTIME;
 
-export const track = {
-  view({attrs}) {
-    return m(
-        '.track',
-        {style: {position: 'absolute', top: 0, left: 0, width: '100%'}},
-        m(trackShell, attrs));
-  }
-} as m.Comp<{name: string}>;
+import "perfetto/trace_processor/raw_query.proto";
+
+package perfetto.protos;
+
+service TraceProcessor {
+  rpc RawQuery(RawQueryArgs) returns (RawQueryResult) {}
+}

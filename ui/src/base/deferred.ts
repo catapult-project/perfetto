@@ -12,12 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {TraceConfig} from './protos';
+// tslint:disable:no-any
 
-test('round trip config proto', () => {
-  const input = TraceConfig.create({
-    durationMs: 42,
-  });
-  const output = TraceConfig.decode(TraceConfig.encode(input).finish());
-  expect(output.durationMs).toBe(42);
-});
+/**
+ * Promise wrapper with exposed resolve and reject callbacks.
+ */
+export interface Deferred<T> extends Promise<T> {
+  readonly resolve: (value?: T|PromiseLike<T>) => void;
+  readonly reject: (reason?: any) => void;
+}
+
+/**
+ * Create a promise with exposed resolve and reject callbacks.
+ */
+export function defer<T>(): Deferred<T> {
+  let resolve = null as any;
+  let reject = null as any;
+  const p = new Promise((res, rej) => [resolve, reject] = [res, rej]);
+  return Object.assign(p, {resolve, reject}) as any;
+}
