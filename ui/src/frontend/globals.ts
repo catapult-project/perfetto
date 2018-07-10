@@ -12,4 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export class CpuSlicesTrack {}
+import {Global} from '../base/global';
+import {State} from '../common/state';
+
+/**
+ * Global accessor for the state in the frontend.
+ */
+export const gState = new Global<State>();

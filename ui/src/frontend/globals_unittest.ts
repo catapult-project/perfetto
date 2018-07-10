@@ -12,4 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export class CpuSlicesTrack {}
+import {gState} from './globals';
+
+beforeEach(() => {
+  gState.resetForTesting();
+});
+
+afterEach(() => {
+  gState.resetForTesting();
+});
+
+test('gState', () => {
+  gState.set({i: 1});
+  expect(gState.get().i).toEqual(1);
+});

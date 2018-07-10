@@ -12,4 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export class CpuSlicesTrack {}
+export interface State { i: number; }
+
+export function createEmptyState(): State {
+  return {
+    i: 0,
+  };
+}

@@ -12,4 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export class CpuSlicesTrack {}
+import {createEmptyState, State} from './state';
+
+test('createEmptyState', () => {
+  const state: State = createEmptyState();
+  expect(state.i).toEqual(0);
+});

@@ -1,27 +1,27 @@
-/*
- * Copyright (C) 2018 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Copyright (C) 2018 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 import * as m from 'mithril';
 
+import {createEmptyState} from './common/state';
 import {Engine} from './engine';
 import {
   warmupWasmEngineWorker,
-  WasmEngineProxy,
+  WasmEngineProxy
 } from './engine/wasm_engine_proxy';
-import {frontend} from './frontend';
+import {gState} from './frontend/globals';
+import {HomePage} from './frontend/home_page';
 
 console.log('Hello from the main thread!');
 
@@ -32,25 +32,11 @@ function createController() {
   };
 }
 
-function createFrontend() {
-  const root = document.getElementById('frontend');
-  if (!root) {
-    console.error('root element not found.');
-    return;
-  }
-  const rect = root.getBoundingClientRect();
-
-  m.render(root, m(frontend, {
-             width: rect.width,
-             height: rect.height,
-           }));
-}
-
 function main(input: Element, button: Element) {
+  gState.set(createEmptyState());
   createController();
-  createFrontend();
-
   warmupWasmEngineWorker();
+
   // tslint:disable-next-line:no-any
   input.addEventListener('change', (e: any) => {
     const blob: Blob = e.target.files.item(0);
@@ -64,7 +50,16 @@ function main(input: Element, button: Element) {
           .then(result => console.log(result));
     });
   });
+
+  const root = document.getElementById('frontend');
+  if (!root) {
+    console.error('root element not found.');
+    return;
+  }
+
+  m.mount(root, HomePage);
 }
+
 const input = document.querySelector('#trace');
 const button = document.querySelector('#query');
 if (input && button) {

@@ -12,4 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export class CpuSlicesTrack {}
+import * as m from 'mithril';
+import {Frontend} from './';
+
+export const HomePage = {
+  view() {
+    return m(Frontend, {width: 1000, height: 300});
+  }
+} as m.Component;
