@@ -14,15 +14,15 @@
 
 import * as protobufjs from 'protobufjs/light';
 
-import {TraceProcessor} from '../protos';
+import {TraceProcessor} from '../common/protos';
+import {WasmBridgeRequest, WasmBridgeResponse} from '../engine/wasm_bridge';
 
-import {Engine} from './index';
-import {WasmBridgeRequest, WasmBridgeResponse} from './wasm_bridge';
+import {Engine} from './engine';
 
 let gWarmWasmWorker: null|Worker = null;
 
 function createNewWasmEngineWorker(): Worker {
-  return new Worker('wasm_bundle.js');
+  return new Worker('engine_bundle.js');
 }
 
 function createWasmEngineWorker(): Worker {

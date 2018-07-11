@@ -12,4 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-console.log('Hello from the worker!');
+import * as m from 'mithril';
+
+const Nav = {
+  view() {
+    return m(
+        'ul',
+        m('li', m('a[href=/]', {oncreate: m.route.link}, 'Home')),
+        m('li', m('a[href=/viewer]', {oncreate: m.route.link}, 'Viewer')), );
+  }
+} as m.Component;
+
+/**
+ * Wrap component with common UI elements (nav bar etc).
+ */
+export function createPage(component: m.Component): m.Component {
+  return {
+    view() {
+      return [
+        m(Nav),
+        m(component),
+      ];
+    },
+  };
+}
