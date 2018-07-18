@@ -12,28 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as m from 'mithril';
+export type Call = [string, any[], Dingus];
 
-const Nav = {
-  view() {
-    return m(
-        'ul',
-        {style: {height: '100px', margin: '0', padding: '20px'}},
-        m('li', m('a[href=/]', {oncreate: m.route.link}, 'Home')),
-        m('li', m('a[href=/viewer]', {oncreate: m.route.link}, 'Viewer')), );
-  }
-} as m.Component;
+export interface Dingus { calls: Call[]; }
 
-/**
- * Wrap component with common UI elements (nav bar etc).
- */
-export function createPage(component: m.Component): m.Component {
-  return {
-    view() {
-      return [
-        m(Nav),
-        m(component),
-      ];
-    },
-  };
-}
+export type DingusAttrs<T> = {
+  [P in keyof T]: Dingus & DingusAttrs<T[P]>& MaybeCallable<T[P]>;
+};
+
+type F = (...args: any[]) => any;
+
+type Callable<T extends F> = {
+  (...args: any[]):
+      Dingus&DingusAttrs<ReturnType<T>>&MaybeCallable<ReturnType<T>>;
+};
+
+type MaybeCallable<T> = T extends F ? Callable<T>: {};
+
+export function dingus<T>(name?: string): Dingus&DingusAttrs<T>&
+    MaybeCallable<T>;

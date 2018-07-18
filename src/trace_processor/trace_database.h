@@ -23,8 +23,10 @@
 #include "perfetto/base/task_runner.h"
 #include "perfetto/base/weak_ptr.h"
 #include "perfetto/trace_processor/raw_query.pb.h"
+#include "src/trace_processor/process_table.h"
 #include "src/trace_processor/sched_slice_table.h"
 #include "src/trace_processor/scoped_db.h"
+#include "src/trace_processor/thread_table.h"
 #include "src/trace_processor/trace_parser.h"
 #include "src/trace_processor/trace_storage.h"
 
