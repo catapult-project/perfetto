@@ -1,3 +1,4 @@
+
 // Copyright (C) 2018 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,28 +13,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import * as m from 'mithril';
+
+import {createPage} from './pages';
+import {ScrollingTrackDisplay} from './scrolling_track_display';
+import {TimeScale} from './time_scale';
+
 /**
- * A plain js object, holding objects of type |Class| keyed by string id.
- * We use this instead of using |Map| object since it is simpler and faster to
- * serialize for use in postMessage.
+ * Top-most level component for the viewer page. Holds tracks, brush timeline,
+ * panels, and everything else that's part of the main trace viewer page.
  */
-export interface ObjectById<Class extends{id: string}> { [id: string]: Class; }
+const TraceViewer = {
+  view() {
+    const timeScale = new TimeScale([0, 1000000], [0, 1000]);
+    return m(ScrollingTrackDisplay, {
+      timeScale,
+    });
+  },
+} as m.Component<{}, {}>;
 
-export interface State {
-  i: number;
-  tracks: ObjectById<TrackState>;
-}
-
-export interface TrackState {
-  id: string;
-  type: string;
-  height: number;
-  name: string;
-}
-
-export function createEmptyState(): State {
-  return {
-    i: 0,
-    tracks: {},
-  };
-}
+export const ViewerPage = createPage({
+  view() {
+    return m(TraceViewer);
+  }
+});
