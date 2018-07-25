@@ -1,16 +1,22 @@
 {
-  // All other .ts files should be pulled rescursively
-  "include": [ "./main.ts", "./worker.ts" ],
-  "exclude": [ "./node_modules/" ],
+  "include": [ "src/" ],
+  "exclude": [
+    "./node_modules/",
+    "./src/gen/"
+  ],
   "compilerOptions": {
+    "lib": [
+      "dom",                               // Need to be explicitly mentioned now since we're overriding default included libs.
+      "es2018",                            // Need this to use Object.values.
+    ],
     "target": "es6",
     "module": "commonjs",
     "moduleResolution": "node",
     // Lints and checks.
     "allowJs": true,
-    "checkJs": true,
+    "checkJs": false,                      // TODO(hjd): Enable after dingus moved out.t
     "declaration": false,                  // Generates corresponding '.d.ts' file.
-    "sourceMap": false,                    // Generates corresponding '.map' file.
+    "sourceMap": true,                     // Generates corresponding '.map' file.
     "outDir": "./dist",                    // Redirect output structure to the directory.
     "removeComments": false,               // Do not emit comments to output.
     "importHelpers": true,                 // Import emit helpers from 'tslib'.
