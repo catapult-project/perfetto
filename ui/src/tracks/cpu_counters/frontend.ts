@@ -13,12 +13,13 @@
 // limitations under the License.
 
 import {TrackState} from '../../common/state';
-import {TrackImpl} from '../../frontend/track_impl';
+import {Track} from '../../frontend/track';
 import {trackRegistry} from '../../frontend/track_registry';
 import {VirtualCanvasContext} from '../../frontend/virtual_canvas_context';
+import {TRACK_KIND} from './common';
 
-class CpuCounterTrack extends TrackImpl {
-  static readonly type = 'CpuCounterTrack';
+class CpuCounterTrack extends Track {
+  static readonly kind = TRACK_KIND;
   static create(trackState: TrackState): CpuCounterTrack {
     return new CpuCounterTrack(trackState);
   }
@@ -27,12 +28,12 @@ class CpuCounterTrack extends TrackImpl {
     super(trackState);
   }
 
-  draw(vCtx: VirtualCanvasContext, width: number): void {
+  renderCanvas(vCtx: VirtualCanvasContext, width: number): void {
     vCtx.fillStyle = '#eee';
     vCtx.fillRect(0, 0, width, this.trackState.height);
     vCtx.font = '16px Arial';
     vCtx.fillStyle = '#000';
-    vCtx.fillText('Drawing ' + CpuCounterTrack.name, Math.round(width / 2), 20);
+    vCtx.fillText('Drawing ' + CpuCounterTrack.kind, Math.round(width / 2), 20);
   }
 }
 

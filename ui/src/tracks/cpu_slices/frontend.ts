@@ -13,14 +13,15 @@
 // limitations under the License.
 
 import {TrackState} from '../../common/state';
-import {GridlineHelper} from '../../frontend/gridline_helper';
+import {drawGridLines} from '../../frontend/gridline_helper';
 import {Milliseconds, TimeScale} from '../../frontend/time_scale';
-import {TrackImpl} from '../../frontend/track_impl';
+import {Track} from '../../frontend/track';
 import {trackRegistry} from '../../frontend/track_registry';
 import {VirtualCanvasContext} from '../../frontend/virtual_canvas_context';
+import {TRACK_KIND} from './common';
 
-class CpuSliceTrack extends TrackImpl {
-  static readonly type = 'CpuSliceTrack';
+class CpuSliceTrack extends Track {
+  static readonly kind = TRACK_KIND;
   static create(trackState: TrackState): CpuSliceTrack {
     return new CpuSliceTrack(trackState);
   }
@@ -29,27 +30,46 @@ class CpuSliceTrack extends TrackImpl {
     super(trackState);
   }
 
-  draw(vCtx: VirtualCanvasContext, width: number, timeScale: TimeScale): void {
+  renderCanvas(
+      vCtx: VirtualCanvasContext, width: number, timeScale: TimeScale,
+      visibleWindowMs: {start: number, end: number}): void {
     const sliceStart: Milliseconds = 100000;
     const sliceEnd: Milliseconds = 400000;
 
     const rectStart = timeScale.msToPx(sliceStart);
     const rectWidth = timeScale.msToPx(sliceEnd) - rectStart;
-    const shownStart = rectStart > width ? width : rectStart;
-    const shownWidth =
-        rectWidth + (rectStart as number) > width ? width : rectWidth;
+
+    let shownStart = rectStart as number;
+    let shownWidth = rectWidth;
+
+    if (shownStart < 0) {
+      shownWidth += shownStart;
+      shownStart = 0;
+    }
+    if (shownStart > width) {
+      shownStart = width;
+      shownWidth = 0;
+    }
+    if (shownStart + shownWidth > width) {
+      shownWidth = width - shownStart;
+    }
 
     vCtx.fillStyle = '#ccc';
     vCtx.fillRect(0, 0, width, 73);
 
-    GridlineHelper.drawGridLines(vCtx, timeScale, [0, 1000000], width, 73);
+    drawGridLines(
+        vCtx,
+        timeScale,
+        [visibleWindowMs.start, visibleWindowMs.end],
+        width,
+        73);
 
     vCtx.fillStyle = '#c00';
     vCtx.fillRect(shownStart, 40, shownWidth, 30);
 
     vCtx.font = '16px Arial';
     vCtx.fillStyle = '#000';
-    vCtx.fillText(this.trackState.name + ' rendered by canvas', shownStart, 60);
+    vCtx.fillText(this.trackState.kind + ' rendered by canvas', shownStart, 60);
   }
 }
 

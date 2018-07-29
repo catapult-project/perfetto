@@ -17,11 +17,11 @@ import '../tracks/all_tracks';
 import * as m from 'mithril';
 
 import {forwardRemoteCalls, Remote} from '../base/remote';
-import {Action} from '../common/actions';
 import {ObjectById, TrackState} from '../common/state';
 import {State} from '../common/state';
 import {warmupWasmEngineWorker} from '../controller/wasm_engine_proxy';
 
+import {ControllerProxy} from './controller_proxy';
 import {globals} from './globals';
 import {HomePage} from './home_page';
 import {QueryPage} from './query_page';
@@ -46,27 +46,6 @@ class FrontendApi {
   }
 }
 
-/**
- * Proxy for the Controller worker.
- * This allows us to send strongly typed messages to the contoller.
- * TODO(hjd): Remove the boiler plate.
- */
-class ControllerProxy {
-  private readonly remote: Remote;
-
-  constructor(remote: Remote) {
-    this.remote = remote;
-  }
-
-  initAndGetState(port: MessagePort): Promise<void> {
-    return this.remote.send<void>('initAndGetState', [port], [port]);
-  }
-
-  doAction(action: Action): Promise<void> {
-    return this.remote.send<void>('doAction', [action]);
-  }
-}
-
 function getDemoTracks(): ObjectById<TrackState> {
   const tracks: {[key: string]: TrackState;} = {};
   for (let i = 0; i < 10; i++) {
@@ -82,7 +61,7 @@ function getDemoTracks(): ObjectById<TrackState> {
       id: i.toString(),
       type: trackType,
       height: 100,
-      name: `Track ${i}`,
+      kind: `Track ${i}`,
     };
   }
   return tracks;
@@ -96,8 +75,8 @@ async function main() {
   await controller.initAndGetState(channel.port1);
   forwardRemoteCalls(channel.port2, new FrontendApi());
 
-  // tslint:disable-next-line deprecation
-  globals.dispatch = controller.doAction.bind(controller);
+  globals.controller = controller;
+  globals.dispatch = controller.dispatch.bind(controller);
   warmupWasmEngineWorker();
 
   const root = document.getElementById('frontend');
