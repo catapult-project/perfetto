@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import '../tracks/all_tracks';
+import '../tracks/all_frontend';
 
 import * as m from 'mithril';
 
@@ -79,7 +79,7 @@ async function main() {
   globals.dispatch = controller.dispatch.bind(controller);
   warmupWasmEngineWorker();
 
-  const root = document.getElementById('frontend');
+  const root = document.querySelector('main');
   if (!root) {
     console.error('root element not found.');
     return;
