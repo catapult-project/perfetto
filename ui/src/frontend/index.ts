@@ -12,16 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import '../tracks/all_tracks';
+import '../tracks/all_frontend';
 
 import * as m from 'mithril';
 
 import {forwardRemoteCalls, Remote} from '../base/remote';
-import {Action} from '../common/actions';
-import {ObjectById, TrackState} from '../common/state';
 import {State} from '../common/state';
-import {warmupWasmEngineWorker} from '../controller/wasm_engine_proxy';
+import {
+  takeWasmEngineWorkerPort,
+  warmupWasmEngineWorker
+} from '../controller/wasm_engine_proxy';
 
+import {ControllerProxy} from './controller_proxy';
 import {globals} from './globals';
 import {HomePage} from './home_page';
 import {QueryPage} from './query_page';
@@ -42,65 +44,45 @@ function createController(): ControllerProxy {
 class FrontendApi {
   updateState(state: State) {
     globals.state = state;
-    m.redraw();
-  }
-}
-
-/**
- * Proxy for the Controller worker.
- * This allows us to send strongly typed messages to the contoller.
- * TODO(hjd): Remove the boiler plate.
- */
-class ControllerProxy {
-  private readonly remote: Remote;
-
-  constructor(remote: Remote) {
-    this.remote = remote;
+    this.redraw();
   }
 
-  initAndGetState(port: MessagePort): Promise<void> {
-    return this.remote.send<void>('initAndGetState', [port], [port]);
+  publishTrackData(id: string, data: {}) {
+    globals.trackDataStore.set(id, data);
+    this.redraw();
   }
 
-  doAction(action: Action): Promise<void> {
-    return this.remote.send<void>('doAction', [action]);
+  /**
+   * Creates a new trace processor wasm engine (backed by a worker running
+   * engine_bundle.js) and returns a MessagePort for talking to it.
+   * This indirection is due to workers not being able create workers in
+   * Chrome which is tracked at: crbug.com/31666
+   * TODO(hjd): Remove this once the fix has landed.
+   */
+  createWasmEnginePort(): MessagePort {
+    return takeWasmEngineWorkerPort();
   }
-}
 
-function getDemoTracks(): ObjectById<TrackState> {
-  const tracks: {[key: string]: TrackState;} = {};
-  for (let i = 0; i < 10; i++) {
-    let trackType;
-    // The track type strings here are temporary. They will be supplied by the
-    // controller side track implementation.
-    if (i % 2 === 0) {
-      trackType = 'CpuSliceTrack';
+  private redraw(): void {
+    if (globals.state.route && globals.state.route !== m.route.get()) {
+      m.route.set(globals.state.route);
     } else {
-      trackType = 'CpuCounterTrack';
+      m.redraw();
     }
-    tracks[i] = {
-      id: i.toString(),
-      type: trackType,
-      height: 100,
-      name: `Track ${i}`,
-    };
   }
-  return tracks;
 }
 
 async function main() {
-  globals.state = {i: 0, tracks: getDemoTracks()};
-
   const controller = createController();
   const channel = new MessageChannel();
-  await controller.initAndGetState(channel.port1);
   forwardRemoteCalls(channel.port2, new FrontendApi());
-
-  // tslint:disable-next-line deprecation
-  globals.dispatch = controller.doAction.bind(controller);
+  globals.controller = controller;
+  globals.state = await controller.initAndGetState(channel.port1);
+  globals.dispatch = controller.dispatch.bind(controller);
+  globals.trackDataStore = new Map<string, {}>();
   warmupWasmEngineWorker();
 
-  const root = document.getElementById('frontend');
+  const root = document.querySelector('main');
   if (!root) {
     console.error('root element not found.');
     return;
@@ -109,8 +91,23 @@ async function main() {
   m.route(root, '/', {
     '/': HomePage,
     '/viewer': ViewerPage,
-    '/query/:trace': QueryPage,
+    '/query/:engineId': {
+      onmatch(args) {
+        if (globals.state.engines[args.engineId]) {
+          return QueryPage;
+        }
+        // We only hit this case if the user reloads/navigates
+        // while on the query page.
+        m.route.set('/');
+        return undefined;
+      }
+    },
   });
+
+  // tslint:disable-next-line no-any
+  (window as any).m = m;
+  // tslint:disable-next-line no-any
+  (window as any).globals = globals;
 }
 
 main();

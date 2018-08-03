@@ -16,11 +16,10 @@ import * as m from 'mithril';
 
 import {CanvasController} from './canvas_controller';
 import {CanvasWrapper} from './canvas_wrapper';
-import {ChildVirtualContext} from './child_virtual_context';
 import {globals} from './globals';
 import {ScrollableContainer} from './scrollable_container';
 import {TimeScale} from './time_scale';
-import {Track} from './track';
+import {TrackComponent} from './track_component';
 
 /**
  * The primary component responsible for showing all the tracks.
@@ -50,27 +49,22 @@ export const ScrollingTrackDisplay = {
     window.removeEventListener('resize', this.onResize);
   },
   view({attrs}) {
-    const canvasTopOffset = this.canvasController.getCanvasTopOffset();
-    const ctx = this.canvasController.getContext();
+    const canvasTopOffset = this.canvasController.getCanvasYStart();
 
     this.canvasController.clear();
-    const tracks = globals.state.tracks;
-
-    const childTracks: m.Children[] = [];
 
     let trackYOffset = 0;
-    for (const trackState of Object.values(tracks)) {
-      childTracks.push(m(Track, {
-        trackContext: new ChildVirtualContext(ctx, {
-          y: trackYOffset,
-          x: 0,
-          width: this.width,
-          height: trackState.height,
-        }),
+    const childTracks: m.Children[] = [];
+
+    for (const id of globals.state.displayedTrackIds) {
+      const trackState = globals.state.tracks[id];
+      childTracks.push(m(TrackComponent, {
+        canvasController: this.canvasController,
         top: trackYOffset,
         width: this.width,
         timeScale: attrs.timeScale,
         trackState,
+        visibleWindowMs: attrs.visibleWindowMs
       }));
       trackYOffset += trackState.height;
     }
@@ -81,7 +75,7 @@ export const ScrollingTrackDisplay = {
           style: {
             position: 'relative',
             width: '100%',
-            height: 'calc(100% - 105px)',
+            height: 'calc(100% - 66px)',
             overflow: 'hidden'
           }
         },
@@ -101,9 +95,13 @@ export const ScrollingTrackDisplay = {
           }),
           ...childTracks));
   },
-} as m.Component<{timeScale: TimeScale}, {
-  canvasController: CanvasController,
-  width: number,
-  height: number,
-  onResize: () => void
-}>;
+} as m.Component<{
+  timeScale: TimeScale,
+  visibleWindowMs: {start: number, end: number},
+},
+                                     {
+                                       canvasController: CanvasController,
+                                       width: number,
+                                       height: number,
+                                       onResize: () => void,
+                                     }>;
