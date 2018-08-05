@@ -14,6 +14,8 @@
 
 import * as m from 'mithril';
 
+import {Animation} from './animation';
+import {DragGestureHandler} from './drag_gesture_handler';
 import {TimeAxis} from './time_axis';
 import {TimeScale} from './time_scale';
 
@@ -25,30 +27,32 @@ export const OverviewTimeline = {
     this.timeScale = new TimeScale([0, 1], [0, 0]);
     this.padding = {top: 0, right: 20, bottom: 0, left: 20};
   },
+  oncreate(vnode) {
+    const rect = vnode.dom.getBoundingClientRect();
+
+    this.timeScale.setLimitsPx(
+        this.padding.left, rect.width - this.padding.left - this.padding.right);
+  },
+  onupdate(vnode) {
+    const rect = vnode.dom.getBoundingClientRect();
+
+    this.timeScale.setLimitsPx(
+        this.padding.left, rect.width - this.padding.left - this.padding.right);
+  },
   view({attrs}) {
-    this.timeScale.setLimitsPx(0, attrs.width);
     this.timeScale.setLimitsMs(
         attrs.maxVisibleWindowMs.start, attrs.maxVisibleWindowMs.end);
 
     return m(
         '.overview-timeline',
-        {
-          style: {
-            width: attrs.width.toString() + 'px',
-            overflow: 'hidden',
-            height: '120px',
-            position: 'relative',
-          },
-        },
         m(TimeAxis, {
           timeScale: this.timeScale,
-          contentOffset: this.padding.left,
+          contentOffset: 0,
           visibleWindowMs: attrs.maxVisibleWindowMs,
-          width: attrs.width,
         }),
         m('.visualization', {
           style: {
-            width: `${attrs.width}px`,
+            width: '100%',
             height: '100%',
           }
         }),
@@ -58,7 +62,7 @@ export const OverviewTimeline = {
               position: 'absolute',
               left: `${this.padding.left}px`,
               top: '41px',
-              width: '100%',
+              width: 'calc(100% - 40px)',
               height: 'calc(100% - 41px)',
             }
           },
@@ -78,7 +82,6 @@ export const OverviewTimeline = {
         {
           visibleWindowMs: {start: number, end: number},
           maxVisibleWindowMs: {start: number, end: number},
-          width: number,
           onBrushedMs: (start: number, end: number) => void,
         },
         {
@@ -86,56 +89,93 @@ export const OverviewTimeline = {
           padding: {top: number, right: number, bottom: number, left: number},
         }>;
 
+const ZOOM_IN_PERCENTAGE_PER_MS = 0.998;
+const ZOOM_OUT_PERCENTAGE_PER_MS = 1 / ZOOM_IN_PERCENTAGE_PER_MS;
+const WHEEL_ZOOM_DURATION = 200;
+
 /**
  * Interactive horizontal brush for pixel-based selections.
  */
 const HorizontalBrushSelection = {
-  oninit() {
-    let dragState: 'start'|'end'|'none' = 'none';
+  oncreate(vnode) {
+    const el = vnode.dom as HTMLElement;
+    this.offsetLeft = (el.getBoundingClientRect() as DOMRect).x;
 
-    this.rightHandleMouseDownListener = () => {
-      dragState = 'end';
-    };
-    this.leftHandleMouseDownListener = () => {
-      dragState = 'start';
-    };
-    this.mouseMoveListener = (e: MouseEvent) => {
-      if (dragState === 'none') {
-        return;
-      }
-      // Prevent text selections
-      e.preventDefault();
+    const startHandle =
+        el.getElementsByClassName('brush-handle-start')[0] as HTMLElement;
+    const endHandle =
+        el.getElementsByClassName('brush-handle-end')[0] as HTMLElement;
 
-      const posX = e.clientX - this.offsetLeft;
-      if ((dragState === 'end' && posX < this.selectionPx.start) ||
-          (dragState === 'start' && posX > this.selectionPx.end)) {
+    let dragState: 'draggingStartHandle'|'draggingEndHandle'|'notDragging' =
+        'notDragging';
+
+    const dragged = (posX: number) => {
+      if ((dragState === 'draggingEndHandle' &&
+           posX < this.selectionPx.start) ||
+          (dragState === 'draggingStartHandle' &&
+           posX > this.selectionPx.end)) {
         // Flip start and end if handle has been dragged past the other limit.
-        dragState = dragState === 'start' ? 'end' : 'start';
+        dragState = dragState === 'draggingStartHandle' ? 'draggingEndHandle' :
+                                                          'draggingStartHandle';
       }
-      if (dragState === 'start') {
+      if (dragState === 'draggingStartHandle') {
         this.onBrushedPx(posX, this.selectionPx.end);
       } else {
         this.onBrushedPx(this.selectionPx.start, posX);
       }
     };
-    this.mouseUpListener = () => {
-      dragState = 'none';
-    };
-  },
-  oncreate(vnode) {
-    document.body.addEventListener('mousemove', this.mouseMoveListener);
-    document.body.addEventListener('mouseup', this.mouseUpListener);
 
-    const el = vnode.dom as HTMLElement;
-    this.offsetLeft = (el.getBoundingClientRect() as DOMRect).x;
+    new DragGestureHandler(
+        startHandle,
+        x => dragged(x - this.offsetLeft),
+        () => dragState = 'draggingStartHandle',
+        () => dragState = 'notDragging');
+    new DragGestureHandler(
+        endHandle,
+        x => dragged(x - this.offsetLeft),
+        () => dragState = 'draggingEndHandle',
+        () => dragState = 'notDragging');
+
+    new DragGestureHandler(el, x => dragged(x - this.offsetLeft), x => {
+      this.selectionPx.start = this.selectionPx.end = x - this.offsetLeft;
+      dragState = 'draggingEndHandle';
+    }, () => dragState = 'notDragging');
+
+    this.onMouseMove = e => {
+      this.mousePositionX = e.clientX - this.offsetLeft;
+    };
+
+    let zoomingIn = true;
+    const zoomAnimation = new Animation((timeSinceLastMs: number) => {
+      const percentagePerMs =
+          zoomingIn ? ZOOM_IN_PERCENTAGE_PER_MS : ZOOM_OUT_PERCENTAGE_PER_MS;
+      const percentage = Math.pow(percentagePerMs, timeSinceLastMs);
+
+      const selectionLength = this.selectionPx.end - this.selectionPx.start;
+      const newSelectionLength = selectionLength * percentage;
+
+      // Brush toward the mouse, like zooming.
+      const zoomPositionPercentage =
+          (this.mousePositionX - this.selectionPx.start) / selectionLength;
+
+      const brushStart =
+          this.mousePositionX - zoomPositionPercentage * newSelectionLength;
+      const brushEnd = this.mousePositionX +
+          (1 - zoomPositionPercentage) * newSelectionLength;
+
+      this.onBrushedPx(brushStart, brushEnd);
+    });
+
+    this.onWheel = e => {
+      if (e.deltaY) {
+        zoomingIn = e.deltaY < 0;
+        zoomAnimation.start(WHEEL_ZOOM_DURATION);
+      }
+    };
   },
   onupdate(vnode) {
     const el = vnode.dom as HTMLElement;
     this.offsetLeft = (el.getBoundingClientRect() as DOMRect).x;
-  },
-  onremove() {
-    document.body.removeEventListener('mousemove', this.mouseMoveListener);
-    document.body.removeEventListener('mouseup', this.mouseUpListener);
   },
   view({attrs}) {
     this.onBrushedPx = attrs.onBrushedPx;
@@ -144,30 +184,22 @@ const HorizontalBrushSelection = {
     return m(
         '.brushes',
         {
+          onwheel: this.onWheel,
+          onmousemove: this.onMouseMove,
           style: {
             width: '100%',
             height: '100%',
           }
         },
-        m('.brush-left', {
+        m('.brush-left.brush-rect', {
           style: {
-            background: 'rgba(210,210,210,0.7)',
-            position: 'absolute',
-            'pointer-events': 'none',
             'border-right': '1px solid #aaa',
-            top: '0',
-            height: '100%',
             left: '0',
             width: `${attrs.selectionPx.start}px`,
           }
         }),
-        m('.brush-right', {
+        m('.brush-right.brush-rect', {
           style: {
-            background: 'rgba(210,210,210,0.7)',
-            position: 'absolute',
-            'pointer-events': 'none',
-            top: '0',
-            height: '100%',
             'border-left': '1px solid #aaa',
             left: `${attrs.selectionPx.end}px`,
             width: `calc(100% - ${attrs.selectionPx.end}px)`,
@@ -175,28 +207,26 @@ const HorizontalBrushSelection = {
         }),
         m(BrushHandle, {
           left: attrs.selectionPx.start,
-          onMouseDown: this.leftHandleMouseDownListener
+          className: 'brush-handle-start',
         }),
         m(BrushHandle, {
           left: attrs.selectionPx.end,
-          onMouseDown: this.rightHandleMouseDownListener
+          className: 'brush-handle-end',
         }));
   }
-} as
-    m.Component<
-        {
-          onBrushedPx: (start: number, end: number) => void,
-          selectionPx: {start: number, end: number},
-        },
-        {
-          rightHandleMouseDownListener: (e: MouseEvent) => void,
-          leftHandleMouseDownListener: (e: MouseEvent) => void,
-          mouseMoveListener: (e: MouseEvent) => void,
-          mouseUpListener: () => void,
-          selectionPx: {start: number, end: number},
-          onBrushedPx: (start: number, end: number) => void,
-          offsetLeft: number
-        }>;
+} as m.Component<{
+  onBrushedPx: (start: number, end: number) => void,
+  selectionPx: {start: number, end: number},
+},
+                                 {
+                                   selectionPx: {start: number, end: number},
+                                   onBrushedPx: (start: number, end: number) =>
+                                       void,
+                                   offsetLeft: number,
+                                   onWheel: (e: WheelEvent) => void,
+                                   onMouseMove: (e: MouseEvent) => void,
+                                   mousePositionX: number,
+                                 }>;
 
 /**
  * Creates a visual handle with three horizontal bars.
@@ -213,20 +243,10 @@ const BrushHandle = {
     });
 
     return m(
-        '.brush-handle',
+        `.brush-handle.${attrs.className}`,
         {
-          onmousedown: attrs.onMouseDown,
           style: {
-            position: 'absolute',
             left: `${attrs.left - 6}px`,
-            'border-radius': '3px',
-            border: '1px solid #999',
-            cursor: 'pointer',
-            background: '#fff',
-            top: '25px',
-            width: '14px',
-            height: '30px',
-            'pointer-events': 'auto',
           }
         },
         m('.handle-bars',
@@ -242,6 +262,6 @@ const BrushHandle = {
   }
 } as m.Component<{
   left: number,
-  onMouseDown: (e: MouseEvent) => void,
+  className: string,
 },
                     {}>;

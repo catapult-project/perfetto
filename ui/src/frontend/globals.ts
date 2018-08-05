@@ -14,11 +14,9 @@
 
 import {Action} from '../common/actions';
 import {State} from '../common/state';
-import {Engine} from '../controller/engine';
-
-import {ControllerProxy} from './controller_proxy';
 
 type Dispatch = (action: Action) => void;
+type TrackDataStore = Map<string, {}>;
 
 /**
  * Global accessors for state/dispatch in the frontend.
@@ -26,7 +24,11 @@ type Dispatch = (action: Action) => void;
 class Globals {
   _dispatch?: Dispatch = undefined;
   _state?: State = undefined;
-  _controller?: ControllerProxy = undefined;
+  _trackDataStore?: TrackDataStore = undefined;
+
+  // Frequently changing data from the controller. Each item is keyed by an ID.
+  // TODO(dproy): Replace with the real thing.
+  published = new Map<string, {}>();
 
   get state(): State {
     if (this._state === undefined) throw new Error('Global not set');
@@ -46,23 +48,20 @@ class Globals {
     this._dispatch = value;
   }
 
-  get controller(): ControllerProxy {
-    if (this._controller === undefined) throw new Error('Global not set');
-    return this._controller;
+  get trackDataStore(): TrackDataStore {
+    if (this._trackDataStore === undefined) throw new Error('Global not set');
+    return this._trackDataStore;
   }
 
-  set controller(value: ControllerProxy) {
-    this._controller = value;
+  set trackDataStore(value: TrackDataStore) {
+    this._trackDataStore = value;
   }
 
   resetForTesting() {
     this._state = undefined;
     this._dispatch = undefined;
-    this._controller = undefined;
+    this._trackDataStore = undefined;
   }
 }
-
-// TODO(hjd): Temporary while bringing up controller worker.
-export const gEngines = new Map<string, Engine>();
 
 export const globals = new Globals();

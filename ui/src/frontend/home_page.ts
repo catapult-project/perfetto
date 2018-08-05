@@ -14,13 +14,21 @@
 
 import * as m from 'mithril';
 
-import {WasmEngineProxy} from '../controller/wasm_engine_proxy';
-
-import {gEngines, globals} from './globals';
+import {
+  Action,
+  navigate,
+  openTrace,
+  openTraceFromFile
+} from '../common/actions';
+import {EngineConfig} from '../common/state';
+import {globals} from './globals';
 import {quietDispatch} from './mithril_helpers';
 import {createPage} from './pages';
 
-function extractBlob(e: Event): Blob|null {
+const EXAMPLE_TRACE_URL =
+    'https://storage.googleapis.com/perfetto-misc/example_trace';
+
+function extractFile(e: Event): File|null {
   if (!(e.target instanceof HTMLInputElement)) {
     throw new Error('Not input element');
   }
@@ -28,39 +36,40 @@ function extractBlob(e: Event): Blob|null {
   return e.target.files.item(0);
 }
 
-async function loadExampleTrace() {
-  const url = 'https://storage.googleapis.com/perfetto-misc/example_trace';
-  const repsonse = await fetch(url);
-  const blob = await repsonse.blob();
-  gEngines.set('0', WasmEngineProxy.create(blob));
-  m.route.set('/query/0');
+function loadTraceFromFile(e: Event): Action|null {
+  const file = extractFile(e);
+  if (!file) return null;
+  return openTraceFromFile(file);
+}
+
+function renderEngine(engine: EngineConfig) {
+  return m(
+      '.home-page-traces-item',
+      m('button',
+        {
+          onclick: quietDispatch(navigate(`/query/${engine.id}`)),
+        },
+        `Query trace ${engine.id}`));
 }
 
 export const HomePage = createPage({
   view() {
-    const count = globals.state.i;
+    const engines = Object.values(globals.state.engines);
     return m(
         '#page.home-page',
         m('.home-page-title', 'Perfetto'),
         m('.home-page-controls',
           m('label.file-input',
             m('input[type=file]', {
-              onchange: (e: Event) => {
-                const blob = extractBlob(e);
-                if (!blob) return;
-                gEngines.set('0', WasmEngineProxy.create(blob));
-                m.route.set('/query/0');
-              },
+              onchange: quietDispatch(loadTraceFromFile),
             }),
             'Load trace'),
           ' or ',
-          m('button', {onclick: loadExampleTrace}, 'Open demo trace'),
           m('button',
             {
-              onclick: quietDispatch({
-                type: 'INCREMENT',
-              })
+              onclick: quietDispatch(openTrace(EXAMPLE_TRACE_URL)),
             },
-            `Increment ${count}`)));
-  }
+            'Open example trace')),
+        m('.home-page-traces', engines.map(engine => renderEngine(engine))));
+  },
 });
