@@ -19,6 +19,8 @@
 
 #include <array>
 
+#include "perfetto/base/string_view.h"
+#include "perfetto/base/utils.h"
 #include "src/trace_processor/trace_storage.h"
 
 namespace perfetto {
@@ -52,13 +54,12 @@ class SchedTracker {
                                uint64_t timestamp,
                                uint32_t prev_pid,
                                uint32_t prev_state,
-                               const char* prev_comm,
-                               size_t prev_comm_len,
+                               base::StringView prev_comm,
                                uint32_t next_pid);
 
  private:
   // Store the previous sched event to calculate the duration before storing it.
-  std::array<SchedSwitchEvent, TraceStorage::kMaxCpus> last_sched_per_cpu_;
+  std::array<SchedSwitchEvent, base::kMaxCpus> last_sched_per_cpu_;
 
   TraceProcessorContext* const context_;
 };

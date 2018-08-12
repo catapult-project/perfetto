@@ -25,6 +25,8 @@
 #include <vector>
 
 #include "perfetto/base/logging.h"
+#include "perfetto/base/string_view.h"
+#include "perfetto/base/utils.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -50,8 +52,6 @@ class TraceStorage {
   TraceStorage(const TraceStorage&) = delete;
 
   virtual ~TraceStorage();
-
-  constexpr static size_t kMaxCpus = 128;
 
   struct Stats {
     uint64_t mismatched_sched_switch_tids_ = 0;
@@ -166,7 +166,7 @@ class TraceStorage {
 
   // Return an unqiue identifier for the contents of each string.
   // The string is copied internally and can be destroyed after this called.
-  StringId InternString(const char* data, size_t length);
+  StringId InternString(base::StringView);
 
   Process* GetMutableProcess(UniquePid upid) {
     PERFETTO_DCHECK(upid > 0 && upid < unique_processes_.size());
@@ -210,16 +210,19 @@ class TraceStorage {
   // is reserved to indicate an invalid thread.
   size_t thread_count() const { return unique_threads_.size() - 1; }
 
+  // Number of interned strings in the pool. Includes the empty string w/ ID=0.
+  size_t string_count() const { return string_pool_.size(); }
+
  private:
   TraceStorage& operator=(const TraceStorage&) = default;
 
-  using StringHash = uint32_t;
+  using StringHash = uint64_t;
 
   // Metadata counters for events being added.
   Stats stats_;
 
   // One entry for each CPU in the trace.
-  std::array<SlicesPerCpu, kMaxCpus> cpu_events_;
+  std::array<SlicesPerCpu, base::kMaxCpus> cpu_events_;
 
   // One entry for each unique string in the trace.
   std::deque<std::string> string_pool_;

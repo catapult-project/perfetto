@@ -22,11 +22,15 @@ export interface ObjectById<Class extends{id: string}> { [id: string]: Class; }
 export interface TrackState {
   id: string;
   engineId: string;
-  height: number;
+  maxDepth: number;
   kind: string;
   name: string;
-  // TODO(hjd): This needs to be nested into track kind spesific state.
+  // TODO: These need to be nested into track kind spesific state.
+  // cpu slice state:
   cpu: number;
+  // chrome slice state:
+  upid?: number;
+  utid?: number;
 }
 
 export interface EngineConfig {
@@ -41,6 +45,8 @@ export interface QueryConfig {
   query: string;
 }
 
+export interface PermalinkConfig { state: State; }
+
 export interface State {
   route: string|null;
   nextId: number;
@@ -52,6 +58,7 @@ export interface State {
   tracks: ObjectById<TrackState>;
   displayedTrackIds: string[];
   queries: ObjectById<QueryConfig>;
+  permalink: null|PermalinkConfig;
 }
 
 export function createEmptyState(): State {
@@ -62,5 +69,6 @@ export function createEmptyState(): State {
     displayedTrackIds: [],
     engines: {},
     queries: {},
+    permalink: null,
   };
 }

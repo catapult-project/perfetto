@@ -60,9 +60,28 @@ export function rootReducer(state: State, action: any): State {
         engineId: action.engineId,
         kind: action.trackKind,
         name: `Cpu Track ${id}`,
-        // TODO(hjd): Should height be part of published information?
-        height: 73,
+        maxDepth: 1,
         cpu: action.cpu,
+      };
+      nextState.displayedTrackIds.push(id);
+      return nextState;
+    }
+
+    // TODO: 'ADD_CHROME_TRACK' string should be a shared const.
+    case 'ADD_CHROME_TRACK': {
+      const nextState = {...state};
+      nextState.tracks = {...state.tracks};
+      const id = `${nextState.nextId++}`;
+      nextState.tracks[id] = {
+        id,
+        engineId: action.engineId,
+        kind: action.trackKind,
+        name: `${action.threadName}`,
+        // TODO(dproy): This should be part of published information.
+        maxDepth: action.maxDepth,
+        cpu: 0,  // TODO: Remove this after we have kind specific state.
+        upid: action.upid,
+        utid: action.utid,
       };
       nextState.displayedTrackIds.push(id);
       return nextState;
@@ -114,6 +133,18 @@ export function rootReducer(state: State, action: any): State {
       nextState.engines = {...state.engines};
       nextState.engines[action.engineId].ready = true;
       return nextState;
+    }
+
+    case 'CREATE_PERMALINK': {
+      const nextState = {...state};
+      nextState.permalink = {
+        state,
+      };
+      return nextState;
+    }
+
+    case 'SET_STATE': {
+      return action.newState;
     }
 
     default:

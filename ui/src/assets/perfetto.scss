@@ -83,10 +83,27 @@ table {
 
 body {
     display: grid;
-    grid-template-areas: "sidebar topbar" "sidebar page";
-    grid-template-rows: var(--topbar-height) auto;
+    grid-template-areas:
+      "sidebar topbar"
+      "sidebar page"
+      "sidebar alerts";
+    grid-template-rows: var(--topbar-height) 1fr auto;
     grid-template-columns: var(--sidebar-width) auto;
     color: #121212;
+}
+
+button {
+  background: none;
+  color: inherit;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  outline: inherit;
+}
+
+button.close {
+  font-family: var(--monospace-font);
 }
 
 .full-page-loading-screen {
@@ -107,6 +124,21 @@ body {
 .page {
     grid-area: page;
     position: relative;
+}
+
+.alerts {
+  grid-area: alerts;
+  background-color: #262f3c;
+  div {
+    font-family: 'Raleway';
+    font-weight: 400;
+    letter-spacing: 0.25px;
+    color: white;
+    padding: 25px;
+    a {
+      color: white;
+    }
+  }
 }
 
 @import 'sidebar';
@@ -192,44 +224,52 @@ body {
 }
 
 .track {
-    border: 1px solid hsl(213, 22%, 82%);
-    position: absolute;
+    border: 1px solid #c7d0db;
     left: 0;
     width: 100%;
     .track-shell {
         background: #fff;
         padding: 20px;
-        border-right: 1px solid hsl(213, 22%, 82%);
+        border-right: 1px solid #c7d0db;
         height: 100%;
-        z-index: 100;
-        position: relative;
         h1 {
             margin: 0;
-            font-size: 16px;
+            font-size: 1em;
+            text-overflow: ellipsis;
             font-family: 'Google Sans';
-            color: hsl(213, 22%, 30%)
+            color: hsl(213, 22%, 30%);
+            width: 90%;
+        }
+        .track-move-icons {
+            position: absolute;
+            right: 10px;
+            color: #fff;
+            font-weight: bold;
+            text-align: center;
+            cursor: pointer;
+            background: #ced0e7;
+            border-radius: 12px;
+            display: block;
+            width: 24px;
+            height: 24px;
+            border: none;
+            outline: none;
         }
     }
-    .track-content {
-        height: 100%;
-        position: absolute;
-        top: 0;
-    }
 }
 
-.scrollable-container {
+.scrolling-panel-container {
+    position: relative;
     width: 100%;
     height: 100%;
-    overflow-y: auto;
     overflow-x: hidden;
-    will-change: transform;
-    position: relative;
+    overflow-y: auto;
+    will-change: transform;  // Force layer creation.
 }
-
 /** Time Axis **/
 
 .axis {
-    overflow: hidden;
+    overflow: visible;
     height: 41px;
     position: relative;
     .mark-label {
@@ -253,21 +293,30 @@ body {
 /** Overview Timeline **/
 
 .overview-timeline {
-    width: 100%;
-    overflow: hidden;
-    height: 120px;
-    position: relative;
-}
+  width: 100%;
+  height: 120px;
+  position: relative;
+  overflow: visible;
+  padding-left: 20px;
 
-.brush-rect {
+  .timeline-content {
+    position: absolute;
+    left: 20px; // Same as padding-left of overview-timeline
+    top: 41px;
+    width: calc(100% - 40px);
+    height: calc(100% - 41px);
+    overflow: visible;  // For tooltip
+  }
+
+  .brush-rect {
     background: rgba(210, 210, 210, 0.7);
     position: absolute;
     pointer-events: none;
     top: 0;
     height: 100%;
-}
+  }
 
-.brush-handle {
+  .brush-handle {
     position: absolute;
     border-radius: 3px;
     border: 1px solid #999;
@@ -277,4 +326,31 @@ body {
     width: 14px;
     height: 30px;
     pointer-events: auto;
+  }
+
+  .tooltip {
+    background: #19212b;
+    color: #fff;
+    position: absolute;
+    padding: 5px;
+    border-radius: 4px;
+    width: 200px;
+    text-align: center;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 300;
+    overflow: visible; // For the arrow.
+    height: 42px;
+    margin-top:-47px; // Height + arrow
+  }
+  .tooltip:after {
+    content: " ";
+    position: absolute;
+    top: 100%; /* At the bottom of the tooltip */
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: black transparent transparent transparent;
+  }
 }

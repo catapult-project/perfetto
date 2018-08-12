@@ -14,10 +14,21 @@
 
 import * as m from 'mithril';
 
+import {QueryResponse} from '../common/queries';
+
 import {Animation} from './animation';
 import {DragGestureHandler} from './drag_gesture_handler';
+import {globals} from './globals';
 import {TimeAxis} from './time_axis';
 import {TimeScale} from './time_scale';
+import {OVERVIEW_QUERY_ID} from './viewer_page';
+
+interface ProcessSummaryData {
+  upid: number;
+  name: string;
+  loadByTime: {[timeMs: number]: number};
+  hue: number;
+}
 
 /**
  * Overview timeline with a brush for time-based selections.
@@ -25,23 +36,112 @@ import {TimeScale} from './time_scale';
 export const OverviewTimeline = {
   oninit() {
     this.timeScale = new TimeScale([0, 1], [0, 0]);
-    this.padding = {top: 0, right: 20, bottom: 0, left: 20};
+    this.hoveredLoad = null;
+    this.contentRect =
+        {top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0};
+
+    this.onmousemove = e => {
+      if (!this.processesById) return;
+      const y = e.clientY - this.contentRect.top;
+      const processes = Object.values(this.processesById);
+      if (processes.length === 0) return;
+      const heightPerProcess = this.contentRect.height / processes.length;
+      const index = Math.floor(y / heightPerProcess);
+      this.hoveredProcess = processes[index];
+      const hoveredMs = this.timeScale.pxToMs(e.layerX);
+
+      const loadTimesMs = Object.keys(this.hoveredProcess.loadByTime)
+                              .map(stringTime => Number(stringTime));
+      this.hoveredLoad = null;
+      for (const loadTimeMs of loadTimesMs) {
+        if (Math.abs(loadTimeMs - hoveredMs) <= 100) {
+          this.hoveredLoad = {
+            timeMs: loadTimeMs,
+            load: this.hoveredProcess.loadByTime[loadTimeMs]
+          };
+        }
+      }
+    };
   },
   oncreate(vnode) {
-    const rect = vnode.dom.getBoundingClientRect();
+    this.contentRect = vnode.dom.getElementsByClassName('timeline-content')[0]
+                           .getBoundingClientRect();
+    this.timeScale.setLimitsPx(0, this.contentRect.width);
 
-    this.timeScale.setLimitsPx(
-        this.padding.left, rect.width - this.padding.left - this.padding.right);
+    const context =
+        vnode.dom.getElementsByTagName('canvas')[0].getContext('2d');
+    if (!context) {
+      throw Error('Overview canvas context not found.');
+    }
+    this.context = context;
   },
   onupdate(vnode) {
-    const rect = vnode.dom.getBoundingClientRect();
-
-    this.timeScale.setLimitsPx(
-        this.padding.left, rect.width - this.padding.left - this.padding.right);
+    this.contentRect = vnode.dom.getElementsByClassName('timeline-content')[0]
+                           .getBoundingClientRect();
+    this.timeScale.setLimitsPx(0, this.contentRect.width);
   },
   view({attrs}) {
     this.timeScale.setLimitsMs(
         attrs.maxVisibleWindowMs.start, attrs.maxVisibleWindowMs.end);
+
+    const resp = globals.queryResults.get(OVERVIEW_QUERY_ID) as QueryResponse;
+
+    if (this.context && resp) {
+      // Update data
+      if (!this.processesById) {
+        this.processesById = {};
+        const data = resp.rows;
+        const timesMs = data.map(row => row.rts as number * 1000);
+        const minTimeMs = Math.min(...timesMs);
+
+        for (const processLoad of data) {
+          const upid = processLoad.upid as number;
+          if (!this.processesById[upid]) {
+            this.processesById[upid] = {
+              upid,
+              name: processLoad.name as string,
+              loadByTime: {},
+              hue: Math.random() * 360,
+            };
+          }
+          const timeMs = ((processLoad.rts as number) * 1000 - minTimeMs);
+          this.processesById[upid].loadByTime[timeMs] =
+              Number(processLoad.load);
+        }
+      }
+
+      // Render canvas
+      const processes = Object.values(this.processesById);
+      const heightPerProcess = this.contentRect.height / processes.length;
+      const roundedHeightPerProcess = Math.round(heightPerProcess);
+
+      for (let i = 0; i < processes.length; i++) {
+        const process = processes[i];
+        const startY = Math.round(i * heightPerProcess);
+
+        // Add a background behind the hovered process
+        this.context.fillStyle =
+            process === this.hoveredProcess ? '#eee' : '#fff';
+        this.context.fillRect(
+            0, startY, this.contentRect.width, roundedHeightPerProcess);
+
+        const loadTimes = Object.keys(process.loadByTime)
+                              .map(stringTime => Number(stringTime));
+        for (const loadTime of loadTimes) {
+          const load = process.loadByTime[loadTime] * 100;
+          const startPx = this.timeScale.msToPx(loadTime);
+          const endPx = this.timeScale.msToPx(loadTime + 100);
+          const lightness = Math.round(Math.max(100 - 2 * load, 30));
+          this.context.fillStyle = `hsl(${process.hue}, 40%, ${lightness}%)`;
+          this.context.fillRect(
+              startPx, startY, endPx - startPx, roundedHeightPerProcess);
+        }
+      }
+      this.context.fill();
+    }
+
+    const processes =
+        !this.processesById ? [] : Object.values(this.processesById);
 
     return m(
         '.overview-timeline',
@@ -50,32 +150,59 @@ export const OverviewTimeline = {
           contentOffset: 0,
           visibleWindowMs: attrs.maxVisibleWindowMs,
         }),
-        m('.visualization', {
-          style: {
-            width: '100%',
-            height: '100%',
-          }
-        }),
-        m('.brushes',
+        m('.timeline-content',
           {
-            style: {
-              position: 'absolute',
-              left: `${this.padding.left}px`,
-              top: '41px',
-              width: 'calc(100% - 40px)',
-              height: 'calc(100% - 41px)',
+            onmousemove: this.onmousemove,
+            onmouseout: () => {
+              this.hoveredProcess = null;
+              this.hoveredLoad = null;
             }
           },
-          m(HorizontalBrushSelection, {
-            onBrushedPx: (startPx: number, endPx: number) => {
-              attrs.onBrushedMs(
-                  this.timeScale.pxToMs(startPx), this.timeScale.pxToMs(endPx));
+          m('.tooltip',
+            {
+              style: {
+                display: this.hoveredLoad === null ? 'none' : 'block',
+                left:
+                    `${
+                       this.hoveredLoad === null ?
+                           0 :
+                           this.timeScale.msToPx(this.hoveredLoad.timeMs) - 100
+                     }px`,
+                top: `${
+                        this.hoveredProcess === null ?
+                            0 :
+                            processes.indexOf(this.hoveredProcess) *
+                                this.contentRect.height / processes.length
+                      }px`,
+              }
             },
-            selectionPx: {
-              start: this.timeScale.msToPx(attrs.visibleWindowMs.start),
-              end: this.timeScale.msToPx(attrs.visibleWindowMs.end)
+            m('b', `${this.hoveredProcess ? this.hoveredProcess.name : ''}`),
+            m('br'),
+            m('span', `${this.hoveredLoad ? this.hoveredLoad.load : 0}%`)),
+          m('canvas.visualization', {
+            width: this.contentRect.width,
+            height: this.contentRect.height,
+          }),
+          m('.brushes',
+            {
+              style: {
+                width: '100%',
+                height: '100%',
+                position: 'absolute',
+                top: '0',
+              }
             },
-          })));
+            m(HorizontalBrushSelection, {
+              onBrushedPx: (startPx: number, endPx: number) => {
+                attrs.onBrushedMs(
+                    this.timeScale.pxToMs(startPx),
+                    this.timeScale.pxToMs(endPx));
+              },
+              selectionPx: {
+                start: this.timeScale.msToPx(attrs.visibleWindowMs.start),
+                end: this.timeScale.msToPx(attrs.visibleWindowMs.end)
+              },
+            }))));
   },
 } as
     m.Component<
@@ -86,7 +213,12 @@ export const OverviewTimeline = {
         },
         {
           timeScale: TimeScale,
-          padding: {top: number, right: number, bottom: number, left: number},
+          context: CanvasRenderingContext2D | undefined,
+          contentRect: ClientRect,
+          processesById: {[upid: number]: ProcessSummaryData},
+          hoveredProcess: ProcessSummaryData | null,
+          hoveredLoad: {timeMs: number, load: number} | null,
+          onmousemove: (e: MouseEvent) => void,
         }>;
 
 const ZOOM_IN_PERCENTAGE_PER_MS = 0.998;
@@ -190,7 +322,9 @@ const HorizontalBrushSelection = {
   },
   onupdate(vnode) {
     const el = vnode.dom as HTMLElement;
-    this.offsetLeft = (el.getBoundingClientRect() as DOMRect).x;
+    const bcr = el.getBoundingClientRect() as DOMRect;
+    this.offsetLeft = bcr.x;
+    this.width = bcr.width;
   },
   view({attrs}) {
     this.onBrushedPx = attrs.onBrushedPx;
@@ -263,6 +397,7 @@ const BrushHandle = {
     return m(
         `.brush-handle.${attrs.className}`,
         {
+          onmousemove: (e: MouseEvent) => e.stopPropagation(),
           style: {
             left: `${attrs.left - 6}px`,
           }

@@ -54,6 +54,8 @@ source_set("lib") {
     "slice_table.cc",
     "slice_table.h",
     "sqlite_utils.h",
+    "string_table.cc",
+    "string_table.h",
     "table.cc",
     "table.h",
     "thread_table.cc",
@@ -114,5 +116,21 @@ source_set("unittests") {
     "../../gn:gtest_deps",
     "../../protos/perfetto/trace:lite",
     "../base",
+  ]
+}
+
+source_set("integrationtests") {
+  testonly = true
+  sources = [
+    "trace_database_integrationtest.cc",
+  ]
+  deps = [
+    ":lib",
+    "../../buildtools:sqlite",
+    "../../gn:default_deps",
+    "../../gn:gtest_deps",
+    "../../protos/perfetto/trace:lite",
+    "../base",
+    "../base:test_support",
   ]
 }
