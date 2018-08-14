@@ -35,7 +35,7 @@ test('quietDispatch with object', () => {
   const e = new Event('an_event') as RedrawableEvent;
   e.redraw = true;
   const d = dingus<(action: Action) => void>('dispatch');
-  globals.dispatch = d;
+  globals.initialize(d);
   const action = {type: 'AN_ACTION'};
   quietDispatch(action)(e);
   expect(e.redraw).toBe(false);
@@ -47,7 +47,7 @@ test('quietDispatch with function', () => {
   e.redraw = true;
 
   const dispatch = dingus<(action: Action) => void>('dispatch');
-  globals.dispatch = dispatch;
+  globals.initialize(dispatch);
 
   const theAction = {type: 'AN_ACTION'};
 
@@ -59,4 +59,20 @@ test('quietDispatch with function', () => {
   quietDispatch(action)(e);
   expect(e.redraw).toBe(false);
   expect(dispatch.calls[0][1][0]).toBe(theAction);
+});
+
+test('quietDispatch with function', () => {
+  const e = new Event('an_event') as RedrawableEvent;
+  e.redraw = true;
+
+  const dispatch = dingus<(action: Action) => void>('dispatch');
+  globals.initialize(dispatch);
+
+  const action = (_: Event) => {
+    return null;
+  };
+
+  quietDispatch(action)(e);
+  expect(e.redraw).toBe(false);
+  expect(dispatch.calls.length).toBe(0);
 });

@@ -14,60 +14,13 @@
 
 import * as m from 'mithril';
 
-import {navigate, openTrace} from '../common/actions';
-import {EngineConfig} from '../common/state';
-
-import {globals} from './globals';
-import {quietDispatch, RedrawableEvent} from './mithril_helpers';
 import {createPage} from './pages';
-
-const EXAMPLE_TRACE_URL =
-    'https://storage.googleapis.com/perfetto-misc/example_trace';
-
-function extractFile(e: Event): File|null {
-  if (!(e.target instanceof HTMLInputElement)) {
-    throw new Error('Not input element');
-  }
-  if (!e.target.files) return null;
-  return e.target.files.item(0);
-}
-
-async function loadTraceFromFile(e: RedrawableEvent) {
-  e.redraw = false;
-  const file = extractFile(e);
-  if (!file) return;
-  const url = await globals.controller.addLocalFile(file);
-  globals.dispatch(openTrace(url));
-}
-
-function renderEngine(engine: EngineConfig) {
-  return m(
-      '.home-page-traces-item',
-      m('button',
-        {
-          onclick: quietDispatch(navigate(`/query/${engine.id}`)),
-        },
-        `Query trace ${engine.id}`));
-}
 
 export const HomePage = createPage({
   view() {
-    const engines = Object.values(globals.state.engines);
     return m(
-        '#page.home-page',
+        '.page.home-page',
         m('.home-page-title', 'Perfetto'),
-        m('.home-page-controls',
-          m('label.file-input',
-            m('input[type=file]', {
-              onchange: loadTraceFromFile,
-            }),
-            'Load trace'),
-          ' or ',
-          m('button',
-            {
-              onclick: quietDispatch(openTrace(EXAMPLE_TRACE_URL)),
-            },
-            'Open example trace')),
-        m('.home-page-traces', engines.map(engine => renderEngine(engine))));
+        m('img.logo[src=/assets/logo-3d.png]'), );
   },
 });

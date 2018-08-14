@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 
-#include "src/trace_processor/trace_processor.h"
-
+#include "src/trace_processor/process_tracker.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "src/trace_processor/proto_trace_parser.h"
+#include "src/trace_processor/sched_tracker.h"
+#include "src/trace_processor/trace_processor.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -41,22 +43,22 @@ class ProcessTrackerTest : public ::testing::Test {
 
 TEST_F(ProcessTrackerTest, PushProcess) {
   TraceStorage storage;
-  context.process_tracker->UpdateProcess(1, "test", 4);
+  context.process_tracker->UpdateProcess(1, "test");
   auto pair_it = context.process_tracker->UpidsForPid(1);
   ASSERT_EQ(pair_it.first->second, 1);
 }
 
 TEST_F(ProcessTrackerTest, PushTwoProcessEntries_SamePidAndName) {
-  context.process_tracker->UpdateProcess(1, "test", 4);
-  context.process_tracker->UpdateProcess(1, "test", 4);
+  context.process_tracker->UpdateProcess(1, "test");
+  context.process_tracker->UpdateProcess(1, "test");
   auto pair_it = context.process_tracker->UpidsForPid(1);
   ASSERT_EQ(pair_it.first->second, 1);
   ASSERT_EQ(++pair_it.first, pair_it.second);
 }
 
 TEST_F(ProcessTrackerTest, PushTwoProcessEntries_DifferentPid) {
-  context.process_tracker->UpdateProcess(1, "test", 4);
-  context.process_tracker->UpdateProcess(3, "test", 4);
+  context.process_tracker->UpdateProcess(1, "test");
+  context.process_tracker->UpdateProcess(3, "test");
   auto pair_it = context.process_tracker->UpidsForPid(1);
   ASSERT_EQ(pair_it.first->second, 1);
   auto second_pair_it = context.process_tracker->UpidsForPid(3);
@@ -64,7 +66,7 @@ TEST_F(ProcessTrackerTest, PushTwoProcessEntries_DifferentPid) {
 }
 
 TEST_F(ProcessTrackerTest, AddProcessEntry_CorrectName) {
-  context.process_tracker->UpdateProcess(1, "test", 4);
+  context.process_tracker->UpdateProcess(1, "test");
   ASSERT_EQ(context.storage->GetString(context.storage->GetProcess(1).name_id),
             "test");
 }
@@ -72,26 +74,27 @@ TEST_F(ProcessTrackerTest, AddProcessEntry_CorrectName) {
 TEST_F(ProcessTrackerTest, UpdateThreadMatch) {
   uint32_t cpu = 3;
   uint64_t timestamp = 100;
-  uint32_t pid_1 = 1;
   uint32_t prev_state = 32;
   static const char kCommProc1[] = "process1";
   static const char kCommProc2[] = "process2";
-  uint32_t pid_2 = 4;
 
-  context.sched_tracker->PushSchedSwitch(cpu, timestamp, pid_1, prev_state,
-                                         kCommProc1, sizeof(kCommProc1) - 1,
-                                         pid_2);
-  context.sched_tracker->PushSchedSwitch(cpu, timestamp + 1, pid_2, prev_state,
-                                         kCommProc2, sizeof(kCommProc2) - 1,
-                                         pid_1);
+  context.sched_tracker->PushSchedSwitch(cpu, timestamp, /*tid=*/1, prev_state,
+                                         kCommProc1,
+                                         /*tid=*/4);
+  context.sched_tracker->PushSchedSwitch(cpu, timestamp + 1, /*tid=*/4,
+                                         prev_state, kCommProc2,
 
-  context.process_tracker->UpdateProcess(2, "test", 4);
-  context.process_tracker->UpdateThread(1, 2);
+                                         /*tid=*/1);
 
-  TraceStorage::Thread thread = context.storage->GetThread(1);
-  TraceStorage::Process process = context.storage->GetProcess(1);
+  context.process_tracker->UpdateProcess(2, "test");
+  context.process_tracker->UpdateThread(4, 2);
 
+  TraceStorage::Thread thread = context.storage->GetThread(/*utid=*/1);
+  TraceStorage::Process process = context.storage->GetProcess(/*utid=*/1);
+
+  ASSERT_EQ(thread.tid, 4);
   ASSERT_EQ(thread.upid, 1);
+  ASSERT_EQ(process.pid, 2);
   ASSERT_EQ(process.start_ns, timestamp);
 }
 

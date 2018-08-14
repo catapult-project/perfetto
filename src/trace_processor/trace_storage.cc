@@ -23,8 +23,11 @@ namespace trace_processor {
 
 TraceStorage::TraceStorage() {
   // Upid/utid 0 is reserved for invalid processes/threads.
-  unique_processes_.emplace_back();
-  unique_threads_.emplace_back();
+  unique_processes_.emplace_back(0);
+  unique_threads_.emplace_back(0);
+
+  // Reserve string ID 0 for the empty string.
+  InternString("");
 }
 
 TraceStorage::~TraceStorage() {}
@@ -36,21 +39,14 @@ void TraceStorage::AddSliceToCpu(uint32_t cpu,
   cpu_events_[cpu].AddSlice(start_ns, duration_ns, utid);
 };
 
-TraceStorage::StringId TraceStorage::InternString(const char* data,
-                                                  size_t length) {
-  uint32_t hash = 0;
-  for (size_t i = 0; i < length; ++i) {
-    hash = static_cast<uint32_t>(data[i]) + (hash * 31);
-  }
+StringId TraceStorage::InternString(base::StringView str) {
+  auto hash = str.Hash();
   auto id_it = string_index_.find(hash);
   if (id_it != string_index_.end()) {
-    // TODO(lalitm): check if this DCHECK happens and if so, then change hash
-    // to 64bit.
-    PERFETTO_DCHECK(
-        strncmp(string_pool_[id_it->second].c_str(), data, length) == 0);
+    PERFETTO_DCHECK(base::StringView(string_pool_[id_it->second]) == str);
     return id_it->second;
   }
-  string_pool_.emplace_back(data, length);
+  string_pool_.emplace_back(str.ToStdString());
   StringId string_id = string_pool_.size() - 1;
   string_index_.emplace(hash, string_id);
   return string_id;

@@ -17,7 +17,6 @@
 #ifndef SRC_TRACE_PROCESSOR_THREAD_TABLE_H_
 #define SRC_TRACE_PROCESSOR_THREAD_TABLE_H_
 
-#include <sqlite3.h>
 #include <limits>
 #include <memory>
 
@@ -31,7 +30,7 @@ namespace trace_processor {
 // the metadata for those processes.
 class ThreadTable : public Table {
  public:
-  enum Column { kUtid = 0, kUpid = 1, kName = 2 };
+  enum Column { kUtid = 0, kUpid = 1, kName = 2, kTid = 3 };
 
   static void RegisterTable(sqlite3* db, const TraceStorage* storage);
 

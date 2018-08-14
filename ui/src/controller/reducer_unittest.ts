@@ -75,3 +75,32 @@ test('reorder tracks', () => {
   expect(after.tracks[after.displayedTrackIds[0]].engineId).toBe('2');
   expect(after.tracks[after.displayedTrackIds[1]].engineId).toBe('1');
 });
+
+test('open trace', async () => {
+  const before = createEmptyState();
+  const after = rootReducer(before, {
+    type: 'OPEN_TRACE_FROM_URL',
+    url: 'https://example.com/bar',
+  });
+  expect(after.engines[0].source).toBe('https://example.com/bar');
+  expect(after.nextId).toBe(1);
+  expect(after.route).toBe('/viewer');
+});
+
+test('set state', async () => {
+  const newState = createEmptyState();
+  const before = createEmptyState();
+  const after = rootReducer(before, {
+    type: 'SET_STATE',
+    newState,
+  });
+  expect(after).toBe(newState);
+});
+
+test('create permalink', async () => {
+  const before = createEmptyState();
+  const after = rootReducer(before, {
+    type: 'CREATE_PERMALINK',
+  });
+  expect(after.permalink!.state).toBe(before);
+});

@@ -16,26 +16,27 @@ import '../tracks/all_frontend';
 
 import * as m from 'mithril';
 
-import {forwardRemoteCalls, Remote} from '../base/remote';
-import {State} from '../common/state';
+import {forwardRemoteCalls} from '../base/remote';
+import {setState} from '../common/actions';
+import {loadState} from '../common/permalinks';
+import {createEmptyState, State} from '../common/state';
 import {
   takeWasmEngineWorkerPort,
-  warmupWasmEngineWorker
+  warmupWasmEngineWorker,
 } from '../controller/wasm_engine_proxy';
 
-import {ControllerProxy} from './controller_proxy';
+import {FrontendLocalState} from './frontend_local_state';
 import {globals} from './globals';
 import {HomePage} from './home_page';
-import {QueryPage} from './query_page';
+import {RafScheduler} from './raf_scheduler';
 import {ViewerPage} from './viewer_page';
 
-function createController(): ControllerProxy {
+function createController(): Worker {
   const worker = new Worker('controller_bundle.js');
   worker.onerror = e => {
     console.error(e);
   };
-  const port = worker as {} as MessagePort;
-  return new ControllerProxy(new Remote(port));
+  return worker;
 }
 
 /**
@@ -49,6 +50,11 @@ class FrontendApi {
 
   publishTrackData(id: string, data: {}) {
     globals.trackDataStore.set(id, data);
+    this.redraw();
+  }
+
+  publishQueryResult(id: string, data: {}) {
+    globals.queryResults.set(id, data);
     this.redraw();
   }
 
@@ -76,38 +82,38 @@ async function main() {
   const controller = createController();
   const channel = new MessageChannel();
   forwardRemoteCalls(channel.port2, new FrontendApi());
-  globals.controller = controller;
-  globals.state = await controller.initAndGetState(channel.port1);
-  globals.dispatch = controller.dispatch.bind(controller);
-  globals.trackDataStore = new Map<string, {}>();
+  controller.postMessage(channel.port1, [channel.port1]);
+
+  globals.initialize(
+      controller.postMessage.bind(controller),  // dispatch
+      createEmptyState(),                       // state
+      new Map<string, {}>(),                    // trackDataStore
+      new Map<string, {}>(),                    // queryResults
+      new FrontendLocalState(),                 // frontendState
+      new RafScheduler(),                       // rafSheduler
+      );
+
   warmupWasmEngineWorker();
 
-  const root = document.querySelector('main');
-  if (!root) {
-    console.error('root element not found.');
-    return;
-  }
-
-  m.route(root, '/', {
+  m.route(document.body, '/', {
     '/': HomePage,
     '/viewer': ViewerPage,
-    '/query/:engineId': {
-      onmatch(args) {
-        if (globals.state.engines[args.engineId]) {
-          return QueryPage;
-        }
-        // We only hit this case if the user reloads/navigates
-        // while on the query page.
-        m.route.set('/');
-        return undefined;
-      }
-    },
   });
 
-  // tslint:disable-next-line no-any
-  (window as any).m = m;
-  // tslint:disable-next-line no-any
-  (window as any).globals = globals;
+  // Put these variables in the global scope for better debugging.
+  (window as {} as {m: {}}).m = m;
+  (window as {} as {globals: {}}).globals = globals;
+
+  const stateHash = m.route.param('s');
+  if (stateHash) {
+    const state = await loadState(stateHash);
+    globals.dispatch(setState(state));
+  }
+
+  // Prevent pinch zoom.
+  document.body.addEventListener('wheel', (e: MouseEvent) => {
+    if (e.ctrlKey) e.preventDefault();
+  });
 }
 
 main();

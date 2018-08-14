@@ -17,25 +17,28 @@
 #ifndef SRC_TRACE_PROCESSOR_TRACE_PROCESSOR_H_
 #define SRC_TRACE_PROCESSOR_TRACE_PROCESSOR_H_
 
-#include <sqlite3.h>
+#include <atomic>
+#include <functional>
 #include <memory>
 
-#include "perfetto/base/task_runner.h"
 #include "perfetto/base/weak_ptr.h"
-#include "perfetto/trace_processor/raw_query.pb.h"
-#include "src/trace_processor/blob_reader.h"
-#include "src/trace_processor/process_table.h"
-#include "src/trace_processor/process_tracker.h"
-#include "src/trace_processor/sched_slice_table.h"
-#include "src/trace_processor/sched_tracker.h"
 #include "src/trace_processor/scoped_db.h"
-#include "src/trace_processor/thread_table.h"
-#include "src/trace_processor/trace_parser.h"
 #include "src/trace_processor/trace_processor_context.h"
-#include "src/trace_processor/trace_storage.h"
 
 namespace perfetto {
+
+namespace base {
+class TaskRunner;
+}
+
+namespace protos {
+class RawQueryArgs;
+class RawQueryResult;
+}  // namespace protos
+
 namespace trace_processor {
+
+class BlobReader;
 
 // Coordinates the loading of traces from an arbitary source and allows
 // execution of SQL queries on the events in these traces.
@@ -51,7 +54,10 @@ class TraceProcessor {
   // Executes a SQLite query on the loaded portion of the trace. |result| will
   // be invoked once after the result of the query is available.
   void ExecuteQuery(const protos::RawQueryArgs&,
-                    std::function<void(protos::RawQueryResult)>);
+                    std::function<void(const protos::RawQueryResult&)>);
+
+  // Interrupts the current query. Typically used by Ctrl-C handler.
+  void InterruptQuery();
 
  private:
   void LoadTraceChunk(std::function<void()> callback);
@@ -59,6 +65,11 @@ class TraceProcessor {
   ScopedDb db_;  // Keep first.
   TraceProcessorContext context_;
   base::TaskRunner* const task_runner_;
+
+  // This is atomic because it is set by the CTRL-C signal handler and we need
+  // to prevent single-flow compiler optimizations in ExecuteQuery().
+  std::atomic<bool> query_interrupted_{false};
+
   base::WeakPtrFactory<TraceProcessor> weak_factory_;  // Keep last.
 };
 

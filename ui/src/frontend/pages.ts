@@ -13,7 +13,29 @@
 // limitations under the License.
 
 import * as m from 'mithril';
+
+import {PERMALINK_ID} from '../common/permalinks';
+import {globals} from './globals';
 import {Sidebar} from './sidebar';
+import {Topbar} from './topbar';
+
+function renderPermalink(): m.Children {
+  if (!globals.state.permalink) {
+    return null;
+  }
+  const config =
+      globals.trackDataStore.get(PERMALINK_ID) as {} as {url: string};
+  const url = config ? config.url : null;
+  return m(
+      '.alert-permalink',
+      url ? ['Permalink: ', m(`a[href=${url}]`, url)] : 'Uploading...');
+}
+
+const Alerts: m.Component = {
+  view() {
+    return m('.alerts', renderPermalink());
+  },
+};
 
 /**
  * Wrap component with common UI elements (nav bar etc).
@@ -23,7 +45,9 @@ export function createPage(component: m.Component): m.Component {
     view() {
       return [
         m(Sidebar),
-        m('.page-content', m(component)),
+        m(Topbar),
+        m(component),
+        m(Alerts),
       ];
     },
   };

@@ -1,4 +1,3 @@
-
 // Copyright (C) 2018 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,12 +14,77 @@
 
 import * as m from 'mithril';
 
-import {OverviewTimeline} from './overview_timeline';
+import {QueryResponse} from '../common/queries';
+import {TimeSpan} from '../common/time';
+
+import {globals} from './globals';
 import {createPage} from './pages';
 import {PanAndZoomHandler} from './pan_and_zoom_handler';
-import {ScrollingTrackDisplay} from './scrolling_track_display';
-import {TimeAxis} from './time_axis';
-import {TimeScale} from './time_scale';
+import {ScrollingPanelContainer} from './scrolling_panel_container';
+import {TRACK_SHELL_WIDTH} from './track_panel';
+
+export const OVERVIEW_QUERY_ID = 'overview_query';
+
+const MAX_ZOOM_SPAN_SEC = 1e-4;  // 0.1 ms.
+
+const QueryTable: m.Component<{}, {}> = {
+  view() {
+    const resp = globals.queryResults.get('command') as QueryResponse;
+    if (resp === undefined) {
+      return m('');
+    }
+    const cols = [];
+    for (const col of resp.columns) {
+      cols.push(m('td', col));
+    }
+    const header = m('tr', cols);
+
+    const rows = [];
+    for (let i = 0; i < resp.rows.length; i++) {
+      const cells = [];
+      for (const col of resp.columns) {
+        cells.push(m('td', resp.rows[i][col]));
+      }
+      rows.push(m('tr', cells));
+    }
+    return m(
+        'div',
+        m('header.overview',
+          `Query result - ${resp.durationMs} ms`,
+          m('span.code', resp.query)),
+        resp.error ?
+            m('.query-error', `SQL error: ${resp.error}`) :
+            m('table.query-table', m('thead', header), m('tbody', rows)));
+  },
+};
+
+
+/**
+ * CanvasRedrawTrigger hooks our canvas redraw into the Mithril redraw cycle.
+ * Everytime the Mithril redraws (and CanvasRedrawTrigger is in the tree)
+ * it calls either oncreate/onupdate from there we call syncRedraw().
+ *
+ * Ideally the canvas redraw should be:
+ * a) synchronous
+ * b) the very last thing that happens in the Mithril redraw raf
+ * Since oncreate/onupdate is called in pre-order (in terms of the dom:
+ * least-nested to most-nested, top to bottom) so the CanvasRedrawTrigger
+ * should be placed last on the page.
+ */
+const CanvasRedrawTrigger: m.Component = {
+
+  oncreate() {
+    globals.rafScheduler.syncRedraw();
+  },
+
+  onupdate() {
+    globals.rafScheduler.syncRedraw();
+  },
+
+  view() {
+    return null;
+  },
+};
 
 /**
  * Top-most level component for the viewer page. Holds tracks, brush timeline,
@@ -29,19 +93,16 @@ import {TimeScale} from './time_scale';
 const TraceViewer = {
   oninit() {
     this.width = 0;
-    this.contentOffsetX = 200;
-    this.visibleWindowMs = {start: 1000000, end: 2000000};
-    this.maxVisibleWindowMs = {start: 0, end: 10000000};
-    this.timeScale = new TimeScale(
-        [this.visibleWindowMs.start, this.visibleWindowMs.end],
-        [0, this.width - this.contentOffsetX]);
   },
+
   oncreate(vnode) {
+    const frontendLocalState = globals.frontendLocalState;
     this.onResize = () => {
       const rect = vnode.dom.getBoundingClientRect();
       this.width = rect.width;
-      this.timeScale.setLimitsPx(0, this.width - this.contentOffsetX);
-      m.redraw();
+      frontendLocalState.timeScale.setLimitsPx(
+          0, this.width - TRACK_SHELL_WIDTH);
+      // m.redraw();
     };
 
     // Have to redraw after initialization to provide dimensions to view().
@@ -53,94 +114,64 @@ const TraceViewer = {
     const panZoomEl =
         vnode.dom.getElementsByClassName('tracks-content')[0] as HTMLElement;
 
-    // TODO: ContentOffsetX should be defined somewhere central.
-    // Currently it lives here, in canvas wrapper, and in track shell.
     this.zoomContent = new PanAndZoomHandler({
       element: panZoomEl,
-      contentOffsetX: this.contentOffsetX,
+      contentOffsetX: TRACK_SHELL_WIDTH,
       onPanned: (pannedPx: number) => {
-        const deltaMs = this.timeScale.deltaPxToDurationMs(pannedPx);
-        this.visibleWindowMs.start += deltaMs;
-        this.visibleWindowMs.end += deltaMs;
-        this.timeScale.setLimitsMs(
-            this.visibleWindowMs.start, this.visibleWindowMs.end);
-        m.redraw();
+        let vizTime = globals.frontendLocalState.visibleWindowTime;
+        let tDelta = frontendLocalState.timeScale.deltaPxToDuration(pannedPx);
+        const maxTime = globals.state.traceTime;
+        tDelta -= Math.max(vizTime.end + tDelta - maxTime.endSec, 0);
+        if (vizTime.start + tDelta < maxTime.startSec) {
+          tDelta +=
+              Math.abs(tDelta) - Math.abs(vizTime.start - maxTime.startSec);
+        }
+        // tDelta += Math.min(maxTime.startSec + tDelta + vizTime.start, 0);
+        vizTime = vizTime.add(tDelta);
+        frontendLocalState.updateVisibleTime(vizTime);
       },
-      onZoomed: (zoomedPositionPx: number, zoomPercentage: number) => {
-        const totalTimespanMs =
-            this.visibleWindowMs.end - this.visibleWindowMs.start;
-        const newTotalTimespanMs = totalTimespanMs * zoomPercentage;
-
-        const zoomedPositionMs =
-            this.timeScale.pxToMs(zoomedPositionPx) as number;
-        const positionPercentage =
-            (zoomedPositionMs - this.visibleWindowMs.start) / totalTimespanMs;
-
-        this.visibleWindowMs.start =
-            zoomedPositionMs - newTotalTimespanMs * positionPercentage;
-        this.visibleWindowMs.end =
-            zoomedPositionMs + newTotalTimespanMs * (1 - positionPercentage);
-        this.timeScale.setLimitsMs(
-            this.visibleWindowMs.start, this.visibleWindowMs.end);
-        m.redraw();
+      onZoomed: (_: number, zoomRatio: number) => {
+        const vizTime = frontendLocalState.visibleWindowTime;
+        const curSpanSec = vizTime.duration;
+        const newSpanSec =
+            Math.max(curSpanSec - curSpanSec * zoomRatio, MAX_ZOOM_SPAN_SEC);
+        const deltaSec = (curSpanSec - newSpanSec) / 2;
+        const newStartSec = vizTime.start + deltaSec;
+        const newEndSec = vizTime.end - deltaSec;
+        frontendLocalState.updateVisibleTime(
+            new TimeSpan(newStartSec, newEndSec));
       }
     });
   },
+
   onremove() {
     window.removeEventListener('resize', this.onResize);
     this.zoomContent.shutdown();
   },
-  view() {
-    const onBrushedMs = (start: number, end: number) => {
-      this.visibleWindowMs.start = start;
-      this.visibleWindowMs.end = end;
-      this.timeScale.setLimitsMs(
-          this.visibleWindowMs.start, this.visibleWindowMs.end);
-      m.redraw();
-    };
 
+  view() {
     return m(
-        '#page',
-        {
-          style: {
-            width: '100%',
-            height: '100%',
-          },
-        },
-        m('header.overview', 'Big Picture'),
-        m(OverviewTimeline, {
-          visibleWindowMs: this.visibleWindowMs,
-          maxVisibleWindowMs: this.maxVisibleWindowMs,
-          width: this.width,
-          onBrushedMs
-        }),
+        '.page',
+        m(QueryTable),
         m('.tracks-content',
           {
             style: {
               width: '100%',
-              height: 'calc(100% - 145px)',
+              height: '100%',
+              position: 'relative',
             }
           },
-          m('header.tracks-content', 'Tracks'),
-          m(TimeAxis, {
-            timeScale: this.timeScale,
-            contentOffset: 200,
-            visibleWindowMs: this.visibleWindowMs,
-            width: this.width,
-          }),
-          m(ScrollingTrackDisplay, {
-            timeScale: this.timeScale,
-            visibleWindowMs: this.visibleWindowMs,
-          })));
+          m('header', 'Tracks'),
+          m(ScrollingPanelContainer), ),
+        m(CanvasRedrawTrigger), );
   },
+
 } as m.Component<{}, {
-  visibleWindowMs: {start: number, end: number},
-  maxVisibleWindowMs: {start: number, end: number},
   onResize: () => void,
-  timeScale: TimeScale,
   width: number,
   zoomContent: PanAndZoomHandler,
-  contentOffsetX: number,
+  overviewQueryExecuted: boolean,
+  overviewQueryResponse: QueryResponse,
 }>;
 
 export const ViewerPage = createPage({

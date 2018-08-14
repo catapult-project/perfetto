@@ -24,16 +24,30 @@ export function rootReducer(state: State, action: any): State {
       return nextState;
     }
 
-    case 'OPEN_TRACE': {
+    case 'OPEN_TRACE_FROM_FILE': {
       const nextState = {...state};
       nextState.engines = {...state.engines};
       const id = `${nextState.nextId++}`;
       nextState.engines[id] = {
         id,
-        url: action.url,
+        ready: false,
+        source: action.file,
       };
       nextState.route = `/viewer`;
 
+      return nextState;
+    }
+
+    case 'OPEN_TRACE_FROM_URL': {
+      const nextState = {...state};
+      nextState.engines = {...state.engines};
+      const id = `${nextState.nextId++}`;
+      nextState.engines[id] = {
+        id,
+        ready: false,
+        source: action.url,
+      };
+      nextState.route = `/viewer`;
       return nextState;
     }
 
@@ -46,9 +60,28 @@ export function rootReducer(state: State, action: any): State {
         engineId: action.engineId,
         kind: action.trackKind,
         name: `Cpu Track ${id}`,
-        // TODO(hjd): Should height be part of published information?
-        height: 73,
+        maxDepth: 1,
         cpu: action.cpu,
+      };
+      nextState.displayedTrackIds.push(id);
+      return nextState;
+    }
+
+    // TODO: 'ADD_CHROME_TRACK' string should be a shared const.
+    case 'ADD_CHROME_TRACK': {
+      const nextState = {...state};
+      nextState.tracks = {...state.tracks};
+      const id = `${nextState.nextId++}`;
+      nextState.tracks[id] = {
+        id,
+        engineId: action.engineId,
+        kind: action.trackKind,
+        name: `${action.threadName}`,
+        // TODO(dproy): This should be part of published information.
+        maxDepth: action.maxDepth,
+        cpu: 0,  // TODO: Remove this after we have kind specific state.
+        upid: action.upid,
+        utid: action.utid,
       };
       nextState.displayedTrackIds.push(id);
       return nextState;
@@ -57,12 +90,18 @@ export function rootReducer(state: State, action: any): State {
     case 'EXECUTE_QUERY': {
       const nextState = {...state};
       nextState.queries = {...state.queries};
-      const id = `${nextState.nextId++}`;
-      nextState.queries[id] = {
-        id,
+      nextState.queries[action.queryId] = {
+        id: action.queryId,
         engineId: action.engineId,
         query: action.query,
       };
+      return nextState;
+    }
+
+    case 'DELETE_QUERY': {
+      const nextState = {...state};
+      nextState.queries = {...state.queries};
+      delete nextState.queries[action.queryId];
       return nextState;
     }
 
@@ -88,6 +127,32 @@ export function rootReducer(state: State, action: any): State {
       nextState.displayedTrackIds[oldIndex] = swappedTrackId;
 
       return nextState;
+
+    case 'SET_ENGINE_READY': {
+      const nextState = {...state};  // Creates a shallow copy.
+      nextState.engines = {...state.engines};
+      nextState.engines[action.engineId].ready = true;
+      return nextState;
+    }
+
+    case 'CREATE_PERMALINK': {
+      const nextState = {...state};
+      nextState.permalink = {
+        state,
+      };
+      return nextState;
+    }
+
+    case 'SET_STATE': {
+      return action.newState;
+    }
+
+    case 'SET_TRACE_TIME': {
+      const nextState = {...state};
+      nextState.traceTime.startSec = action.startSec;
+      nextState.traceTime.endSec = action.endSec;
+      return nextState;
+    }
 
     default:
       break;
