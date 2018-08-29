@@ -19,14 +19,12 @@ import {globals} from './globals';
 import {Panel} from './panel';
 import {TimeScale} from './time_scale';
 
-export class OverviewTimelinePanel implements Panel {
+export class OverviewTimelinePanel extends Panel {
   private width?: number;
   private dragStartPx = 0;
   private gesture?: DragGestureHandler;
   private timeScale?: TimeScale;
   private totTime = new TimeSpan(0, 0);
-
-  constructor() {}
 
   getHeight(): number {
     return 100;
@@ -122,7 +120,7 @@ export class OverviewTimelinePanel implements Panel {
     if (tStart > tEnd) [tStart, tEnd] = [tEnd, tStart];
     const vizTime = new TimeSpan(tStart, tEnd);
     globals.frontendLocalState.updateVisibleTime(vizTime);
-    globals.rafScheduler.scheduleOneRedraw();
+    globals.rafScheduler.scheduleRedraw();
   }
 
   onDragStart(x: number) {
