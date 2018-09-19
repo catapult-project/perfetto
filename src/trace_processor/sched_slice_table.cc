@@ -89,23 +89,26 @@ inline int Compare(T first, T second, bool desc) {
 
 }  // namespace
 
-SchedSliceTable::SchedSliceTable(const TraceStorage* storage)
+SchedSliceTable::SchedSliceTable(sqlite3*, const TraceStorage* storage)
     : storage_(storage) {}
 
 void SchedSliceTable::RegisterTable(sqlite3* db, const TraceStorage* storage) {
-  Table::Register<SchedSliceTable>(db, storage,
-                                   "CREATE TABLE sched("
-                                   "ts UNSIGNED BIG INT, "
-                                   "cpu UNSIGNED INT, "
-                                   "dur UNSIGNED BIG INT, "
-                                   "quantized_group UNSIGNED BIG INT, "
-                                   "utid UNSIGNED INT, "
-                                   "cycles UNSIGNED BIG INT, "
-                                   "quantum HIDDEN BIG INT, "
-                                   "ts_lower_bound HIDDEN BIG INT, "
-                                   "ts_clip HIDDEN BOOLEAN, "
-                                   "PRIMARY KEY(cpu, ts)"
-                                   ") WITHOUT ROWID;");
+  Table::Register<SchedSliceTable>(db, storage, "sched");
+}
+
+std::string SchedSliceTable::CreateTableStmt(int, const char* const*) {
+  return "CREATE TABLE sched("
+         "ts UNSIGNED BIG INT, "
+         "cpu UNSIGNED INT, "
+         "dur UNSIGNED BIG INT, "
+         "quantized_group UNSIGNED BIG INT, "
+         "utid UNSIGNED INT, "
+         "cycles UNSIGNED BIG INT, "
+         "quantum HIDDEN BIG INT, "
+         "ts_lower_bound HIDDEN BIG INT, "
+         "ts_clip HIDDEN BOOLEAN, "
+         "PRIMARY KEY(cpu, ts)"
+         ") WITHOUT ROWID;";
 }
 
 std::unique_ptr<Table::Cursor> SchedSliceTable::CreateCursor() {
