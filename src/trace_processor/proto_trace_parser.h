@@ -37,7 +37,7 @@ struct SystraceTracePoint {
   base::StringView name;
 
   // For phase = 'C' only.
-  int64_t value;
+  double value;
 };
 
 inline bool operator==(const SystraceTracePoint& x,
@@ -67,6 +67,7 @@ class ProtoTraceParser {
 
  private:
   TraceProcessorContext* context_;
+  const StringId cpu_freq_name_id_;
 };
 
 }  // namespace trace_processor

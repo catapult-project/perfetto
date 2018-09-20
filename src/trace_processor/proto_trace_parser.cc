@@ -71,10 +71,25 @@ bool ParseSystraceTracePoint(base::StringView str, SystraceTracePoint* out) {
       out->name = base::StringView(s + name_index, len - name_index);
       return true;
     }
-    case 'E':
+    case 'E': {
       return true;
-    case 'C':
+    }
+    case 'C': {
+      size_t name_index = 2 + pid_length + 1;
+      size_t name_length = 0;
+      for (size_t i = name_index; i < len; i++) {
+        if (s[i] == '|' || s[i] == '\n') {
+          name_length = i - name_index;
+          break;
+        }
+      }
+      out->name = base::StringView(s + name_index, name_length);
+      size_t value_index = name_index + name_length + 1;
+      char value_str[32];
+      std::strcpy(value_str, s + value_index);
+      out->value = std::stod(value_str);
       return true;
+    }
     default:
       return false;
   }
@@ -84,7 +99,8 @@ using protozero::ProtoDecoder;
 using protozero::proto_utils::kFieldTypeLengthDelimited;
 
 ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
-    : context_(context) {}
+    : context_(context),
+      cpu_freq_name_id_(context->storage->InternString("cpufreq")) {}
 
 ProtoTraceParser::~ProtoTraceParser() = default;
 
@@ -204,20 +220,20 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
 void ProtoTraceParser::ParseCpuFreq(uint64_t timestamp, TraceBlobView view) {
   ProtoDecoder decoder(view.data(), view.length());
 
-  uint32_t cpu = 0;
+  uint32_t cpu_affected = 0;
   uint32_t new_freq = 0;
   for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
     switch (fld.id) {
       case protos::CpuFrequencyFtraceEvent::kCpuIdFieldNumber:
-        cpu = fld.as_uint32();
+        cpu_affected = fld.as_uint32();
         break;
       case protos::CpuFrequencyFtraceEvent::kStateFieldNumber:
         new_freq = fld.as_uint32();
         break;
     }
   }
-
-  context_->storage->PushCpuFreq(timestamp, cpu, new_freq);
+  context_->sched_tracker->PushCounter(timestamp, new_freq, cpu_freq_name_id_,
+                                       cpu_affected, RefType::kCPU_ID);
 
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
@@ -283,6 +299,12 @@ void ProtoTraceParser::ParsePrint(uint32_t,
     case 'E': {
       context_->slice_tracker->End(timestamp, upid);
       break;
+    }
+
+    case 'C': {
+      StringId name_id = context_->storage->InternString(point.name);
+      context_->sched_tracker->PushCounter(timestamp, point.value, name_id,
+                                           upid, RefType::kUPID);
     }
   }
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
