@@ -27,10 +27,37 @@ function renderPermalink(): m.Children {
       hash ? ['Permalink: ', m(`a[href=${url}]`, url)] : 'Uploading...');
 }
 
-const Alerts: m.Component = {
+class Alerts implements m.ClassComponent {
   view() {
     return m('.alerts', renderPermalink());
-  },
+  }
+}
+
+const TogglePerfDebugButton = {
+  view() {
+    return m(
+        '.perf-monitor-button',
+        m('button',
+          {
+            onclick: () => globals.frontendLocalState.togglePerfDebug(),
+          },
+          m('i.material-icons',
+            {
+              title: 'Toggle Perf Debug Mode',
+            },
+            'assessment')));
+  }
+};
+
+const PerfStats: m.Component = {
+  view() {
+    const perfDebug = globals.frontendLocalState.perfDebug;
+    const children = [m(TogglePerfDebugButton)];
+    if (perfDebug) {
+      children.unshift(m('.perf-stats-content'));
+    }
+    return m(`.perf-stats[expanded=${perfDebug}]`, children);
+  }
 };
 
 /**
@@ -44,6 +71,7 @@ export function createPage(component: m.Component): m.Component {
         m(Topbar),
         m(component),
         m(Alerts),
+        m(PerfStats),
       ];
     },
   };

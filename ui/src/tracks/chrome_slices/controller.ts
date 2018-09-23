@@ -13,20 +13,14 @@
 // limitations under the License.
 
 import {fromNs} from '../../common/time';
-import {globals} from '../../controller/globals';
 import {
   TrackController,
   trackControllerRegistry
 } from '../../controller/track_controller';
 
-import {
-  ChromeSliceTrackConfig,
-  ChromeSliceTrackData,
-  SLICE_TRACK_KIND
-} from './common';
+import {Config, Data, SLICE_TRACK_KIND} from './common';
 
-class ChromeSliceTrackController extends
-    TrackController<ChromeSliceTrackConfig> {
+class ChromeSliceTrackController extends TrackController<Config, Data> {
   static readonly kind = SLICE_TRACK_KIND;
   private busy = false;
 
@@ -47,7 +41,7 @@ class ChromeSliceTrackController extends
         `limit ${LIMIT};`;
 
     this.busy = true;
-    this.engine.rawQuery({'sqlQuery': query}).then(rawResult => {
+    this.engine.query(query).then(rawResult => {
       this.busy = false;
       if (rawResult.error) {
         throw new Error(`Query error "${query}": ${rawResult.error}`);
@@ -55,7 +49,7 @@ class ChromeSliceTrackController extends
 
       const numRows = +rawResult.numRecords;
 
-      const slices: ChromeSliceTrackData = {
+      const slices: Data = {
         start,
         end,
         resolution,
@@ -89,7 +83,7 @@ class ChromeSliceTrackController extends
       if (numRows === LIMIT) {
         slices.end = slices.ends[slices.ends.length - 1];
       }
-      globals.publish('TrackData', {id: this.trackId, data: slices});
+      this.publish(slices);
     });
   }
 }
