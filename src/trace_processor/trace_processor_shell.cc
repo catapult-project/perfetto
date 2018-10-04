@@ -38,6 +38,8 @@
 
 #if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
 #include <linenoise.h>
+#include <pwd.h>
+#include <sys/types.h>
 #endif
 
 #if PERFETTO_HAS_SIGNAL_H()
@@ -52,13 +54,54 @@ TraceProcessor* g_tp;
 
 #if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
 
+bool EnsureDir(const std::string& path) {
+  return mkdir(path.c_str(), 0755) != -1 || errno == EEXIST;
+}
+
+bool EnsureFile(const std::string& path) {
+  return base::OpenFile(path, O_RDONLY | O_CREAT, 0755).get() != -1;
+}
+
+std::string GetConfigPath() {
+  const char* homedir = getenv("HOME");
+  if (homedir == nullptr)
+    homedir = getpwuid(getuid())->pw_dir;
+  if (homedir == nullptr)
+    return "";
+  return std::string(homedir) + "/.config";
+}
+
+std::string GetPerfettoPath() {
+  std::string config = GetConfigPath();
+  if (config == "")
+    return "";
+  return config + "/perfetto";
+}
+
+std::string GetHistoryPath() {
+  std::string perfetto = GetPerfettoPath();
+  if (perfetto == "")
+    return "";
+  return perfetto + "/.trace_processor_shell_history";
+}
+
 void SetupLineEditor() {
   linenoiseSetMultiLine(true);
   linenoiseHistorySetMaxLen(1000);
+
+  bool success = GetHistoryPath() != "";
+  success = success && EnsureDir(GetConfigPath());
+  success = success && EnsureDir(GetPerfettoPath());
+  success = success && EnsureFile(GetHistoryPath());
+  success = success && linenoiseHistoryLoad(GetHistoryPath().c_str()) != -1;
+  if (!success) {
+    PERFETTO_PLOG("Could not load history from %s", GetHistoryPath().c_str());
+  }
 }
 
 void FreeLine(char* line) {
   linenoiseHistoryAdd(line);
+  linenoiseHistorySave(GetHistoryPath().c_str());
   linenoiseFree(line);
 }
 
@@ -159,8 +202,7 @@ int main(int argc, char** argv) {
   TraceProcessor::Config config;
   config.optimization_mode = OptimizationMode::kMaxBandwidth;
   TraceProcessor tp(config);
-  base::ScopedFile fd;
-  fd.reset(open(trace_file_path, O_RDONLY));
+  base::ScopedFile fd(base::OpenFile(trace_file_path, O_RDONLY));
   PERFETTO_CHECK(fd);
 
   // Load the trace in chunks using async IO. We create a simple pipeline where,
