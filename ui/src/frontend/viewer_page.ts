@@ -17,20 +17,22 @@ import * as m from 'mithril';
 import {QueryResponse} from '../common/queries';
 import {TimeSpan} from '../common/time';
 
+import {copyToClipboard} from './clipboard';
 import {FlameGraphPanel} from './flame_graph_panel';
 import {globals} from './globals';
 import {HeaderPanel} from './header_panel';
 import {OverviewTimelinePanel} from './overview_timeline_panel';
 import {createPage} from './pages';
 import {PanAndZoomHandler} from './pan_and_zoom_handler';
-import {PanelContainer} from './panel_container';
+import {Panel} from './panel';
+import {AnyAttrsVnode, PanelContainer} from './panel_container';
 import {TimeAxisPanel} from './time_axis_panel';
 import {TRACK_SHELL_WIDTH} from './track_panel';
 import {TrackPanel} from './track_panel';
 
 const MAX_ZOOM_SPAN_SEC = 1e-4;  // 0.1 ms.
 
-class QueryTable implements m.ClassComponent {
+class QueryTable extends Panel {
   view() {
     const resp = globals.queryResults.get('command') as QueryResponse;
     if (resp === undefined) {
@@ -53,12 +55,33 @@ class QueryTable implements m.ClassComponent {
     return m(
         'div',
         m('header.overview',
-          `Query result - ${Math.round(resp.durationMs)} ms`,
-          m('span.code', resp.query)),
+          m('span',
+            `Query result - ${Math.round(resp.durationMs)} ms`,
+            m('span.code', resp.query)),
+          resp.error ? null :
+                       m('button',
+                         {
+                           onclick: () => {
+                             const lines: string[][] = [];
+                             lines.push(resp.columns);
+                             for (const row of resp.rows) {
+                               const line = [];
+                               for (const col of resp.columns) {
+                                 line.push(row[col].toString());
+                               }
+                               lines.push(line);
+                             }
+                             copyToClipboard(
+                                 lines.map(line => line.join('\t')).join('\n'));
+                           },
+                         },
+                         'Copy as .tsv')),
         resp.error ?
             m('.query-error', `SQL error: ${resp.error}`) :
             m('table.query-table', m('thead', header), m('tbody', rows)));
   }
+
+  renderCanvas() {}
 }
 
 /**
@@ -130,7 +153,8 @@ class TraceViewer implements m.ClassComponent {
   }
 
   view() {
-    const scrollingPanels = globals.state.scrollingTracks.length > 0 ?
+    const scrollingPanels: AnyAttrsVnode[] =
+        globals.state.scrollingTracks.length > 0 ?
         [
           m(HeaderPanel, {title: 'Tracks', key: 'tracksheader'}),
           ...globals.state.scrollingTracks.map(
@@ -138,10 +162,10 @@ class TraceViewer implements m.ClassComponent {
           m(FlameGraphPanel, {key: 'flamegraph'}),
         ] :
         [];
+    scrollingPanels.unshift(m(QueryTable));
+
     return m(
         '.page',
-        m(QueryTable),
-        // TODO: Pan and zoom logic should be in its own mithril component.
         m('.pan-and-zoom-content',
           m('.pinned-panel-container', m(PanelContainer, {
               doesScroll: false,
