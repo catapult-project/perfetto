@@ -116,7 +116,7 @@ void HeapTracker::Dump(int fd) {
         data += ";";
       data += it->function_name.str();
     }
-    data += " " + std::to_string(alloc.alloc_size) + "\n";
+    data += " " + std::to_string(alloc.total_size) + "\n";
     base::WriteAll(fd, data.c_str(), data.size());
   }
 }
@@ -165,8 +165,7 @@ void BookkeepingThread::HandleBookkeepingRecord(BookkeepingRecord* rec) {
     std::lock_guard<std::mutex> l(bookkeeping_mutex_);
     auto it = bookkeeping_data_.find(rec->pid);
     if (it == bookkeeping_data_.end()) {
-      PERFETTO_LOG("Invalid pid: %d", rec->pid);
-      PERFETTO_DCHECK(false);
+      PERFETTO_DFATAL("Invalid pid: %d", rec->pid);
       return;
     }
     bookkeeping_data = &it->second;
@@ -179,7 +178,7 @@ void BookkeepingThread::HandleBookkeepingRecord(BookkeepingRecord* rec) {
       std::string dump_file_name = file_name_ + "." + std::to_string(it->first);
       PERFETTO_LOG("Dumping %d to %s", it->first, dump_file_name.c_str());
       base::ScopedFile fd =
-          base::OpenFile(dump_file_name, O_WRONLY | O_CREAT, 0755);
+          base::OpenFile(dump_file_name, O_WRONLY | O_CREAT, 0644);
       if (fd)
         it->second.heap_tracker.Dump(fd.get());
       else
@@ -210,10 +209,10 @@ void BookkeepingThread::HandleBookkeepingRecord(BookkeepingRecord* rec) {
       code_locations.emplace_back(frame.map_name, frame.function_name);
     bookkeeping_data->heap_tracker.RecordMalloc(
         code_locations, alloc_rec.alloc_metadata.alloc_address,
-        alloc_rec.alloc_metadata.alloc_size,
+        alloc_rec.alloc_metadata.total_size,
         alloc_rec.alloc_metadata.sequence_number);
   } else {
-    PERFETTO_DCHECK(false);
+    PERFETTO_DFATAL("Invalid record type");
   }
 }
 
@@ -230,7 +229,7 @@ void BookkeepingThread::NotifyClientDisconnected(pid_t pid) {
   std::lock_guard<std::mutex> l(bookkeeping_mutex_);
   auto it = bookkeeping_data_.find(pid);
   if (it == bookkeeping_data_.end()) {
-    PERFETTO_DCHECK(false);
+    PERFETTO_DFATAL("Client for %d not found", pid);
     return;
   }
   it->second.ref_count--;

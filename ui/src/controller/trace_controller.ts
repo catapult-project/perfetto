@@ -14,15 +14,19 @@
 
 import '../tracks/all_controller';
 
+import * as uuidv4 from 'uuid/v4';
+
 import {assertExists, assertTrue} from '../base/logging';
 import {
   Actions,
   DeferredAction,
 } from '../common/actions';
+import {SCROLLING_TRACK_GROUP} from '../common/state';
 import {TimeSpan} from '../common/time';
 import {QuantizedLoad, ThreadDesc} from '../frontend/globals';
 import {SLICE_TRACK_KIND} from '../tracks/chrome_slices/common';
 import {CPU_SLICE_TRACK_KIND} from '../tracks/cpu_slices/common';
+import {PROCESS_SUMMARY_TRACK} from '../tracks/process_summary/common';
 
 import {Child, Children, Controller} from './controller';
 import {Engine} from './engine';
@@ -221,38 +225,79 @@ export class TraceController extends Controller<States> {
         engineId: this.engineId,
         kind: CPU_SLICE_TRACK_KIND,
         name: `Cpu ${cpu}`,
+        trackGroup: SCROLLING_TRACK_GROUP,
         config: {
           cpu,
         }
       }));
     }
 
-    const threadQuery = await engine.query(`
-      select upid, utid, tid, thread.name, depth
-      from thread inner join (
-        select utid, max(slices.depth) as depth
-        from slices
-        group by utid
-      ) using(utid)`);
+    // Local experiments shows getting maxDepth separately is ~2x faster than
+    // joining with threads and processes.
+    const maxDepthQuery =
+        await engine.query('select utid, max(depth) from slices group by utid');
+
+    const utidToMaxDepth = new Map<number, number>();
+    for (let i = 0; i < maxDepthQuery.numRecords; i++) {
+      const utid = maxDepthQuery.columns[0].longValues![i] as number;
+      const maxDepth = maxDepthQuery.columns[1].longValues![i] as number;
+      utidToMaxDepth.set(utid, maxDepth);
+    }
+
+    const threadQuery = await engine.query(
+        'select utid, tid, upid, pid, thread.name, process.name ' +
+        'from thread inner join process using(upid)');
+
+    const upidToUuid = new Map<number, string>();
+    const addSummaryTrackActions: DeferredAction[] = [];
+    const addTrackGroupActions: DeferredAction[] = [];
     for (let i = 0; i < threadQuery.numRecords; i++) {
-      const upid = threadQuery.columns[0].longValues![i];
-      const utid = threadQuery.columns[1].longValues![i];
-      const threadId = threadQuery.columns[2].longValues![i];
-      let threadName = threadQuery.columns[3].stringValues![i];
-      threadName += `[${threadId}]`;
-      const maxDepth = threadQuery.columns[4].longValues![i];
+      const utid = threadQuery.columns[0].longValues![i] as number;
+
+      const maxDepth = utidToMaxDepth.get(utid);
+      if (maxDepth === undefined) {
+        // This thread does not have stackable slices.
+        continue;
+      }
+
+      const tid = threadQuery.columns[1].longValues![i] as number;
+      const upid = threadQuery.columns[2].longValues![i] as number;
+      const pid = threadQuery.columns[3].longValues![i] as number;
+      const threadName = threadQuery.columns[4].stringValues![i];
+      const processName = threadQuery.columns[5].stringValues![i];
+
+      let pUuid = upidToUuid.get(upid);
+      if (pUuid === undefined) {
+        pUuid = uuidv4();
+        const summaryTrackId = uuidv4();
+        upidToUuid.set(upid, pUuid);
+        addSummaryTrackActions.push(Actions.addTrack({
+          id: summaryTrackId,
+          engineId: this.engineId,
+          kind: PROCESS_SUMMARY_TRACK,
+          name: `${pid} summary`,
+          config: {upid, pid, maxDepth, utid},
+        }));
+        addTrackGroupActions.push(Actions.addTrackGroup({
+          engineId: this.engineId,
+          summaryTrackId,
+          name: `${processName} ${pid}`,
+          id: pUuid,
+          collapsed: true,
+        }));
+      }
+
       addToTrackActions.push(Actions.addTrack({
         engineId: this.engineId,
         kind: SLICE_TRACK_KIND,
-        name: threadName,
-        config: {
-          upid: upid as number,
-          utid: utid as number,
-          maxDepth: maxDepth as number,
-        }
+        name: threadName + `[${tid}]`,
+        trackGroup: pUuid,
+        config: {upid, utid, maxDepth},
       }));
     }
-    globals.dispatchMultiple(addToTrackActions);
+    const allActions =
+        addSummaryTrackActions.concat(addTrackGroupActions, addToTrackActions);
+    globals.dispatchMultiple(allActions);
   }
 
   private async listThreads() {
@@ -298,23 +343,35 @@ export class TraceController extends Controller<States> {
       }  // for (record ...)
       globals.publish('OverviewData', schedData);
 
-      // Slices overview.
-      const slicesRows = await engine.query(
-          `select sum(dur)/${stepSec}/1e9, process.name, process.pid, upid ` +
-          'from slices inner join thread using(utid) ' +
-          'inner join process using(upid) where depth = 0 ' +
-          `and ts >= ${startNs} and ts < ${endNs} ` +
-          'group by upid');
-      const slicesData: {[key: string]: QuantizedLoad} = {};
-      for (let i = 0; i < slicesRows.numRecords; i++) {
-        const load = slicesRows.columns[0].doubleValues![i];
-        let procName = slicesRows.columns[1].stringValues![i];
-        const pid = slicesRows.columns[2].longValues![i];
-        procName += ` [${pid}]`;
-        slicesData[procName] = {startSec, endSec, load};
-      }
-      globals.publish('OverviewData', slicesData);
     }  // for (step ...)
+
+    // Slices overview.
+    const traceStartNs = traceTime.start * 1e9;
+    const stepSecNs = stepSec * 1e9;
+    const sliceSummaryQuery = await engine.query(
+        `select bucket, upid, sum(utid_sum) / cast(${stepSecNs} as float) ` +
+        `as upid_sum from thread inner join ` +
+        `(select cast((ts - ${traceStartNs})/${stepSecNs} as int) as bucket, ` +
+        `sum(dur) as utid_sum, utid from slices group by bucket, utid) ` +
+        `using(utid) group by bucket, upid`);
+
+    const slicesData: {[key: string]: QuantizedLoad[]} = {};
+    for (let i = 0; i < sliceSummaryQuery.numRecords; i++) {
+      const bucket = sliceSummaryQuery.columns[0].longValues![i] as number;
+      const upid = sliceSummaryQuery.columns[1].longValues![i] as number;
+      const load = sliceSummaryQuery.columns[2].doubleValues![i];
+
+      const startSec = traceTime.start + stepSec * bucket;
+      const endSec = startSec + stepSec;
+
+      const upidStr = upid.toString();
+      let loadArray = slicesData[upidStr];
+      if (loadArray === undefined) {
+        loadArray = slicesData[upidStr] = [];
+      }
+      loadArray.push({startSec, endSec, load});
+    }
+    globals.publish('OverviewData', slicesData);
   }
 
   private updateStatus(msg: string): void {

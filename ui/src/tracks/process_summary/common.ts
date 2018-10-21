@@ -12,17 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as m from 'mithril';
+export const PROCESS_SUMMARY_TRACK = 'ProcessSummaryTrack';
 
-import {Panel} from './panel';
-
-export class FlameGraphPanel extends Panel {
-  renderCanvas() {}
-  view() {
-    return [
-      m('header', 'Flame Graph'),
-      m('embed.flame-graph-panel',
-        {type: 'image/svg+xml', src: 'assets/flamegraph.svg'})
-    ];
-  }
+// TODO(dproy): Consider deduping with CPU summary data.
+export interface Data {
+  start: number;
+  end: number;
+  resolution: number;
+  bucketSizeSeconds: number;
+  utilizations: Float64Array;
 }
+
+export interface Config { upid: number; }

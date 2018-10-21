@@ -127,7 +127,7 @@ void FreePage::FlushLocked(SocketPool* pool) {
   msg.free_header = &free_page_;
   BorrowedSocket fd(pool->Borrow());
   if (!fd || !SendWireMessage(*fd, msg)) {
-    PERFETTO_DCHECK(false);
+    PERFETTO_DFATAL("Failed to send wire message");
     fd.Close();
   }
 }
@@ -199,12 +199,12 @@ Client::Client(std::vector<base::ScopedFile> socks)
   // Send an empty record to transfer fds for /proc/self/maps and
   // /proc/self/mem.
   if (base::SockSend(*fd, &size, sizeof(size), fds, 2) != sizeof(size)) {
-    PERFETTO_DCHECK(false);
+    PERFETTO_DFATAL("Failed to send file descriptors.");
     return;
   }
   if (recv(*fd, &client_config_, sizeof(client_config_), 0) !=
       sizeof(client_config_)) {
-    PERFETTO_DCHECK(false);
+    PERFETTO_DFATAL("Failed to receive client config.");
     return;
   }
   PERFETTO_DCHECK(client_config_.rate >= 1);
@@ -237,7 +237,9 @@ const char* Client::GetStackBase() {
 //               +------------+    |
 //               |  main      |    v
 // stackbase +-> +------------+ 0xffff
-void Client::RecordMalloc(uint64_t alloc_size, uint64_t alloc_address) {
+void Client::RecordMalloc(uint64_t alloc_size,
+                          uint64_t total_size,
+                          uint64_t alloc_address) {
   if (!inited_)
     return;
   AllocMetadata metadata;
@@ -246,11 +248,12 @@ void Client::RecordMalloc(uint64_t alloc_size, uint64_t alloc_address) {
   unwindstack::AsmGetRegs(metadata.register_data);
 
   if (stackbase < stacktop) {
-    PERFETTO_DCHECK(false);
+    PERFETTO_DFATAL("Stackbase >= stacktop.");
     return;
   }
 
   uint64_t stack_size = static_cast<uint64_t>(stackbase - stacktop);
+  metadata.total_size = total_size;
   metadata.alloc_size = alloc_size;
   metadata.alloc_address = alloc_address;
   metadata.stack_pointer = reinterpret_cast<uint64_t>(stacktop);
@@ -266,7 +269,7 @@ void Client::RecordMalloc(uint64_t alloc_size, uint64_t alloc_address) {
 
   BorrowedSocket fd = socket_pool_.Borrow();
   if (!fd || !SendWireMessage(*fd, msg)) {
-    PERFETTO_DCHECK(false);
+    PERFETTO_DFATAL("Failed to send wire message.");
     fd.Close();
   }
 }
@@ -277,13 +280,23 @@ void Client::RecordFree(uint64_t alloc_address) {
   free_page_.Add(alloc_address, ++sequence_number_, &socket_pool_);
 }
 
-bool Client::ShouldSampleAlloc(uint64_t alloc_size,
-                               void* (*unhooked_malloc)(size_t),
-                               void (*unhooked_free)(void*)) {
+size_t Client::ShouldSampleAlloc(uint64_t alloc_size,
+                                 void* (*unhooked_malloc)(size_t),
+                                 void (*unhooked_free)(void*)) {
   if (!inited_)
     return false;
-  return ShouldSample(pthread_key_.get(), alloc_size, client_config_.rate,
-                      unhooked_malloc, unhooked_free);
+  return SampleSize(pthread_key_.get(), alloc_size, client_config_.rate,
+                    unhooked_malloc, unhooked_free);
+}
+
+void Client::MaybeSampleAlloc(uint64_t alloc_size,
+                              uint64_t alloc_address,
+                              void* (*unhooked_malloc)(size_t),
+                              void (*unhooked_free)(void*)) {
+  size_t total_size =
+      ShouldSampleAlloc(alloc_size, unhooked_malloc, unhooked_free);
+  if (total_size > 0)
+    RecordMalloc(alloc_size, total_size, alloc_address);
 }
 
 }  // namespace perfetto
