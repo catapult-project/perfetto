@@ -42,6 +42,7 @@
 #include "src/profiling/memory/wire_protocol.h"
 
 namespace perfetto {
+namespace profiling {
 namespace {
 
 constexpr struct timeval kSendTimeout = {1 /* s */, 0 /* us */};
@@ -207,7 +208,7 @@ Client::Client(std::vector<base::ScopedFile> socks)
     PERFETTO_DFATAL("Failed to receive client config.");
     return;
   }
-  PERFETTO_DCHECK(client_config_.rate >= 1);
+  PERFETTO_DCHECK(client_config_.interval >= 1);
   inited_ = true;
 }
 
@@ -285,7 +286,7 @@ size_t Client::ShouldSampleAlloc(uint64_t alloc_size,
                                  void (*unhooked_free)(void*)) {
   if (!inited_)
     return false;
-  return SampleSize(pthread_key_.get(), alloc_size, client_config_.rate,
+  return SampleSize(pthread_key_.get(), alloc_size, client_config_.interval,
                     unhooked_malloc, unhooked_free);
 }
 
@@ -299,4 +300,5 @@ void Client::MaybeSampleAlloc(uint64_t alloc_size,
     RecordMalloc(alloc_size, total_size, alloc_address);
 }
 
+}  // namespace profiling
 }  // namespace perfetto

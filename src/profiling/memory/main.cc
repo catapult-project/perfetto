@@ -31,12 +31,13 @@
 #include "perfetto/base/unix_task_runner.h"
 
 namespace perfetto {
+namespace profiling {
 namespace {
 
 constexpr size_t kUnwinderQueueSize = 1000;
 constexpr size_t kBookkeepingQueueSize = 1000;
 constexpr size_t kUnwinderThreads = 5;
-constexpr uint64_t kDefaultSamplingRate = 1;
+constexpr uint64_t kDefaultSamplingInterval = 1;
 
 base::Event* g_dump_evt = nullptr;
 
@@ -72,25 +73,25 @@ void DumpSignalHandler(int) {
 int HeapprofdMain(int argc, char** argv) {
   // TODO(fmayer): This is temporary until heapprofd is integrated with Perfetto
   // and receives its configuration via that.
-  uint64_t sampling_rate = kDefaultSamplingRate;
+  uint64_t sampling_interval = kDefaultSamplingInterval;
   bool standalone = false;
   int opt;
-  while ((opt = getopt(argc, argv, "r:s")) != -1) {
+  while ((opt = getopt(argc, argv, "i:s")) != -1) {
     switch (opt) {
-      case 'r': {
+      case 'i': {
         char* end;
-        long long sampling_rate_arg = strtoll(optarg, &end, 10);
+        long long sampling_interval_arg = strtoll(optarg, &end, 10);
         if (*end != '\0' || *optarg == '\0')
-          PERFETTO_FATAL("Invalid sampling rate: %s", optarg);
-        PERFETTO_CHECK(sampling_rate > 0);
-        sampling_rate = static_cast<uint64_t>(sampling_rate_arg);
+          PERFETTO_FATAL("Invalid sampling interval: %s", optarg);
+        PERFETTO_CHECK(sampling_interval > 0);
+        sampling_interval = static_cast<uint64_t>(sampling_interval_arg);
         break;
       }
       case 's':
         standalone = true;
         break;
       default:
-        PERFETTO_FATAL("%s [-r rate] [-s]", argv[0]);
+        PERFETTO_FATAL("%s [-i interval] [-s]", argv[0]);
     }
   }
 
@@ -133,11 +134,11 @@ int HeapprofdMain(int argc, char** argv) {
     unwinder_queues[static_cast<size_t>(r.pid) % kUnwinderThreads].Add(
         std::move(r));
   };
-  SocketListener listener({sampling_rate}, std::move(on_record_received),
+  SocketListener listener({sampling_interval}, std::move(on_record_received),
                           &bookkeeping_thread);
 
   if (optind != argc)
-    PERFETTO_FATAL("%s [-r rate] [-s]", argv[0]);
+    PERFETTO_FATAL("%s [-i interval] [-s]", argv[0]);
 
   if (standalone) {
     // Allow to be able to manually specify the socket to listen on
@@ -169,9 +170,11 @@ int HeapprofdMain(int argc, char** argv) {
   task_runner.Run();
   return 0;
 }
+
 }  // namespace
+}  // namespace profiling
 }  // namespace perfetto
 
 int main(int argc, char** argv) {
-  return perfetto::HeapprofdMain(argc, argv);
+  return perfetto::profiling::HeapprofdMain(argc, argv);
 }

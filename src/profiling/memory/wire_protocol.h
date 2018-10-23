@@ -30,6 +30,7 @@
 #include <unwindstack/MachineX86_64.h>
 
 namespace perfetto {
+namespace profiling {
 
 // Types needed for the wire format used for communication between the client
 // and heapprofd. The basic format of a record is
@@ -82,10 +83,10 @@ struct FreePageEntry {
 };
 
 struct ClientConfiguration {
-  // On average, sample one allocation every rate bytes,
-  // If rate == 1, sample every allocation.
+  // On average, sample one allocation every interval bytes,
+  // If interval == 1, sample every allocation.
   // Must be >= 1.
-  uint64_t rate;
+  uint64_t interval;
 };
 
 struct FreeMetadata {
@@ -113,6 +114,7 @@ bool ReceiveWireMessage(char* buf, size_t size, WireMessage* out);
 constexpr const char* kHeapprofdSocketEnvVar = "ANDROID_SOCKET_heapprofd";
 constexpr const char* kHeapprofdSocketFile = "/dev/socket/heapprofd";
 
+}  // namespace profiling
 }  // namespace perfetto
 
 #endif  // SRC_PROFILING_MEMORY_WIRE_PROTOCOL_H_
