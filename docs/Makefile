@@ -12,17 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-runtime: python27
-api_version: 1
-threadsafe: yes
-skip_files:
- - ^node_modules.*
-handlers:
-- url: /static/
-  static_dir: static/
-  secure: always
-  redirect_http_response_code: 301
-- url: .*
-  script: main.app
-  secure: always
-  redirect_http_response_code: 301
+test: static
+	docsify serve
+
+static:
+	rm -f static
+	ln -s ../infra/perfetto-site.appspot.com/static static
+	make -C ../infra/perfetto-site.appspot.com/ static
+
+.PHONY: test static
