@@ -66,8 +66,6 @@ export interface PermalinkConfig {
 export interface RecordConfig {
   [key: string]: null|number|boolean|string|string[];
 
-  displayConfigAsPbtxt: boolean;
-
   // Global settings
   durationSeconds: number;
   writeIntoFile: boolean;
@@ -75,10 +73,6 @@ export interface RecordConfig {
 
   // Buffer setup
   bufferSizeMb: number;
-
-  // Ps
-  processMetadata: boolean;
-  scanAllProcessesOnStart: boolean;
 
   // Ftrace
   ftrace: boolean;
@@ -88,6 +82,10 @@ export interface RecordConfig {
   ftraceDrainPeriodMs: number|null;
   ftraceBufferSizeKb: number|null;
 
+  // Ps
+  processMetadata: boolean;
+  scanAllProcessesOnStart: boolean;
+  procStatusPeriodMs: number|null;
 
   // SysStats
   sysStats: boolean;
@@ -118,6 +116,7 @@ export interface State {
    * State of the ConfigEditor.
    */
   recordConfig: RecordConfig;
+  displayConfigAsPbtxt: boolean;
 
   /**
    * Open traces.
@@ -153,7 +152,10 @@ export function createEmptyState(): State {
     scrollingTracks: [],
     queries: {},
     permalink: {},
+
     recordConfig: createEmptyRecordConfig(),
+    displayConfigAsPbtxt: false,
+
     status: {msg: '', timestamp: 0},
   };
 }
@@ -164,8 +166,6 @@ export function createEmptyRecordConfig(): RecordConfig {
     writeIntoFile: false,
     fileWritePeriodMs: null,
     bufferSizeMb: 10.0,
-    processMetadata: false,
-    scanAllProcessesOnStart: false,
 
     ftrace: false,
     ftraceEvents: [],
@@ -174,6 +174,10 @@ export function createEmptyRecordConfig(): RecordConfig {
     ftraceDrainPeriodMs: null,
     ftraceBufferSizeKb: null,
 
+    processMetadata: false,
+    scanAllProcessesOnStart: false,
+    procStatusPeriodMs: null,
+
     sysStats: false,
     meminfoPeriodMs: null,
     meminfoCounters: [],
@@ -181,7 +185,5 @@ export function createEmptyRecordConfig(): RecordConfig {
     vmstatCounters: [],
     statPeriodMs: null,
     statCounters: [],
-
-    displayConfigAsPbtxt: false,
   };
 }

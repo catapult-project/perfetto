@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {assertTrue} from '../../base/logging';
 import {Actions} from '../../common/actions';
 import {TrackState} from '../../common/state';
 import {checkerboardExcept} from '../../frontend/checkerboard';
@@ -21,11 +22,12 @@ import {trackRegistry} from '../../frontend/track_registry';
 
 import {
   Config,
+  COUNTER_TRACK_KIND,
   Data,
-  PROCESS_SUMMARY_TRACK,
 } from './common';
 
-const MARGIN_TOP = 7;
+// 0.5 Makes the horizontal lines sharp.
+const MARGIN_TOP = 5.5;
 const RECT_HEIGHT = 30;
 
 function getCurResolution() {
@@ -34,21 +36,31 @@ function getCurResolution() {
   return Math.pow(10, Math.floor(Math.log10(resolution)));
 }
 
-class ProcessSummaryTrack extends Track<Config, Data> {
-  static readonly kind = PROCESS_SUMMARY_TRACK;
-  static create(trackState: TrackState): ProcessSummaryTrack {
-    return new ProcessSummaryTrack(trackState);
+function computeHue(name: string, ref: number) {
+  let hue = 128;
+  for (let i = 0; i < name.length; i++) {
+    hue += name.charCodeAt(i);
+  }
+  hue += ref;
+  return hue % 256;
+}
+
+class CounterTrack extends Track<Config, Data> {
+  static readonly kind = COUNTER_TRACK_KIND;
+  static create(trackState: TrackState): CounterTrack {
+    return new CounterTrack(trackState);
   }
 
   private reqPending = false;
+  private mouseXpos = 0;
+  private hoveredValue: number|undefined = undefined;
   private hue: number;
 
   constructor(trackState: TrackState) {
     super(trackState);
-    this.hue = (128 + (32 * this.config.upid)) % 256;
+    this.hue = computeHue(this.config.name, this.config.ref);
   }
 
-  // TODO(dproy): This code should be factored out.
   reqDataDeferred() {
     const {visibleWindowTime} = globals.frontendLocalState;
     const reqStart = visibleWindowTime.start - visibleWindowTime.duration;
@@ -64,6 +76,7 @@ class ProcessSummaryTrack extends Track<Config, Data> {
   }
 
   renderCanvas(ctx: CanvasRenderingContext2D): void {
+    // TODO: fonts and colors should come from the CSS and not hardcoded here.
     const {timeScale, visibleWindowTime} = globals.frontendLocalState;
     const data = this.data();
 
@@ -81,6 +94,8 @@ class ProcessSummaryTrack extends Track<Config, Data> {
     }
     if (data === undefined) return;  // Can't possibly draw anything.
 
+    // If the cached trace slices don't fully cover the visible time range,
+    // show a gray rectangle with a "Loading..." label.
     checkerboardExcept(
         ctx,
         timeScale.timeToPx(visibleWindowTime.start),
@@ -88,12 +103,8 @@ class ProcessSummaryTrack extends Track<Config, Data> {
         timeScale.timeToPx(data.start),
         timeScale.timeToPx(data.end));
 
-    this.renderSummary(ctx, data);
-  }
+    assertTrue(data.timestamps.length === data.values.length);
 
-  // TODO(dproy): Dedup with CPU slices.
-  renderSummary(ctx: CanvasRenderingContext2D, data: Data): void {
-    const {timeScale, visibleWindowTime} = globals.frontendLocalState;
     const startPx = Math.floor(timeScale.timeToPx(visibleWindowTime.start));
     const bottomY = MARGIN_TOP + RECT_HEIGHT;
 
@@ -103,21 +114,53 @@ class ProcessSummaryTrack extends Track<Config, Data> {
     ctx.fillStyle = `hsl(${this.hue}, 50%, 60%)`;
     ctx.beginPath();
     ctx.moveTo(lastX, lastY);
-    for (let i = 0; i < data.utilizations.length; i++) {
-      // TODO(dproy): Investigate why utilization is > 1 sometimes.
-      const utilization = Math.min(data.utilizations[i], 1);
-      const startTime = i * data.bucketSizeSeconds + data.start;
+    for (let i = 0; i < data.values.length; i++) {
+      const value = data.values[i];
+      const startTime = data.timestamps[i];
 
       lastX = Math.floor(timeScale.timeToPx(startTime));
 
+      const height = Math.round(RECT_HEIGHT * (1 - value / data.maximumValue));
       ctx.lineTo(lastX, lastY);
-      lastY = MARGIN_TOP + Math.round(RECT_HEIGHT * (1 - utilization));
+      lastY = MARGIN_TOP + height;
       ctx.lineTo(lastX, lastY);
     }
     ctx.lineTo(lastX, bottomY);
     ctx.closePath();
     ctx.fill();
+
+    if (this.hoveredValue) {
+      // TODO(hjd): Add units.
+      const text = `value: ${this.hoveredValue.toLocaleString()}`;
+
+      ctx.font = '10px Google Sans';
+      const width = ctx.measureText(text).width;
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.fillRect(this.mouseXpos, MARGIN_TOP, width + 16, RECT_HEIGHT);
+      ctx.fillStyle = 'hsl(200, 50%, 40%)';
+      ctx.textAlign = 'left';
+      ctx.fillText(text, this.mouseXpos + 8, 18);
+    }
+  }
+
+  onMouseMove({x}: {x: number, y: number}) {
+    const data = this.data();
+    if (data === undefined) return;
+    this.mouseXpos = x;
+    const {timeScale} = globals.frontendLocalState;
+    const time = timeScale.pxToTime(x);
+    this.hoveredValue = undefined;
+
+    for (let i = 0; i < data.values.length; i++) {
+      if (data.timestamps[i] > time) break;
+      this.hoveredValue = data.values[i];
+    }
+  }
+
+  onMouseOut() {
+    this.hoveredValue = undefined;
   }
 }
 
-trackRegistry.register(ProcessSummaryTrack);
+trackRegistry.register(CounterTrack);

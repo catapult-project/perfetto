@@ -35,6 +35,9 @@ const CONFIG_PROTO_URL =
 const FTRACE_EVENTS = [
   'print',
   'sched_switch',
+  'rss_stat',
+  'ion_heap_shrink',
+  'ion_heap_grow',
   'cpufreq_interactive_already',
   'cpufreq_interactive_boost',
   'cpufreq_interactive_notyet',
@@ -297,7 +300,7 @@ const FTRACE_EVENTS = [
 
 const CONFIG_PRESETS = [
   {
-    label: 'cpu',
+    label: 'Investigate CPU usage',
     config: {
       durationSeconds: 10.0,
       writeIntoFile: false,
@@ -306,6 +309,7 @@ const CONFIG_PRESETS = [
 
       processMetadata: true,
       scanAllProcessesOnStart: false,
+      procStatusPeriodMs: null,
 
       ftrace: true,
       ftraceEvents: [
@@ -324,8 +328,45 @@ const CONFIG_PRESETS = [
       vmstatCounters: [],
       statPeriodMs: null,
       statCounters: [],
+    },
+  },
+  {
+    label: 'Investigate memory',
+    config: {
+      durationSeconds: 10.0,
+      writeIntoFile: false,
+      fileWritePeriodMs: null,
+      bufferSizeMb: 10.0,
 
-      displayConfigAsPbtxt: false,
+      processMetadata: true,
+      scanAllProcessesOnStart: false,
+      procStatusPeriodMs: 50,
+
+      ftrace: true,
+      ftraceEvents: [
+        'print',
+        'sched_switch',
+        'rss_stat',
+        'ion_heap_shrink',
+        'ion_heap_grow',
+      ],
+      atraceApps: [],
+      atraceCategories: ['am', 'dalvik'],
+      ftraceDrainPeriodMs: null,
+      ftraceBufferSizeKb: null,
+
+      sysStats: true,
+      meminfoPeriodMs: 50,
+      meminfoCounters: [
+        'MEMINFO_MEM_AVAILABLE',
+        'MEMINFO_SWAP_CACHED',
+        'MEMINFO_ACTIVE',
+        'MEMINFO_INACTIVE'
+      ],
+      vmstatPeriodMs: null,
+      vmstatCounters: [],
+      statPeriodMs: null,
+      statCounters: [],
     },
   },
   {
@@ -338,6 +379,7 @@ const CONFIG_PRESETS = [
 
       processMetadata: false,
       scanAllProcessesOnStart: false,
+      procStatusPeriodMs: null,
 
       ftrace: false,
       ftraceEvents: [],
@@ -353,8 +395,6 @@ const CONFIG_PRESETS = [
       vmstatCounters: [],
       statPeriodMs: null,
       statCounters: [],
-
-      displayConfigAsPbtxt: false,
     },
   },
 ];
@@ -421,12 +461,12 @@ class Toggle implements m.ClassComponent<ToggleAttrs> {
         {
           title: attrs.help,
           class: attrs.enabled ? '' : 'disabled',
-
         },
         attrs.label,
         m('input[type="checkbox"]', {
           onchange: m.withAttr('checked', attrs.onchange),
           disabled: !attrs.enabled,
+          class: attrs.enabled ? '' : 'disabled',
           checked: attrs.value,
         }));
   }
@@ -585,7 +625,8 @@ function sameConfig(a: RecordConfig, b: RecordConfig) {
 
 export const RecordPage = createPage({
   view() {
-    const state = globals.state.recordConfig;
+    const state = globals.state;
+    const config = globals.state.recordConfig;
     const data = globals.trackDataStore.get('config') as {
       commandline: string,
       pbtxt: string,
@@ -603,7 +644,7 @@ export const RecordPage = createPage({
             CONFIG_PRESETS.map(preset => m('button', {
               onclick: () => globals.dispatch(
                 Actions.setConfig({config: preset.config})),
-              class: sameConfig(preset.config, state) ? 'selected' : '',
+              class: sameConfig(preset.config, config) ? 'selected' : '',
             }, preset.label))),
 
           m('.heading',
@@ -613,7 +654,7 @@ export const RecordPage = createPage({
             label: 'Duration',
             sublabel: 's',
             placeholder: '',
-            value: state.durationSeconds,
+            value: config.durationSeconds,
             help: DURATION_HELP,
             onchange: onChange<number|null>('durationSeconds'),
             presets: [
@@ -625,16 +666,16 @@ export const RecordPage = createPage({
           m(Toggle, {
             label: 'Long trace mode',
             help: '',
-            value: state.writeIntoFile,
+            value: config.writeIntoFile,
             enabled: true,
             onchange: onChange<boolean>('writeIntoFile'),
           }),
           m('.control-group', m(Numeric, {
-              enabled: state.writeIntoFile,
+              enabled: config.writeIntoFile,
               label: 'Flush into file every',
               sublabel: 'ms',
               placeholder: 'default',
-              value: state.fileWritePeriodMs,
+              value: config.fileWritePeriodMs,
               help: '',
               onchange: onChange<number|null>('fileWritePeriodMs'),
               presets: [
@@ -648,7 +689,7 @@ export const RecordPage = createPage({
             sublabel: 'mb',
             help: BUFFER_SIZE_HELP,
             placeholder: '',
-            value: state.bufferSizeMb,
+            value: config.bufferSizeMb,
             onchange: onChange<number|null>('bufferSizeMb'),
             presets: [
               {label: '1mb', value: 1},
@@ -657,26 +698,18 @@ export const RecordPage = createPage({
             ]
           }),
 
-          m('.heading', m(Toggle, {
-            label: 'Record process/thread associations',
-            help: PROCESS_METADATA_HELP,
-            value: state.processMetadata,
-            enabled: true,
-            onchange: onChange<boolean|null>('processMetadata'),
-          })),
-
           // TODO(hjd): Re-add when multi-buffer support comes.
           //m('.control-group', m(Toggle, {
           //    label: 'Scan all processes on start',
-          //    value: state.scanAllProcessesOnStart,
+          //    value: config.scanAllProcessesOnStart,
           //    help: SCAN_ALL_PROCESSES_ON_START_HELP,
-          //    enabled: state.processMetadata,
+          //    enabled: config.processMetadata,
           //    onchange: onChange<boolean>('scanAllProcessesOnStart'),
           //})),
 
           m('.heading', m(Toggle, {
             label: 'Ftrace & Atrace',
-            value: state.ftrace,
+            value: config.ftrace,
             enabled: true,
             help: FTRACE_AND_ATRACE_HELP,
             onchange: onChange<boolean>('ftrace'),
@@ -685,8 +718,8 @@ export const RecordPage = createPage({
           m('.control-group',
             m(MultiSelect, {
               label: 'Ftrace Events',
-              enabled: state.ftrace,
-              selected: state.ftraceEvents,
+              enabled: config.ftrace,
+              selected: config.ftraceEvents,
               options: FTRACE_EVENTS,
               onadd: onAdd('ftraceEvents'),
               onsubtract: onSubtract('ftraceEvents'),
@@ -694,8 +727,8 @@ export const RecordPage = createPage({
 
             m(MultiSelect, {
               label: 'Atrace Categories',
-              enabled: state.ftrace,
-              selected: state.atraceCategories,
+              enabled: config.ftrace,
+              selected: config.atraceCategories,
               options: ATRACE_CATERGORIES,
               onadd: onAdd('atraceCategories'),
               onsubtract: onSubtract('atraceCategories'),
@@ -703,24 +736,24 @@ export const RecordPage = createPage({
 
             m(MultiSelect, {
               label: 'Atrace Apps',
-              enabled: state.ftrace,
-              selected: state.atraceApps,
+              enabled: config.ftrace,
+              selected: config.atraceApps,
               options: [],
               onadd: onAdd('atraceApps'),
               onsubtract: onSubtract('atraceApps'),
             }),
 
             m('i', {
-              class: state.ftrace ? '' : 'disabled'
+              class: config.ftrace ? '' : 'disabled'
             }, 'Advanced ftrace configuration'),
 
             m(Numeric, {
-              enabled: state.ftrace,
+              enabled: config.ftrace,
               label: 'Drain kernel buffer every',
               sublabel: 'ms',
               help: '',
               placeholder: 'default',
-              value: state.ftraceDrainPeriodMs,
+              value: config.ftraceDrainPeriodMs,
               onchange: onChange<number|null>('ftraceDrainPeriodMs'),
               presets: [
                 {label: '100ms', value: 100},
@@ -730,12 +763,12 @@ export const RecordPage = createPage({
             }),
 
             m(Numeric, {
-              enabled: state.ftrace,
+              enabled: config.ftrace,
               label: 'Kernel buffer size (per cpu)',
               sublabel: 'kb',
               help: '',
               placeholder: 'default',
-              value: state.ftraceBufferSizeKb,
+              value: config.ftraceBufferSizeKb,
               onchange: onChange<number|null>('ftraceBufferSizeKb'),
               presets: [
                 {label: '1mb', value: 1 * 1024},
@@ -747,50 +780,51 @@ export const RecordPage = createPage({
             ),
 
           m('.heading', m(Toggle, {
-            label: '/proc poller',
-            value: state.sysStats,
+            label: 'Per-process stats and thread associations',
+            help: PROCESS_METADATA_HELP,
+            value: config.processMetadata,
+            enabled: true,
+            onchange: onChange<boolean|null>('processMetadata'),
+          })),
+
+          m('.control-group',
+            m(Numeric, {
+              label: 'Poll /proc/[pid]/status',
+              sublabel: 'ms',
+              enabled: config.processMetadata,
+              help: '',
+              placeholder: 'never',
+              value: config.procStatusPeriodMs,
+              onchange: onChange<null|number>('procStatusPeriodMs'),
+              presets: COUNTER_PRESETS,
+            }),
+          ),
+
+          m('.heading', m(Toggle, {
+            label: 'System-wide stats (/proc poller)',
+            value: config.sysStats,
             enabled: true,
             help: SYS_STATS_HELP,
             onchange: onChange<boolean>('sysStats'),
           })),
 
           m('.control-group',
-            m(Numeric, {
-              label: 'Poll /proc/stat every',
-              sublabel: 'ms',
-              enabled: state.sysStats,
-              help: '',
-              placeholder: 'never',
-              value: state.statPeriodMs,
-              onchange: onChange<null|number>('statPeriodMs'),
-              presets: COUNTER_PRESETS,
-            }),
-
-            m(MultiSelect, {
-              label: 'Stat Counters',
-              enabled: state.sysStats && isTruthy(state.statPeriodMs),
-              selected: state.statCounters,
-              options: Object.keys(StatCounters)
-                           .filter(c => c !== 'STAT_UNSPECIFIED'),
-              onadd: onAdd('statCounters'),
-              onsubtract: onSubtract('statCounters'),
-            }),
 
             m(Numeric, {
-              label: 'Poll /proc/meminfo every',
+              label: 'Poll /proc/meminfo',
               sublabel: 'ms',
-              enabled: state.sysStats,
+              enabled: config.sysStats,
               help: '',
               placeholder: 'never',
-              value: state.meminfoPeriodMs,
+              value: config.meminfoPeriodMs,
               onchange: onChange<null|number>('meminfoPeriodMs'),
               presets: COUNTER_PRESETS,
             }),
 
             m(MultiSelect, {
               label: 'Meminfo Counters',
-              enabled: state.sysStats && isTruthy(state.meminfoPeriodMs),
-              selected: state.meminfoCounters,
+              enabled: config.sysStats && isTruthy(config.meminfoPeriodMs),
+              selected: config.meminfoCounters,
               options: Object.keys(MeminfoCounters)
                            .filter(c => c !== 'MEMINFO_UNSPECIFIED'),
               onadd: onAdd('meminfoCounters'),
@@ -798,24 +832,45 @@ export const RecordPage = createPage({
             }),
 
             m(Numeric, {
-              label: 'Poll /proc/vmstat every',
+              label: 'Poll /proc/vmstat',
               sublabel: 'ms',
-              enabled: state.sysStats,
+              enabled: config.sysStats,
               help: '',
               placeholder: 'never',
-              value: state.vmstatPeriodMs,
+              value: config.vmstatPeriodMs,
               onchange: onChange<null|number>('vmstatPeriodMs'),
               presets: COUNTER_PRESETS,
             }),
 
             m(MultiSelect, {
               label: 'Vmstat Counters',
-              enabled: state.sysStats && isTruthy(state.vmstatPeriodMs),
-              selected: state.vmstatCounters,
+              enabled: config.sysStats && isTruthy(config.vmstatPeriodMs),
+              selected: config.vmstatCounters,
               options: Object.keys(VmstatCounters)
                            .filter(c => c !== 'VMSTAT_UNSPECIFIED'),
               onadd: onAdd('vmstatCounters'),
               onsubtract: onSubtract('vmstatCounters'),
+            }),
+
+            m(Numeric, {
+              label: 'Poll /proc/stat',
+              sublabel: 'ms',
+              enabled: config.sysStats,
+              help: '',
+              placeholder: 'never',
+              value: config.statPeriodMs,
+              onchange: onChange<null|number>('statPeriodMs'),
+              presets: COUNTER_PRESETS,
+            }),
+
+            m(MultiSelect, {
+              label: 'Stat Counters',
+              enabled: config.sysStats && isTruthy(config.statPeriodMs),
+              selected: config.statCounters,
+              options: Object.keys(StatCounters)
+                           .filter(c => c !== 'STAT_UNSPECIFIED'),
+              onadd: onAdd('statCounters'),
+              onsubtract: onSubtract('statCounters'),
             }),
 
             ),
@@ -827,7 +882,9 @@ export const RecordPage = createPage({
             value: state.displayConfigAsPbtxt,
             enabled: true,
             help: '',
-            onchange: onChange<boolean>('displayConfigAsPbtxt'),
+            onchange: () => {
+              globals.dispatch(Actions.toggleDisplayConfigAsPbtxt({}));
+            },
           }),
 
 
@@ -836,7 +893,7 @@ export const RecordPage = createPage({
         data ?
             [
               m('.command.text-column',
-                `To collect a ${state.durationSeconds}
+                `To collect a ${config.durationSeconds}
                 second Perfetto trace from an Android phone run this command:`,
                 m(CodeSample, {text: data.commandline}),
                 'Then click "Open trace file" in the menu to the left and select',
