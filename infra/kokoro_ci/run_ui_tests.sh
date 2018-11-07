@@ -25,21 +25,10 @@ echo PERFETTO_TEST_GN_ARGS: ${PERFETTO_TEST_GN_ARGS}
 
 OUT_PATH="out/dist"
 
-tools/install-build-deps --no-android
-
-pip install --quiet --user protobuf
-
-if [[ -e buildtools/clang/bin/llvm-symbolizer ]]; then
-  export ASAN_SYMBOLIZER_PATH="buildtools/clang/bin/llvm-symbolizer"
-  export MSAN_SYMBOLIZER_PATH="buildtools/clang/bin/llvm-symbolizer"
-fi
+tools/install-build-deps --no-android --ui
 
 tools/gn gen ${OUT_PATH} --args="${PERFETTO_TEST_GN_ARGS}" --check
-tools/ninja -C ${OUT_PATH}
+tools/ninja -C ${OUT_PATH} ui 2>&1 | grep -v "no version information available"
 
 # Run the tests
-${OUT_PATH}/perfetto_unittests
-${OUT_PATH}/perfetto_integrationtests
-
-BENCHMARK_FUNCTIONAL_TEST_ONLY=true ${OUT_PATH}/perfetto_benchmarks
-tools/diff_test_trace_processor.py ${OUT_PATH}/trace_processor_shell
+${OUT_PATH}/ui_unittests --ci
