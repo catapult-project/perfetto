@@ -299,6 +299,8 @@ message ProcessStatsConfig {
 
   // If > 0 samples counters (see process_stats.proto) from
   // /proc/pid/status every X ms.
+  // This is required to be > 100ms to avoid excessive CPU usage.
+  // TODO: add CPU cost for change this value.
   optional uint32 proc_stats_poll_ms = 4;
 
   // If empty samples stats for all processes. If non empty samples stats only
@@ -327,16 +329,22 @@ message ProcessStatsConfig {
 // Not OK: [10ms, 10ms, 11ms],  [10ms, 15ms, 20ms]
 message SysStatsConfig {
   // Polls /proc/meminfo every X ms, if non-zero.
+  // This is required to be > 10ms to avoid excessive CPU usage.
+  // Cost: 0.3 ms [read] + 0.07 ms [parse + trace injection]
   optional uint32 meminfo_period_ms = 1;
 
   // Only the counters specified below are reported.
   repeated MeminfoCounters meminfo_counters = 2;
 
   // Polls /proc/vmstat every X ms, if non-zero.
+  // This is required to be > 10ms to avoid excessive CPU usage.
+  // Cost: 0.2 ms [read] + 0.3 ms [parse + trace injection]
   optional uint32 vmstat_period_ms = 3;
   repeated VmstatCounters vmstat_counters = 4;
 
   // Pols /proc/stat every X ms, if non-zero.
+  // This is required to be > 10ms to avoid excessive CPU usage.
+  // Cost: 4.1 ms [read] + 1.9 ms [parse + trace injection]
   optional uint32 stat_period_ms = 5;
   enum StatCounters {
     STAT_UNSPECIFIED = 0;
@@ -357,6 +365,23 @@ message SysStatsConfig {
 
 // The configuration for a fake producer used in tests.
 message TestConfig {
+  message DummyFields {
+    optional uint32 field_uint32 = 1;
+    optional int32 field_int32 = 2;
+    optional uint64 field_uint64 = 3;
+    optional int64 field_int64 = 4;
+    optional fixed64 field_fixed64 = 5;
+    optional sfixed64 field_sfixed64 = 6;
+    optional fixed32 field_fixed32 = 7;
+    optional sfixed32 field_sfixed32 = 8;
+    optional double field_double = 9;
+    optional float field_float = 10;
+    optional sint64 field_sint64 = 11;
+    optional sint32 field_sint32 = 12;
+    optional string field_string = 13;
+    optional bytes field_bytes = 14;
+  }
+
   // The number of messages the fake producer should send.
   optional uint32 message_count = 1;
 
@@ -378,6 +403,8 @@ message TestConfig {
   // Whether the producer should send a event batch when the data source is
   // is initially registered.
   optional bool send_batch_on_register = 5;
+
+  optional DummyFields dummy_fields = 6;
 }
 
 // End of protos/perfetto/config/test_config.proto
