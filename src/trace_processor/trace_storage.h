@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "perfetto/base/logging.h"
+#include "perfetto/base/optional.h"
 #include "perfetto/base/string_view.h"
 #include "perfetto/base/utils.h"
 
@@ -50,7 +51,8 @@ enum RefType {
   kIrq = 3,
   kSoftIrq = 4,
   kUpid = 5,
-  kMax = kUpid + 1
+  kUtidLookupUpid = 6,
+  kMax = kUtidLookupUpid + 1
 };
 
 // Stores a data inside a trace file in a columnar form. This makes it efficient
@@ -84,7 +86,7 @@ class TraceStorage {
     uint64_t start_ns = 0;
     uint64_t end_ns = 0;
     StringId name_id = 0;
-    UniquePid upid = 0;
+    base::Optional<UniquePid> upid;
     uint32_t tid = 0;
   };
 
@@ -293,7 +295,7 @@ class TraceStorage {
   virtual StringId InternString(base::StringView);
 
   Process* GetMutableProcess(UniquePid upid) {
-    PERFETTO_DCHECK(upid > 0 && upid < unique_processes_.size());
+    PERFETTO_DCHECK(upid < unique_processes_.size());
     return &unique_processes_[upid];
   }
 
@@ -309,7 +311,7 @@ class TraceStorage {
   }
 
   const Process& GetProcess(UniquePid upid) const {
-    PERFETTO_DCHECK(upid > 0 && upid < unique_processes_.size());
+    PERFETTO_DCHECK(upid < unique_processes_.size());
     return unique_processes_[upid];
   }
 
