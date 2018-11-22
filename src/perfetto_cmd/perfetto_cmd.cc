@@ -306,8 +306,28 @@ int PerfettoCmd::Main(int argc, char** argv) {
     return 1;
 
   if (background) {
-    PERFETTO_CHECK(daemon(0 /*nochdir*/, 0 /*noclose*/) == 0);
-    PERFETTO_DLOG("Continuing in background");
+    pid_t pid;
+    switch (pid = fork()) {
+      case -1:
+        PERFETTO_FATAL("fork");
+      case 0: {
+        PERFETTO_CHECK(setsid() != -1);
+        // daemon also ignores chdir errors.
+        chdir("/");
+        base::ScopedFile null = base::OpenFile("/dev/null", O_RDONLY);
+        PERFETTO_CHECK(null);
+        PERFETTO_CHECK(dup2(*null, STDIN_FILENO) != -1);
+        PERFETTO_CHECK(dup2(*null, STDOUT_FILENO) != -1);
+        PERFETTO_CHECK(dup2(*null, STDERR_FILENO) != -1);
+        // Do not accidentally close stdin/stdout/stderr.
+        if (*null <= 2)
+          null.release();
+        break;
+      }
+      default:
+        printf("%d\n", pid);
+        exit(0);
+    }
   }
 
   RateLimiter::Args args{};
@@ -464,10 +484,7 @@ bool PerfettoCmd::OpenOutputFile() {
 
 void PerfettoCmd::SetupCtrlCSignalHandler() {
   // Setup the pipe used to deliver the CTRL-C notification from signal handler.
-  int pipe_fds[2];
-  PERFETTO_CHECK(pipe(pipe_fds) == 0);
-  ctrl_c_pipe_rd_.reset(pipe_fds[0]);
-  ctrl_c_pipe_wr_.reset(pipe_fds[1]);
+  ctrl_c_pipe_ = base::Pipe::Create();
 
   // Setup signal handler.
   struct sigaction sa {};
@@ -488,7 +505,7 @@ void PerfettoCmd::SetupCtrlCSignalHandler() {
   sigaction(SIGINT, &sa, nullptr);
 
   task_runner_.AddFileDescriptorWatch(
-      *ctrl_c_pipe_rd_, [this] { consumer_endpoint_->DisableTracing(); });
+      *ctrl_c_pipe_.rd, [this] { consumer_endpoint_->DisableTracing(); });
 }
 
 int __attribute__((visibility("default")))
