@@ -382,7 +382,7 @@ void GenerateFtraceEventProto(const std::vector<FtraceEventName>& raw_whitelist,
     *fout << R"(import "perfetto/trace/ftrace/)" << group << R"(.proto";)"
           << "\n";
   }
-
+  *fout << "import \"perfetto/trace/ftrace/generic.proto\";\n";
   *fout << "\n";
   *fout << "package perfetto.protos;\n\n";
   *fout << R"(message FtraceEvent {
@@ -406,9 +406,29 @@ void GenerateFtraceEventProto(const std::vector<FtraceEventName>& raw_whitelist,
       continue;
     }
 
-    *fout << "    " << ToCamelCase(event.name()) << "FtraceEvent "
-          << event.name() << " = " << i << ";\n";
+    std::string typeName = ToCamelCase(event.name()) + "FtraceEvent";
+
+    // "    " (indent) + TypeName + " " + field_name + " = " + 123 + ";"
+    if (4 + typeName.size() + 1 + event.name().size() + 3 + 3 + 1 <= 80) {
+      // Everything fits in one line:
+      *fout << "    " << typeName << " " << event.name() << " = " << i << ";\n";
+    } else if (4 + typeName.size() + 1 + event.name().size() + 2 <= 80) {
+      // Everything fits except the field id:
+      *fout << "    " << typeName << " " << event.name() << " =\n        " << i
+            << ";\n";
+    } else {
+      // Nothing fits:
+      *fout << "    " << typeName << "\n        " << event.name() << " = " << i
+            << ";\n";
+    }
     ++i;
+    // We cannot depend on the proto file to get this number because
+    // it would cause a dependency cycle between this generator and the
+    // generated code.
+    if (i == 327) {
+      *fout << "    GenericFtraceEvent generic = " << i << ";\n";
+      ++i;
+    }
   }
   *fout << "  }\n";
   *fout << "}\n";
