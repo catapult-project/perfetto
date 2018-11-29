@@ -85,6 +85,36 @@ SystemProperties::Handle SystemProperties::SetAll() {
   return Handle(this);
 }
 
+// This is conditionally noreturn, so disable the warning.
+#pragma GCC diagnostic push
+#if PERFETTO_DCHECK_IS_ON()
+#pragma GCC diagnostic ignored "-Wmissing-noreturn"
+#endif
+
+// static
+void SystemProperties::ResetProperties() {
+#if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID)
+  int r = __system_property_foreach(
+      [](const prop_info* pi, void*) {
+        __system_property_read_callback(
+            pi,
+            [](void*, const char* name, const char*, uint32_t) {
+              const char* found = strstr(name, "heapprofd");
+              if (found == name) {
+                PERFETTO_DCHECK(__system_property_set(name, "") == 0);
+              }
+            },
+            nullptr);
+      },
+      nullptr);
+  PERFETTO_DCHECK(r == 0);
+#else
+  PERFETTO_DFATAL("Cannot ResetProperties on out-of-tree builds.");
+#endif
+}
+
+#pragma GCC diagnostic pop
+
 SystemProperties::~SystemProperties() {
   PERFETTO_DCHECK(alls_ == 0 && properties_.empty());
 }
@@ -92,7 +122,7 @@ SystemProperties::~SystemProperties() {
 bool SystemProperties::SetAndroidProperty(const std::string& name,
                                           const std::string& value) {
 #if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID)
-  return __system_property_set(name.c_str(), value.c_str());
+  return __system_property_set(name.c_str(), value.c_str()) == 0;
 #else
   // Allow this to be mocked out for tests on other platforms.
   base::ignore_result(name);

@@ -419,6 +419,10 @@ bool TracingServiceImpl::StartTracing(TracingSessionID tsid) {
         tracing_session->delay_to_next_write_period_ms());
   }
 
+  // Start the periodic flush tasks if the config specified a flush period.
+  if (tracing_session->config.flush_period_ms())
+    PeriodicFlushTask(tsid, /*post_next_only=*/true);
+
   for (const auto& kv : tracing_session->data_source_instances) {
     ProducerID producer_id = kv.first;
     const DataSourceInstance& data_source = kv.second;
@@ -662,6 +666,31 @@ void TracingServiceImpl::FlushAndDisableTracing(TracingSessionID tsid) {
                   success, tsid);
     if (weak_this)
       weak_this->DisableTracing(tsid);
+  });
+}
+
+void TracingServiceImpl::PeriodicFlushTask(TracingSessionID tsid,
+                                           bool post_next_only) {
+  PERFETTO_DCHECK_THREAD(thread_checker_);
+  TracingSession* tracing_session = GetTracingSession(tsid);
+  if (!tracing_session || tracing_session->state != TracingSession::STARTED)
+    return;
+
+  uint32_t flush_period_ms = tracing_session->config.flush_period_ms();
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
+  task_runner_->PostDelayedTask(
+      [weak_this, tsid] {
+        if (weak_this)
+          weak_this->PeriodicFlushTask(tsid, /*post_next_only=*/false);
+      },
+      flush_period_ms - (base::GetWallTimeMs().count() % flush_period_ms));
+
+  if (post_next_only)
+    return;
+
+  Flush(tsid, kFlushTimeoutMs, [](bool success) {
+    if (!success)
+      PERFETTO_ELOG("Periodic flush timed out");
   });
 }
 
@@ -1025,11 +1054,12 @@ TracingServiceImpl::DataSourceInstance* TracingServiceImpl::SetupDataSource(
 
   DataSourceInstanceID inst_id = ++last_data_source_instance_id_;
   auto insert_iter = tracing_session->data_source_instances.emplace(
-      producer->id_,
-      DataSourceInstance{inst_id,
-                         cfg_data_source.config(),  //  Deliberate copy.
-                         data_source.descriptor.name(),
-                         data_source.descriptor.will_notify_on_stop()});
+      std::piecewise_construct,  //
+      std::forward_as_tuple(producer->id_),
+      std::forward_as_tuple(inst_id,
+                            cfg_data_source.config(),  //  Deliberate copy.
+                            data_source.descriptor.name(),
+                            data_source.descriptor.will_notify_on_stop()));
   DataSourceInstance* ds_instance = &insert_iter->second;
   DataSourceConfig& ds_config = ds_instance->config;
   ds_config.set_trace_duration_ms(tracing_session->config.duration_ms());
