@@ -279,6 +279,54 @@ class StorageSchema {
     const std::deque<uint64_t>* dur_;
   };
 
+  // Column which is used to reference the args table in other tables. That is,
+  // it acts as a "foreign key" into the args table.
+  class IdColumn final : public Column {
+   public:
+    IdColumn(std::string column_name, TableId table_id);
+    virtual ~IdColumn() override;
+
+    void ReportResult(sqlite3_context* ctx, uint32_t row) const override {
+      auto id = TraceStorage::CreateRowId(table_id_, row);
+      sqlite_utils::ReportSqliteResult(ctx, id);
+    }
+
+    Bounds BoundFilter(int, sqlite3_value*) const override { return Bounds{}; }
+
+    Predicate Filter(int op, sqlite3_value* value) const override {
+      auto binary_op = sqlite_utils::GetPredicateForOp<RowId>(op);
+      RowId extracted = sqlite_utils::ExtractSqliteValue<RowId>(value);
+      return [this, binary_op, extracted](uint32_t idx) {
+        auto val = TraceStorage::CreateRowId(table_id_, idx);
+        return binary_op(val, extracted);
+      };
+    }
+
+    Comparator Sort(const QueryConstraints::OrderBy& ob) const override {
+      if (ob.desc) {
+        return [this](uint32_t f, uint32_t s) {
+          auto a = TraceStorage::CreateRowId(table_id_, f);
+          auto b = TraceStorage::CreateRowId(table_id_, s);
+          return sqlite_utils::CompareValuesDesc(a, b);
+        };
+      }
+      return [this](uint32_t f, uint32_t s) {
+        auto a = TraceStorage::CreateRowId(table_id_, f);
+        auto b = TraceStorage::CreateRowId(table_id_, s);
+        return sqlite_utils::CompareValuesAsc(a, b);
+      };
+    }
+
+    Table::ColumnType GetType() const override {
+      return Table::ColumnType::kUlong;
+    }
+
+    bool IsNaturallyOrdered() const override { return false; }
+
+   private:
+    TableId table_id_;
+  };
+
   StorageSchema();
   StorageSchema(std::vector<std::unique_ptr<Column>> columns);
 
@@ -321,6 +369,11 @@ class StorageSchema {
       bool hidden = false) {
     return std::unique_ptr<StringColumn<Id>>(
         new StringColumn<Id>(column_name, deque, lookup_map, hidden));
+  }
+
+  static std::unique_ptr<IdColumn> IdColumnPtr(std::string column_name,
+                                               TableId table_id) {
+    return std::unique_ptr<IdColumn>(new IdColumn(column_name, table_id));
   }
 
  private:

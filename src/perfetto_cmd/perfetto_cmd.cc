@@ -58,6 +58,7 @@ namespace perfetto {
 namespace {
 
 constexpr char kDefaultDropBoxTag[] = "perfetto";
+constexpr uint32_t kFlushTimeoutMs = 1000;
 
 perfetto::PerfettoCmd* g_consumer_cmd;
 
@@ -482,9 +483,6 @@ bool PerfettoCmd::OpenOutputFile() {
 }
 
 void PerfettoCmd::SetupCtrlCSignalHandler() {
-  // Setup the pipe used to deliver the CTRL-C notification from signal handler.
-  ctrl_c_pipe_ = base::Pipe::Create();
-
   // Setup signal handler.
   struct sigaction sa {};
 
@@ -493,18 +491,18 @@ void PerfettoCmd::SetupCtrlCSignalHandler() {
 #if defined(__clang__)
 #pragma GCC diagnostic ignored "-Wdisabled-macro-expansion"
 #endif
-  sa.sa_handler = [](int) {
-    PERFETTO_LOG("SIGINT received: disabling tracing");
-    char one = '1';
-    PERFETTO_CHECK(base::WriteAll(g_consumer_cmd->ctrl_c_pipe_wr(), &one,
-                                  sizeof(one)) == 1);
-  };
+  sa.sa_handler = [](int) { g_consumer_cmd->SignalCtrlC(); };
   sa.sa_flags = static_cast<decltype(sa.sa_flags)>(SA_RESETHAND | SA_RESTART);
 #pragma GCC diagnostic pop
   sigaction(SIGINT, &sa, nullptr);
 
-  task_runner_.AddFileDescriptorWatch(
-      *ctrl_c_pipe_.rd, [this] { consumer_endpoint_->DisableTracing(); });
+  task_runner_.AddFileDescriptorWatch(ctrl_c_evt_.fd(), [this] {
+    PERFETTO_LOG("SIGINT received: disabling tracing");
+    ctrl_c_evt_.Clear();
+    consumer_endpoint_->Flush(kFlushTimeoutMs, [this](bool) {
+      consumer_endpoint_->DisableTracing();
+    });
+  });
 }
 
 int __attribute__((visibility("default")))

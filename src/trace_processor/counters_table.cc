@@ -42,6 +42,7 @@ Table::Schema CountersTable::CreateSchema(int, const char* const*) {
   const auto& counters = storage_->counters();
 
   std::unique_ptr<StorageSchema::Column> cols[] = {
+      StorageSchema::IdColumnPtr("id", TableId::kCounters),
       StorageSchema::NumericColumnPtr("ts", &counters.timestamps(),
                                       false /* hidden */, true /* ordered */),
       StorageSchema::StringColumnPtr("name", &counters.name_ids(),

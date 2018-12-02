@@ -73,6 +73,9 @@ class TracingServiceImpl : public TracingService {
     // TracingService::ProducerEndpoint implementation.
     void RegisterDataSource(const DataSourceDescriptor&) override;
     void UnregisterDataSource(const std::string& name) override;
+    void RegisterTraceWriter(uint32_t writer_id,
+                             uint32_t target_buffer) override;
+    void UnregisterTraceWriter(uint32_t writer_id) override;
     void CommitData(const CommitDataRequest&, CommitDataCallback) override;
     void SetSharedMemory(std::unique_ptr<SharedMemory>);
     std::unique_ptr<TraceWriter> CreateTraceWriter(BufferID) override;
@@ -86,6 +89,7 @@ class TracingServiceImpl : public TracingService {
     void StartDataSource(DataSourceInstanceID, const DataSourceConfig&);
     void StopDataSource(DataSourceInstanceID);
     void Flush(FlushRequestID, const std::vector<DataSourceInstanceID>&);
+    void OnFreeBuffers(const std::vector<BufferID>& target_buffers);
 
    private:
     friend class TracingServiceImpl;
@@ -104,6 +108,10 @@ class TracingServiceImpl : public TracingService {
     SharedMemoryABI shmem_abi_;
     size_t shmem_size_hint_bytes_ = 0;
     const std::string name_;
+
+    // Set of the global target_buffer IDs that the producer is configured to
+    // write into in any active tracing session.
+    std::set<BufferID> allowed_target_buffers_;
 
     // This is used only in in-process configurations (mostly tests).
     std::unique_ptr<SharedMemoryArbiterImpl> inproc_shmem_arbiter_;

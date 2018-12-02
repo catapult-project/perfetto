@@ -105,7 +105,9 @@ using protozero::proto_utils::kFieldTypeLengthDelimited;
 
 ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
     : context_(context),
+      utid_name_id_(context->storage->InternString("utid")),
       cpu_freq_name_id_(context->storage->InternString("cpufreq")),
+      cpu_idle_name_id_(context->storage->InternString("cpuidle")),
       num_forks_name_id_(context->storage->InternString("num_forks")),
       num_irq_total_name_id_(context->storage->InternString("num_irq_total")),
       num_softirq_total_name_id_(
@@ -453,8 +455,10 @@ void ProtoTraceParser::ParseProcMemCounters(uint64_t ts,
     // pre-cached |proc_mem_counter_names_| map.
     StringId name = proc_mem_counter_names_[field_id];
     uint64_t value = counter_values[field_id];
-    context_->event_tracker->PushCounter(ts, value, name, utid,
-                                         RefType::kRefUtidLookupUpid);
+    auto row_id = context_->event_tracker->PushCounter(
+        ts, value, name, utid, RefType::kRefUtidLookupUpid);
+    context_->storage->mutable_args()->AddArg(row_id, utid_name_id_,
+                                              utid_name_id_, utid);
   }
 
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
@@ -525,6 +529,12 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
         PERFETTO_DCHECK(timestamp > 0);
         const size_t fld_off = ftrace.offset_of(fld.data());
         ParseCpuFreq(timestamp, ftrace.slice(fld_off, fld.size()));
+        break;
+      }
+      case protos::FtraceEvent::kCpuIdle: {
+        PERFETTO_DCHECK(timestamp > 0);
+        const size_t fld_off = ftrace.offset_of(fld.data());
+        ParseCpuIdle(timestamp, ftrace.slice(fld_off, fld.size()));
         break;
       }
       case protos::FtraceEvent::kPrintFieldNumber: {
@@ -721,6 +731,26 @@ void ProtoTraceParser::ParseCpuFreq(uint64_t timestamp, TraceBlobView view) {
     }
   }
   context_->event_tracker->PushCounter(timestamp, new_freq, cpu_freq_name_id_,
+                                       cpu_affected, RefType::kRefCpuId);
+  PERFETTO_DCHECK(decoder.IsEndOfBuffer());
+}
+
+void ProtoTraceParser::ParseCpuIdle(uint64_t timestamp, TraceBlobView view) {
+  ProtoDecoder decoder(view.data(), view.length());
+
+  uint32_t cpu_affected = 0;
+  uint32_t new_state = 0;
+  for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
+    switch (fld.id) {
+      case protos::CpuIdleFtraceEvent::kCpuIdFieldNumber:
+        cpu_affected = fld.as_uint32();
+        break;
+      case protos::CpuIdleFtraceEvent::kStateFieldNumber:
+        new_state = fld.as_uint32();
+        break;
+    }
+  }
+  context_->event_tracker->PushCounter(timestamp, new_state, cpu_idle_name_id_,
                                        cpu_affected, RefType::kRefCpuId);
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }

@@ -96,5 +96,9 @@ StorageSchema::Column::Comparator StorageSchema::TsEndColumn::Sort(
   };
 }
 
+StorageSchema::IdColumn::IdColumn(std::string column_name, TableId table_id)
+    : Column(std::move(column_name), false), table_id_(table_id) {}
+StorageSchema::IdColumn::~IdColumn() = default;
+
 }  // namespace trace_processor
 }  // namespace perfetto
