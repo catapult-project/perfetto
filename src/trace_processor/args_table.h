@@ -39,6 +39,18 @@ class ArgsTable : public Table {
   int BestIndex(const QueryConstraints&, BestIndexInfo*) override;
 
  private:
+  class IdColumn final : public StorageSchema::NumericColumn<RowId> {
+   public:
+    IdColumn(std::string col_name,
+             const TraceStorage* storage,
+             const std::deque<RowId>* ids);
+
+    void Filter(int op, sqlite3_value* value, FilteredRowIndex*) const override;
+
+   private:
+    const TraceStorage* storage_ = nullptr;
+  };
+
   class ValueColumn final : public StorageSchema::Column {
    public:
     ValueColumn(std::string col_name,
@@ -49,7 +61,7 @@ class ArgsTable : public Table {
 
     Bounds BoundFilter(int op, sqlite3_value* sqlite_val) const override;
 
-    Predicate Filter(int op, sqlite3_value* value) const override;
+    void Filter(int op, sqlite3_value* value, FilteredRowIndex*) const override;
 
     Comparator Sort(const QueryConstraints::OrderBy& ob) const override;
 
