@@ -25,12 +25,15 @@
 #include <string>
 
 #include "perfetto/base/logging.h"
+#include "perfetto/base/optional.h"
 #include "src/trace_processor/scoped_db.h"
 #include "src/trace_processor/table.h"
 
 namespace perfetto {
 namespace trace_processor {
 namespace sqlite_utils {
+
+const auto kSqliteStatic = reinterpret_cast<sqlite3_destructor_type>(0);
 
 inline bool IsOpEq(int op) {
   return op == SQLITE_INDEX_CONSTRAINT_EQ;
@@ -75,6 +78,7 @@ template <class T>
 std::function<bool(T, T)> GetPredicateForOp(int op) {
   switch (op) {
     case SQLITE_INDEX_CONSTRAINT_EQ:
+    case SQLITE_INDEX_CONSTRAINT_IS:
       return std::equal_to<T>();
     case SQLITE_INDEX_CONSTRAINT_GE:
       return std::greater_equal<T>();
@@ -85,9 +89,25 @@ std::function<bool(T, T)> GetPredicateForOp(int op) {
     case SQLITE_INDEX_CONSTRAINT_LT:
       return std::less<T>();
     case SQLITE_INDEX_CONSTRAINT_NE:
+    case SQLITE_INDEX_CONSTRAINT_ISNOT:
       return std::not_equal_to<T>();
     default:
       PERFETTO_CHECK(false);
+  }
+}
+
+template <class T>
+std::function<bool(base::Optional<T>, T)> GetOptionalPredicateForOp(int op) {
+  switch (op) {
+    case SQLITE_INDEX_CONSTRAINT_ISNULL:
+      return [](base::Optional<T> f, T) { return !f.has_value(); };
+    case SQLITE_INDEX_CONSTRAINT_ISNOTNULL:
+      return [](base::Optional<T> f, T) { return f.has_value(); };
+    default:
+      auto fn = GetPredicateForOp<T>(op);
+      return [fn](base::Optional<T> f, T s) {
+        return f.has_value() && fn(f.value(), s);
+      };
   }
 }
 
