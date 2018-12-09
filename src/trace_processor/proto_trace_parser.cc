@@ -135,7 +135,8 @@ ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
       batt_capacity_id_(context->storage->InternString("batt.capacity_pct")),
       batt_current_id_(context->storage->InternString("batt.current_ua")),
       batt_current_avg_id_(
-          context->storage->InternString("batt.current.avg_ua")) {
+          context->storage->InternString("batt.current.avg_ua")),
+      oom_score_adj_id_(context->storage->InternString("oom_score_adj")) {
   for (const auto& name : BuildMeminfoCounterNames()) {
     meminfo_strs_id_.emplace_back(context->storage->InternString(name));
   }
@@ -149,7 +150,9 @@ ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
   rss_members_.emplace_back(
       context->storage->InternString("rss_stat.mm_swapents"));
   rss_members_.emplace_back(
-      context->storage->InternString("rss_stat.nr_mm_counters"));
+      context->storage->InternString("rss_stat.mm_shmempages"));
+  rss_members_.emplace_back(
+      context->storage->InternString("rss_stat.unknown"));  // Keep this last.
 
   using MemCounters = protos::ProcessStats::MemCounters;
   proc_mem_counter_names_[MemCounters::kVmSizeKbFieldNumber] =
@@ -583,7 +586,12 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
         ParseSignalDeliver(timestamp, pid, ftrace.slice(fld_off, fld.size()));
         break;
       }
-
+      case protos::FtraceEvent::kOomScoreAdjUpdate: {
+        PERFETTO_DCHECK(timestamp > 0);
+        const size_t fld_off = ftrace.offset_of(fld.data());
+        ParseOOMScoreAdjUpdate(timestamp, ftrace.slice(fld_off, fld.size()));
+        break;
+      }
       default:
         break;
     }
@@ -662,7 +670,8 @@ void ProtoTraceParser::ParseRssStat(uint64_t timestamp,
                                     uint32_t pid,
                                     TraceBlobView view) {
   ProtoDecoder decoder(view.data(), view.length());
-  uint32_t member = 0;
+  const auto kRssStatUnknown = static_cast<uint32_t>(rss_members_.size()) - 1;
+  uint32_t member = kRssStatUnknown;
   uint32_t size = 0;
   for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
     switch (fld.id) {
@@ -675,8 +684,8 @@ void ProtoTraceParser::ParseRssStat(uint64_t timestamp,
     }
   }
   if (member >= rss_members_.size()) {
-    PERFETTO_ELOG("Unknown member field %" PRIu32 " in rss_stat event", member);
-    return;
+    // TODO(lalitm): this import error should be exposed in the stats.
+    member = kRssStatUnknown;
   }
   UniqueTid utid = context_->process_tracker->UpdateThread(timestamp, pid, 0);
 
@@ -866,6 +875,34 @@ void ProtoTraceParser::ParseBatteryCounters(uint64_t ts,
     }
   }
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
+}
+
+void ProtoTraceParser::ParseOOMScoreAdjUpdate(uint64_t ts,
+                                              TraceBlobView oom_update) {
+  ProtoDecoder decoder(oom_update.data(), oom_update.length());
+  uint32_t pid = 0;
+  int16_t oom_adj = 0;
+
+  for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
+    switch (fld.id) {
+      case protos::OomScoreAdjUpdateFtraceEvent::kOomScoreAdjFieldNumber:
+        // TODO(b/120618641): The int16_t static cast is required because of the
+        // linked negative varint encoding bug.
+        oom_adj = static_cast<int16_t>(fld.as_int32());
+        break;
+      case protos::OomScoreAdjUpdateFtraceEvent::kPidFieldNumber:
+        pid = fld.as_uint32();
+        break;
+      case protos::OomScoreAdjUpdateFtraceEvent::kCommFieldNumber:
+      default:
+        break;
+    }
+  }
+  PERFETTO_DCHECK(decoder.IsEndOfBuffer());
+
+  UniquePid upid = context_->process_tracker->UpdateProcess(pid);
+  context_->event_tracker->PushCounter(ts, oom_adj, oom_score_adj_id_, upid,
+                                       RefType::kRefUpid);
 }
 
 }  // namespace trace_processor

@@ -21,6 +21,7 @@ import {
   Actions,
   DeferredAction,
 } from '../common/actions';
+import {Engine} from '../common/engine';
 import {SCROLLING_TRACK_GROUP} from '../common/state';
 import {TimeSpan} from '../common/time';
 import {QuantizedLoad, ThreadDesc} from '../frontend/globals';
@@ -29,7 +30,6 @@ import {CPU_SLICE_TRACK_KIND} from '../tracks/cpu_slices/common';
 import {PROCESS_SUMMARY_TRACK} from '../tracks/process_summary/common';
 
 import {Child, Children, Controller} from './controller';
-import {Engine} from './engine';
 import {globals} from './globals';
 import {QueryController, QueryControllerArgs} from './query_controller';
 import {TrackControllerArgs, trackControllerRegistry} from './track_controller';
@@ -233,9 +233,12 @@ export class TraceController extends Controller<States> {
       }));
     }
 
+    // TODO(b/120605557): Replace with is not null when b/120605557 fixed.
     const counters = await engine.query(`
-      select name, ref, ref_type, count(ref_type)
-      from counters group by name, ref, ref_type
+      select name, ifnull(ref, -1) as numeric_ref, ref_type, count(ref_type)
+      from counters
+      where numeric_ref != -1
+      group by name, numeric_ref, ref_type
       order by ref_type desc
     `);
     const counterUpids = new Set<number>();

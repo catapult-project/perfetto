@@ -21,6 +21,8 @@
 namespace perfetto {
 namespace profiling {
 
+ProcessMatcher::Delegate::~Delegate() = default;
+
 ProcessMatcher::ProcessHandle::ProcessHandle(ProcessMatcher* matcher, pid_t pid)
     : matcher_(matcher), pid_(pid) {}
 
@@ -31,9 +33,11 @@ ProcessMatcher::ProcessHandle::ProcessHandle(ProcessHandle&& other) noexcept
 
 ProcessMatcher::ProcessHandle& ProcessMatcher::ProcessHandle::operator=(
     ProcessHandle&& other) noexcept {
-  matcher_ = other.matcher_;
-  pid_ = other.pid_;
-  other.matcher_ = nullptr;
+  // Construct this temporary because the RHS could be an lvalue cast to an
+  // rvalue reference whose lifetime we do not know.
+  ProcessHandle tmp(std::move(other));
+  using std::swap;
+  swap(*this, tmp);
   return *this;
 }
 
@@ -55,9 +59,11 @@ ProcessMatcher::ProcessSetSpecHandle::ProcessSetSpecHandle(
 
 ProcessMatcher::ProcessSetSpecHandle& ProcessMatcher::ProcessSetSpecHandle::
 operator=(ProcessSetSpecHandle&& other) noexcept {
-  matcher_ = other.matcher_;
-  iterator_ = other.iterator_;
-  other.matcher_ = nullptr;
+  // Construct this temporary because the RHS could be an lvalue cast to an
+  // rvalue reference whose lifetime we do not know.
+  ProcessSetSpecHandle tmp(std::move(other));
+  using std::swap;
+  swap(*this, tmp);
   return *this;
 }
 
@@ -73,11 +79,7 @@ ProcessMatcher::ProcessSetSpecHandle::~ProcessSetSpecHandle() {
     matcher_->UnwaitProcessSetSpec(iterator_);
 }
 
-ProcessMatcher::ProcessMatcher(
-    std::function<void(pid_t)> shutdown_fn,
-    std::function<void(const Process&,
-                       const std::vector<const ProcessSetSpec*>&)> match_fn)
-    : shutdown_fn_(shutdown_fn), match_fn_(match_fn) {}
+ProcessMatcher::ProcessMatcher(Delegate* delegate) : delegate_(delegate) {}
 
 ProcessMatcher::ProcessHandle ProcessMatcher::ProcessConnected(
     Process process) {
@@ -237,14 +239,27 @@ ProcessMatcher::ProcessSetSpecItem::~ProcessSetSpecItem() {
 }
 
 void ProcessMatcher::ShutdownProcess(pid_t pid) {
-  shutdown_fn_(pid);
+  delegate_->Disconnect(pid);
 }
 
 void ProcessMatcher::RunMatchFn(ProcessItem* process_item) {
   std::vector<const ProcessSetSpec*> process_sets;
   for (ProcessSetSpecItem* process_set_item : process_item->references)
     process_sets.emplace_back(&(process_set_item->process_set));
-  match_fn_(process_item->process, process_sets);
+  delegate_->Match(process_item->process, process_sets);
+}
+
+void swap(ProcessMatcher::ProcessHandle& a, ProcessMatcher::ProcessHandle& b) {
+  using std::swap;
+  swap(a.matcher_, b.matcher_);
+  swap(a.pid_, b.pid_);
+}
+
+void swap(ProcessMatcher::ProcessSetSpecHandle& a,
+          ProcessMatcher::ProcessSetSpecHandle& b) {
+  using std::swap;
+  swap(a.matcher_, b.matcher_);
+  swap(a.iterator_, b.iterator_);
 }
 
 }  // namespace profiling

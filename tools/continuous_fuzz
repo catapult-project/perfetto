@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Copyright (C) 2018 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,22 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import("//gn/standalone/sanitizers/sanitizers.gni")
+set -euo pipefail
 
-template("perfetto_fuzzer_test") {
-  forward_variables_from(invoker, "*")
-
-  if (is_fuzzer) {
-    executable(target_name) {
-      if (use_libfuzzer) {
-        deps += [ "//buildtools:libfuzzer" ]
-      } else {
-        ldflags = [ link_fuzzer ]
-      }
-    }
-  } else {
-    not_needed(invoker, "*")
-    source_set(target_name) {
-    }
-  }
-}  # template
+while true; do
+  git fetch origin
+  git checkout origin/master
+  tools/install-build-deps
+  tools/run_all_fuzzers &
+  PID=$!
+  # Sleep 30min
+  sleep 1800
+  kill -INT ${PID}
+done
