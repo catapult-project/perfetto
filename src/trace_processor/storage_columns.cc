@@ -24,15 +24,15 @@ StorageColumn::StorageColumn(std::string col_name, bool hidden)
 StorageColumn::~StorageColumn() = default;
 
 TsEndColumn::TsEndColumn(std::string col_name,
-                         const std::deque<uint64_t>* ts_start,
-                         const std::deque<uint64_t>* dur)
+                         const std::deque<int64_t>* ts_start,
+                         const std::deque<int64_t>* dur)
     : StorageColumn(col_name, false /* hidden */),
       ts_start_(ts_start),
       dur_(dur) {}
 TsEndColumn::~TsEndColumn() = default;
 
 void TsEndColumn::ReportResult(sqlite3_context* ctx, uint32_t row) const {
-  uint64_t add = (*ts_start_)[row] + (*dur_)[row];
+  int64_t add = (*ts_start_)[row] + (*dur_)[row];
   sqlite3_result_int64(ctx, static_cast<sqlite3_int64>(add));
 }
 
@@ -45,11 +45,9 @@ TsEndColumn::Bounds TsEndColumn::BoundFilter(int, sqlite3_value*) const {
 void TsEndColumn::Filter(int op,
                          sqlite3_value* value,
                          FilteredRowIndex* index) const {
-  auto binary_op = sqlite_utils::GetPredicateForOp<uint64_t>(op);
-  uint64_t extracted = sqlite_utils::ExtractSqliteValue<uint64_t>(value);
-  index->FilterRows([this, &binary_op, extracted](uint32_t row) {
-    uint64_t val = (*ts_start_)[row] + (*dur_)[row];
-    return binary_op(val, extracted);
+  auto predicate = sqlite_utils::CreatePredicate<int64_t>(op, value);
+  index->FilterRows([this, &predicate](uint32_t row) {
+    return predicate((*ts_start_)[row] + (*dur_)[row]);
   });
 }
 
@@ -57,14 +55,14 @@ TsEndColumn::Comparator TsEndColumn::Sort(
     const QueryConstraints::OrderBy& ob) const {
   if (ob.desc) {
     return [this](uint32_t f, uint32_t s) {
-      uint64_t a = (*ts_start_)[f] + (*dur_)[f];
-      uint64_t b = (*ts_start_)[s] + (*dur_)[s];
+      int64_t a = (*ts_start_)[f] + (*dur_)[f];
+      int64_t b = (*ts_start_)[s] + (*dur_)[s];
       return sqlite_utils::CompareValuesDesc(a, b);
     };
   }
   return [this](uint32_t f, uint32_t s) {
-    uint64_t a = (*ts_start_)[f] + (*dur_)[f];
-    uint64_t b = (*ts_start_)[s] + (*dur_)[s];
+    int64_t a = (*ts_start_)[f] + (*dur_)[f];
+    int64_t b = (*ts_start_)[s] + (*dur_)[s];
     return sqlite_utils::CompareValuesAsc(a, b);
   };
 }

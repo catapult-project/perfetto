@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+$SRC/perfetto/tools/install-build-deps --no-android
+
 mkdir -p $WORK/build
 
 GN_ARGS="is_clang=true is_debug=false is_fuzzer=true use_libfuzzer=false \
@@ -14,3 +16,6 @@ $SRC/perfetto/tools/gn gen "$OUTDIR" --args="${GN_ARGS}" --check
 
 $SRC/perfetto/tools/ninja -C $WORK/build fuzzers -v
 cp $WORK/build/*fuzzer $OUT
+mkdir -p $OUT/src/traced/probes/ftrace/test/
+cp -a $SRC/perfetto/src/traced/probes/ftrace/test/data \
+  $OUT/src/traced/probes/ftrace/test/

@@ -20,11 +20,30 @@
 #include "src/traced/probes/ftrace/ftrace_procfs.h"
 
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 namespace perfetto {
 namespace {
 
 std::map<std::string, std::unique_ptr<ProtoTranslationTable>>* g_tables;
+
+std::string GetBinaryDirectory() {
+  char buf[512];
+  ssize_t rd = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (rd < 0) {
+    PERFETTO_ELOG("Failed to readlink(\"/proc/self/exe\"");
+    return "";
+  }
+  char* end = static_cast<char*>(memrchr(buf, '/', static_cast<size_t>(rd)));
+  if (!end || end == buf + sizeof(buf) - 1) {
+    PERFETTO_ELOG("Failed to find directory.");
+    return "";
+  }
+  *(end + 1) = '\0';
+  return std::string(buf);
+}
 
 }  // namespace
 
@@ -34,9 +53,16 @@ ProtoTranslationTable* GetTable(const std::string& name) {
         new std::map<std::string, std::unique_ptr<ProtoTranslationTable>>();
   if (!g_tables->count(name)) {
     std::string path = "src/traced/probes/ftrace/test/data/" + name + "/";
+    struct stat st;
+    if (lstat(path.c_str(), &st) == -1 && errno == ENOENT) {
+      // For OSS fuzz, which does not run in the correct cwd.
+      path = GetBinaryDirectory() + path;
+    }
     FtraceProcfs ftrace(path);
     auto table = ProtoTranslationTable::Create(&ftrace, GetStaticEventInfo(),
                                                GetStaticCommonFieldsInfo());
+    if (!table)
+      return nullptr;
     g_tables->emplace(name, std::move(table));
   }
   return g_tables->at(name).get();
