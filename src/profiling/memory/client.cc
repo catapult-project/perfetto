@@ -36,6 +36,7 @@
 
 #include "perfetto/base/logging.h"
 #include "perfetto/base/scoped_file.h"
+#include "perfetto/base/thread_utils.h"
 #include "perfetto/base/unix_socket.h"
 #include "perfetto/base/utils.h"
 #include "src/profiling/memory/sampler.h"
@@ -46,13 +47,6 @@ namespace profiling {
 namespace {
 
 constexpr struct timeval kSendTimeout = {1 /* s */, 0 /* us */};
-
-#if !PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID)
-// glibc does not define a wrapper around gettid, bionic does.
-pid_t gettid() {
-  return static_cast<pid_t>(syscall(__NR_gettid));
-}
-#endif
 
 std::vector<base::ScopedFile> ConnectPool(const std::string& sock_name,
                                           size_t n) {
@@ -81,7 +75,7 @@ std::vector<base::ScopedFile> ConnectPool(const std::string& sock_name,
 }
 
 inline bool IsMainThread() {
-  return getpid() == gettid();
+  return getpid() == base::GetThreadId();
 }
 
 // TODO(b/117203899): Remove this after making bionic implementation safe to
@@ -128,7 +122,7 @@ void FreePage::FlushLocked(SocketPool* pool) {
   msg.free_header = &free_page_;
   BorrowedSocket fd(pool->Borrow());
   if (!fd || !SendWireMessage(*fd, msg)) {
-    PERFETTO_DFATAL("Failed to send wire message");
+    PERFETTO_ELOG("Failed to send wire message");
     fd.Close();
   }
 }

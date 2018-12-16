@@ -58,6 +58,8 @@ source_set("daemon") {
     "heapprofd_producer.cc",
     "heapprofd_producer.h",
     "interner.h",
+    "proc_utils.cc",
+    "proc_utils.h",
     "process_matcher.cc",
     "process_matcher.h",
     "queue_messages.h",
@@ -115,6 +117,27 @@ source_set("unittests") {
     "unwinding_unittest.cc",
     "wire_protocol_unittest.cc",
   ]
+}
+
+source_set("end_to_end_tests") {
+  public_configs = [ "../../../buildtools:libunwindstack_config" ]
+  testonly = true
+  deps = [
+    ":client",
+    ":daemon",
+    ":wire_protocol",
+    "../../../gn:default_deps",
+    "../../../gn:gtest_deps",
+    "../../../test:test_helper",
+    "../../base",
+    "../../base:test_support",
+  ]
+  sources = [
+    "heapprofd_end_to_end_test.cc",
+  ]
+  if (start_daemons_for_testing) {
+    defines = [ "PERFETTO_START_DAEMONS_FOR_TESTING" ]
+  }
 }
 
 # This will export publicly visibile symbols for the malloc_hooks.

@@ -161,7 +161,7 @@ class NumericColumn : public StorageColumn {
     } else if (std::is_same<T, double>::value) {
       return Table::ColumnType::kDouble;
     }
-    PERFETTO_CHECK(false);
+    PERFETTO_FATAL("Unexpected column type");
   }
 
  protected:
@@ -257,7 +257,7 @@ class TsEndColumn final : public StorageColumn {
 
   // Returns the type of this column.
   Table::ColumnType GetType() const override {
-    return Table::ColumnType::kUlong;
+    return Table::ColumnType::kLong;
   }
 
   bool IsNaturallyOrdered() const override { return false; }
@@ -306,7 +306,7 @@ class IdColumn final : public StorageColumn {
   }
 
   Table::ColumnType GetType() const override {
-    return Table::ColumnType::kUlong;
+    return Table::ColumnType::kLong;
   }
 
   bool IsNaturallyOrdered() const override { return false; }

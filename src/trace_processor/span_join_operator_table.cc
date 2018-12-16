@@ -45,7 +45,7 @@ bool CheckRequiredColumns(const std::vector<Table::Column>& cols) {
   for (const auto& col : cols) {
     if (IsRequiredColumn(col.name())) {
       ++required_columns_found;
-      if (col.type() != Table::ColumnType::kUlong &&
+      if (col.type() != Table::ColumnType::kLong &&
           col.type() != Table::ColumnType::kUnknown) {
         PERFETTO_ELOG("Invalid column type for %s", col.name().c_str());
         return false;
@@ -105,8 +105,8 @@ base::Optional<Table::Schema> SpanJoinOperatorTable::Init(
   t2_defn_ = TableDefinition(t2_desc.name, t2_desc.partition_col, t2_cols);
 
   std::vector<Table::Column> cols;
-  cols.emplace_back(Column::kTimestamp, kTsColumnName, ColumnType::kUlong);
-  cols.emplace_back(Column::kDuration, kDurColumnName, ColumnType::kUlong);
+  cols.emplace_back(Column::kTimestamp, kTsColumnName, ColumnType::kLong);
+  cols.emplace_back(Column::kDuration, kDurColumnName, ColumnType::kLong);
 
   is_same_partition_ = t1_desc.partition_col == t2_desc.partition_col;
   const auto& partition_col = t1_desc.partition_col;
@@ -165,7 +165,7 @@ SpanJoinOperatorTable::ComputeSqlConstraintsForDefinition(
 
     if (col_name == kTsColumnName || col_name == kDurColumnName) {
       // We don't support constraints on ts or duration in the child tables.
-      PERFETTO_DCHECK(false);
+      PERFETTO_DFATAL("ts or duration constraints on child tables");
       continue;
     }
     auto op = sqlite_utils::OpToString(cs.op);

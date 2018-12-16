@@ -46,77 +46,6 @@ ClientConfiguration MakeClientConfiguration(const DataSourceConfig& cfg) {
   return client_config;
 }
 
-template <typename Fn>
-void ForEachPid(const char* file, Fn callback) {
-  base::ScopedDir proc_dir(opendir("/proc"));
-  if (!proc_dir) {
-    PERFETTO_DFATAL("Failed to open /proc");
-    return;
-  }
-  struct dirent* entry;
-  while ((entry = readdir(*proc_dir))) {
-    char filename_buf[128];
-    ssize_t written = snprintf(filename_buf, sizeof(filename_buf),
-                               "/proc/%s/%s", entry->d_name, file);
-    if (written < 0 || static_cast<size_t>(written) >= sizeof(filename_buf)) {
-      if (written < 0)
-        PERFETTO_DFATAL("Failed to concatenate cmdline file.");
-      else
-        PERFETTO_DFATAL("Overflow when concatenating cmdline file.");
-      continue;
-    }
-    char* end;
-    long int pid = strtol(entry->d_name, &end, 10);
-    if (*end != '\0')
-      continue;
-    callback(static_cast<pid_t>(pid), filename_buf);
-  }
-}
-
-void FindAllProfilablePids(std::set<pid_t>* pids) {
-  ForEachPid("cmdline", [pids](pid_t pid, const char* filename_buf) {
-    if (pid == getpid())
-      return;
-    struct stat statbuf;
-    // Check if we have permission to the process.
-    if (stat(filename_buf, &statbuf) == 0)
-      pids->emplace(pid);
-  });
-}
-
-void FindPidsForCmdlines(const std::vector<std::string>& cmdlines,
-                         std::set<pid_t>* pids) {
-  ForEachPid("cmdline", [&cmdlines, pids](pid_t pid, const char* filename_buf) {
-    if (pid == getpid())
-      return;
-    std::string process_cmdline;
-    process_cmdline.reserve(128);
-    if (!base::ReadFile(filename_buf, &process_cmdline))
-      return;
-    if (process_cmdline.empty())
-      return;
-
-    // Strip everything after @ for Java processes.
-    // Otherwise, strip newline at EOF.
-    size_t endpos = process_cmdline.find('\0');
-    if (endpos == std::string::npos) {
-      PERFETTO_DFATAL("No nullbyte in cmdline.");
-      return;
-    }
-    size_t atpos = process_cmdline.find('@');
-    if (atpos != std::string::npos && atpos < endpos)
-      endpos = atpos;
-    if (endpos < 1)
-      return;
-    process_cmdline.resize(endpos);
-
-    for (const std::string& cmdline : cmdlines) {
-      if (process_cmdline == cmdline)
-        pids->emplace(static_cast<pid_t>(pid));
-    }
-  });
-}
-
 }  // namespace
 
 // We create kUnwinderThreads unwinding threads and one bookeeping thread.
@@ -325,12 +254,18 @@ bool HeapprofdProducer::Dump(DataSourceInstanceID id,
   dump_record.pids.insert(dump_record.pids.begin(), pids.cbegin(), pids.cend());
   dump_record.trace_writer = data_source.trace_writer;
 
+  std::weak_ptr<TraceWriter> weak_trace_writer = data_source.trace_writer;
+
   auto weak_producer = weak_factory_.GetWeakPtr();
   base::TaskRunner* task_runner = task_runner_;
   if (has_flush_id) {
-    dump_record.callback = [task_runner, weak_producer, flush_id] {
+    dump_record.callback = [task_runner, weak_producer, flush_id,
+                            weak_trace_writer] {
+      auto trace_writer = weak_trace_writer.lock();
+      if (trace_writer)
+        trace_writer->Flush();
       task_runner->PostTask([weak_producer, flush_id] {
-        if (!weak_producer)
+        if (weak_producer)
           return weak_producer->FinishDataSourceFlush(flush_id);
       });
     };
