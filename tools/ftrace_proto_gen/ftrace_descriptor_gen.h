@@ -14,24 +14,22 @@
  * limitations under the License.
  */
 
-#include "perfetto/base/string_utils.h"
+#ifndef TOOLS_FTRACE_PROTO_GEN_FTRACE_DESCRIPTOR_GEN_H_
+#define TOOLS_FTRACE_PROTO_GEN_FTRACE_DESCRIPTOR_GEN_H_
+
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/descriptor.pb.h>
+
+#include "perfetto/base/logging.h"
+#include "tools/ftrace_proto_gen/ftrace_proto_gen.h"
 
 namespace perfetto {
-namespace base {
 
-bool StartsWith(const std::string& str, const std::string& prefix) {
-  return str.compare(0, prefix.length(), prefix) == 0;
-}
+// Uses the ftrace event descriptor file to generate a
+// file with just the names and field types for each ftrace event.
+void GenerateFtraceDescriptors(
+    const google::protobuf::DescriptorPool& descriptor_pool,
+    std::ostream* fout);
 
-bool EndsWith(const std::string& str, const std::string& suffix) {
-  if (suffix.size() > str.size())
-    return false;
-  return str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-bool Contains(const std::string& haystack, const std::string& needle) {
-  return haystack.find(needle) != std::string::npos;
-}
-
-}  // namespace base
 }  // namespace perfetto
+#endif  // TOOLS_FTRACE_PROTO_GEN_FTRACE_DESCRIPTOR_GEN_H_
