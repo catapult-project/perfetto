@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <cxxabi.h>
+
 #include <unwindstack/MachineArm.h>
 #include <unwindstack/MachineArm64.h>
 #include <unwindstack/MachineMips.h>
@@ -42,6 +44,7 @@
 #include "perfetto/base/file_utils.h"
 #include "perfetto/base/logging.h"
 #include "perfetto/base/scoped_file.h"
+#include "perfetto/base/string_utils.h"
 #include "src/profiling/memory/unwinding.h"
 #include "src/profiling/memory/wire_protocol.h"
 
@@ -50,6 +53,13 @@ namespace profiling {
 namespace {
 
 size_t kMaxFrames = 1000;
+
+#pragma GCC diagnostic push
+// We do not care about deterministic destructor order.
+#pragma GCC diagnostic ignored "-Wglobal-constructors"
+#pragma GCC diagnostic ignored "-Wexit-time-destructors"
+static std::vector<std::string> kSkipMaps{"heapprofd_client.so"};
+#pragma GCC diagnostic pop
 
 std::unique_ptr<unwindstack::Regs> CreateFromRawData(unwindstack::ArchEnum arch,
                                                      void* raw_data) {
@@ -79,6 +89,15 @@ std::unique_ptr<unwindstack::Regs> CreateFromRawData(unwindstack::ArchEnum arch,
       break;
   }
   return ret;
+}
+
+void MaybeDemangle(std::string* name) {
+  int ignored;
+  char* data = abi::__cxa_demangle(name->c_str(), nullptr, nullptr, &ignored);
+  if (data) {
+    *name = data;
+    free(data);
+  }
 }
 
 }  // namespace
@@ -157,7 +176,7 @@ bool DoUnwind(WireMessage* msg, UnwindingMetadata* metadata, AllocRecord* out) {
       metadata->maps.Reset();
       metadata->maps.Parse();
     }
-    unwinder.Unwind();
+    unwinder.Unwind(&kSkipMaps, nullptr);
     error_code = unwinder.LastErrorCode();
     if (error_code != unwindstack::ERROR_INVALID_MAP)
       break;
@@ -170,6 +189,11 @@ bool DoUnwind(WireMessage* msg, UnwindingMetadata* metadata, AllocRecord* out) {
 
     out->frames.emplace_back(frame_data);
     PERFETTO_DLOG("unwinding failed %" PRIu8, error_code);
+  }
+
+  for (unwindstack::FrameData& fd : out->frames) {
+    if (base::EndsWith(fd.map_name, ".so"))
+      MaybeDemangle(&fd.function_name);
   }
   return true;
 }

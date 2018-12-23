@@ -32,22 +32,11 @@ using ::perfetto::protos::pbzero::ProfilePacket;
 }
 
 GlobalCallstackTrie::Node* GlobalCallstackTrie::Node::GetOrCreateChild(
-    const Interner<Frame>::Interned& loc) {
+    const Interned<Frame>& loc) {
   Node* child = children_.Get(loc);
   if (!child)
     child = children_.Emplace(loc, this);
   return child;
-}
-
-std::vector<Interner<Frame>::Interned>
-GlobalCallstackTrie::Node::BuildCallstack() const {
-  const Node* node = this;
-  std::vector<Interner<Frame>::Interned> res;
-  while (node) {
-    res.emplace_back(node->location_);
-    node = node->parent_;
-  }
-  return res;
 }
 
 void HeapTracker::RecordMalloc(
@@ -166,6 +155,16 @@ uint64_t HeapTracker::GetSizeForTesting(
   return alloc.allocated - alloc.freed;
 }
 
+std::vector<Interned<Frame>> GlobalCallstackTrie::BuildCallstack(
+    const Node* node) const {
+  std::vector<Interned<Frame>> res;
+  while (node != &root_) {
+    res.emplace_back(node->location_);
+    node = node->parent_;
+  }
+  return res;
+}
+
 GlobalCallstackTrie::Node* GlobalCallstackTrie::CreateCallsite(
     const std::vector<unwindstack::FrameData>& callstack) {
   Node* node = &root_;
@@ -197,10 +196,10 @@ void GlobalCallstackTrie::DecrementNode(Node* node) {
   }
 }
 
-Interner<Frame>::Interned GlobalCallstackTrie::InternCodeLocation(
+Interned<Frame> GlobalCallstackTrie::InternCodeLocation(
     const unwindstack::FrameData& loc) {
   Mapping map{};
-  map.offset = loc.map_offset;
+  map.offset = loc.map_elf_start_offset;
   map.start = loc.map_start;
   map.end = loc.map_end;
   map.load_bias = loc.map_load_bias;
@@ -214,7 +213,7 @@ Interner<Frame>::Interned GlobalCallstackTrie::InternCodeLocation(
   return frame_interner_.Intern(frame);
 }
 
-Interner<Frame>::Interned GlobalCallstackTrie::MakeRootFrame() {
+Interned<Frame> GlobalCallstackTrie::MakeRootFrame() {
   Mapping map{};
 
   Frame frame(mapping_interner_.Intern(std::move(map)),
@@ -223,11 +222,10 @@ Interner<Frame>::Interned GlobalCallstackTrie::MakeRootFrame() {
   return frame_interner_.Intern(frame);
 }
 
-void DumpState::WriteMap(ProfilePacket* packet,
-                         const Interner<Mapping>::Interned map) {
+void DumpState::WriteMap(ProfilePacket* packet, const Interned<Mapping> map) {
   auto map_it_and_inserted = dumped_mappings.emplace(map.id());
   if (map_it_and_inserted.second) {
-    for (const Interner<std::string>::Interned& str : map->path_components)
+    for (const Interned<std::string>& str : map->path_components)
       WriteString(packet, str);
 
     auto mapping = packet->add_mappings();
@@ -236,13 +234,12 @@ void DumpState::WriteMap(ProfilePacket* packet,
     mapping->set_start(map->start);
     mapping->set_end(map->end);
     mapping->set_load_bias(map->load_bias);
-    for (const Interner<std::string>::Interned& str : map->path_components)
+    for (const Interned<std::string>& str : map->path_components)
       mapping->add_path_string_ids(str.id());
   }
 }
 
-void DumpState::WriteFrame(ProfilePacket* packet,
-                           Interner<Frame>::Interned frame) {
+void DumpState::WriteFrame(ProfilePacket* packet, Interned<Frame> frame) {
   WriteMap(packet, frame->mapping);
   WriteString(packet, frame->function_name);
   bool inserted;
@@ -257,7 +254,7 @@ void DumpState::WriteFrame(ProfilePacket* packet,
 }
 
 void DumpState::WriteString(ProfilePacket* packet,
-                            const Interner<std::string>::Interned& str) {
+                            const Interned<std::string>& str) {
   bool inserted;
   std::tie(std::ignore, inserted) = dumped_strings.emplace(str.id());
   if (inserted) {
@@ -309,12 +306,12 @@ void BookkeepingThread::HandleBookkeepingRecord(BookkeepingRecord* rec) {
     for (GlobalCallstackTrie::Node* node : callstacks_to_dump) {
       // There need to be two separate loops over built_callstack because
       // protozero cannot interleave different messages.
-      auto built_callstack = node->BuildCallstack();
-      for (const Interner<Frame>::Interned& frame : built_callstack)
+      auto built_callstack = callsites_.BuildCallstack(node);
+      for (const Interned<Frame>& frame : built_callstack)
         dump_state.WriteFrame(profile_packet, frame);
       ProfilePacket::Callstack* callstack = profile_packet->add_callstacks();
       callstack->set_id(node->id());
-      for (const Interner<Frame>::Interned& frame : built_callstack)
+      for (const Interned<Frame>& frame : built_callstack)
         callstack->add_frame_ids(frame.id());
     }
 
