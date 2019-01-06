@@ -60,7 +60,7 @@ constexpr size_t kDefaultShmPageSize = base::kPageSize;
 constexpr int kMaxBuffersPerConsumer = 128;
 constexpr base::TimeMillis kSnapshotsInterval(10 * 1000);
 constexpr int kDefaultWriteIntoFilePeriodMs = 5000;
-constexpr int kFlushTimeoutMs = 1000;
+constexpr int kFlushTimeoutMs = 5000;
 constexpr int kMaxConcurrentTracingSessions = 5;
 
 constexpr uint64_t kMillisPerHour = 3600000;
@@ -943,6 +943,8 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
     PERFETTO_DLOG("Draining into file, written: %" PRIu64 " KB, stop: %d",
                   (total_wr_size + 1023) / 1024, stop_writing_into_file);
     if (stop_writing_into_file) {
+      // Ensure all data was written to the file before we close it.
+      base::FlushFile(fd);
       tracing_session->write_into_file.reset();
       tracing_session->write_period_ms = 0;
       if (tracing_session->state == TracingSession::STARTED)
