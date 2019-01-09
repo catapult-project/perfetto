@@ -28,6 +28,7 @@
 #include "perfetto/base/optional.h"
 #include "perfetto/base/string_view.h"
 #include "perfetto/base/utils.h"
+#include "src/trace_processor/stats.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -78,12 +79,6 @@ class TraceStorage {
   TraceStorage(const TraceStorage&) = delete;
 
   virtual ~TraceStorage();
-
-  struct Stats {
-    int64_t mismatched_sched_switch_tids = 0;
-    int64_t rss_stat_no_process = 0;
-    int64_t mem_counter_no_process = 0;
-  };
 
   // Information about a unique process seen in a trace.
   struct Process {
@@ -381,6 +376,44 @@ class TraceStorage {
     std::deque<UniqueTid> utids_;
   };
 
+  class AndroidLogs {
+   public:
+    inline size_t AddLogEvent(int64_t timestamp,
+                              UniqueTid utid,
+                              uint8_t prio,
+                              StringId tag_id,
+                              StringId msg_id) {
+      timestamps_.emplace_back(timestamp);
+      utids_.emplace_back(utid);
+      prios_.emplace_back(prio);
+      tag_ids_.emplace_back(tag_id);
+      msg_ids_.emplace_back(msg_id);
+      return size() - 1;
+    }
+
+    size_t size() const { return timestamps_.size(); }
+
+    const std::deque<int64_t>& timestamps() const { return timestamps_; }
+    const std::deque<UniqueTid>& utids() const { return utids_; }
+    const std::deque<uint8_t>& prios() const { return prios_; }
+    const std::deque<StringId>& tag_ids() const { return tag_ids_; }
+    const std::deque<StringId>& msg_ids() const { return msg_ids_; }
+
+   private:
+    std::deque<int64_t> timestamps_;
+    std::deque<UniqueTid> utids_;
+    std::deque<uint8_t> prios_;
+    std::deque<StringId> tag_ids_;
+    std::deque<StringId> msg_ids_;
+  };
+
+  struct Stats {
+    using IndexMap = std::map<int, int64_t>;
+    int64_t value = 0;
+    IndexMap indexed_values;
+  };
+  using StatsMap = std::array<Stats, stats::kNumKeys>;
+
   void ResetStorage();
 
   UniqueTid AddEmptyThread(uint32_t tid) {
@@ -406,6 +439,27 @@ class TraceStorage {
   Thread* GetMutableThread(UniqueTid utid) {
     PERFETTO_DCHECK(utid < unique_threads_.size());
     return &unique_threads_[utid];
+  }
+
+  // Example usage: SetStats(stats::android_log_num_failed, 42);
+  void SetStats(size_t key, int64_t value) {
+    PERFETTO_DCHECK(key < stats::kNumKeys);
+    PERFETTO_DCHECK(stats::kTypes[key] == stats::kSingle);
+    stats_[key].value = value;
+  }
+
+  // Example usage: IncrementStats(stats::android_log_num_failed, -1);
+  void IncrementStats(size_t key, int64_t increment = 1) {
+    PERFETTO_DCHECK(key < stats::kNumKeys);
+    PERFETTO_DCHECK(stats::kTypes[key] == stats::kSingle);
+    stats_[key].value += increment;
+  }
+
+  // Example usage: SetIndexedStats(stats::cpu_failure, 1, 42);
+  void SetIndexedStats(size_t key, int index, int64_t value) {
+    PERFETTO_DCHECK(key < stats::kNumKeys);
+    PERFETTO_DCHECK(stats::kTypes[key] == stats::kIndexed);
+    stats_[key].indexed_values[index] = value;
   }
 
   // Reading methods.
@@ -445,8 +499,10 @@ class TraceStorage {
   const Instants& instants() const { return instants_; }
   Instants* mutable_instants() { return &instants_; }
 
-  const Stats& stats() const { return stats_; }
-  Stats* mutable_stats() { return &stats_; }
+  const AndroidLogs& android_logs() const { return android_log_; }
+  AndroidLogs* mutable_android_log() { return &android_log_; }
+
+  const StatsMap& stats() const { return stats_; }
 
   const Args& args() const { return args_; }
   Args* mutable_args() { return &args_; }
@@ -473,7 +529,7 @@ class TraceStorage {
   using StringHash = uint64_t;
 
   // Stats about parsing the trace.
-  Stats stats_;
+  StatsMap stats_{};
 
   // One entry for each CPU in the trace.
   Slices slices_;
@@ -512,6 +568,7 @@ class TraceStorage {
   // args table. This table can be used to generate a text version of the
   // trace.
   RawEvents raw_events_;
+  AndroidLogs android_log_;
 };
 
 }  // namespace trace_processor

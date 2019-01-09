@@ -407,9 +407,9 @@ int PerfettoCmd::Main(int argc, char** argv) {
     }
   }
 
+  trace_config_.reset(new TraceConfig());
   if (parsed) {
     *trace_config_proto.mutable_statsd_metadata() = std::move(statsd_metadata);
-    trace_config_.reset(new TraceConfig());
     trace_config_->FromProto(trace_config_proto);
     trace_config_raw.clear();
   } else if (!is_attach()) {
@@ -476,7 +476,8 @@ int PerfettoCmd::Main(int argc, char** argv) {
   args.is_dropbox = !dropbox_tag_.empty();
   args.current_time = base::GetWallTimeS();
   args.ignore_guardrails = ignore_guardrails;
-#if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_USERDEBUG_BUILD)
+#if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_USERDEBUG_BUILD) || \
+    PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
   args.max_upload_bytes_override =
       trace_config_->guardrail_overrides().max_upload_per_day_bytes();
 #endif
@@ -651,7 +652,9 @@ void PerfettoCmd::SetupCtrlCSignalHandler() {
   task_runner_.AddFileDescriptorWatch(ctrl_c_evt_.fd(), [this] {
     PERFETTO_LOG("SIGINT/SIGTERM received: disabling tracing");
     ctrl_c_evt_.Clear();
-    consumer_endpoint_->Flush(kFlushTimeoutMs, [this](bool) {
+    consumer_endpoint_->Flush(kFlushTimeoutMs, [this](bool flush_success) {
+      if (!flush_success)
+        PERFETTO_ELOG("Final flush unsuccessful.");
       consumer_endpoint_->DisableTracing();
     });
   });
@@ -687,7 +690,9 @@ void PerfettoCmd::OnAttach(bool success, const TraceConfig& trace_config) {
   PERFETTO_DCHECK(trace_config_->write_into_file());
 
   if (stop_trace_once_attached_) {
-    consumer_endpoint_->Flush(kFlushTimeoutMs, [this](bool) {
+    consumer_endpoint_->Flush(kFlushTimeoutMs, [this](bool flush_success) {
+      if (!flush_success)
+        PERFETTO_ELOG("Final flush unsuccessful.");
       consumer_endpoint_->DisableTracing();
     });
   }
