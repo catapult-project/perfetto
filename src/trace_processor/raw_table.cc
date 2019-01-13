@@ -33,27 +33,21 @@ StorageSchema RawTable::CreateStorageSchema() {
       .AddColumn<IdColumn>("id", TableId::kRawEvents)
       .AddOrderedNumericColumn("ts", &raw.timestamps())
       .AddStringColumn("name", &raw.name_ids(), &storage_->string_pool())
+      .AddNumericColumn("cpu", &raw.cpus())
       .AddNumericColumn("utid", &raw.utids())
       .Build({"name", "ts"});
 }
 
-std::unique_ptr<Table::Cursor> RawTable::CreateCursor(
-    const QueryConstraints& qc,
-    sqlite3_value** argv) {
-  uint32_t count =
-      static_cast<uint32_t>(storage_->raw_events().raw_event_count());
-  auto it = CreateBestRowIteratorForGenericSchema(count, qc, argv);
-  return std::unique_ptr<Table::Cursor>(
-      new Cursor(std::move(it), schema_.mutable_columns()));
+uint32_t RawTable::RowCount() {
+  return static_cast<uint32_t>(storage_->raw_events().raw_event_count());
 }
 
 int RawTable::BestIndex(const QueryConstraints& qc, BestIndexInfo* info) {
-  info->estimated_cost =
-      static_cast<uint32_t>(storage_->raw_events().raw_event_count());
+  info->estimated_cost = RowCount();
 
   // Only the string columns are handled by SQLite
   info->order_by_consumed = true;
-  size_t name_index = schema_.ColumnIndexFromName("name");
+  size_t name_index = schema().ColumnIndexFromName("name");
   for (size_t i = 0; i < qc.constraints().size(); i++) {
     info->omit[i] = qc.constraints()[i].iColumn != static_cast<int>(name_index);
   }
