@@ -41,6 +41,9 @@ class TraceWriterImpl : public TraceWriter,
   void Flush(std::function<void()> callback = {}) override;
   WriterID writer_id() const override;
   bool SetFirstChunkId(ChunkID) override;
+  uint64_t written() const override {
+    return protobuf_stream_writer_.written();
+  }
 
   void ResetChunkForTesting() { cur_chunk_ = SharedMemoryABI::Chunk(); }
 
