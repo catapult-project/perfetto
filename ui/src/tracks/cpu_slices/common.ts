@@ -12,12 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export const TRACK_KIND = 'CpuSliceTrack';
+export const CPU_SLICE_TRACK_KIND = 'CpuSliceTrack';
 
-export interface CpuSlice {
+export interface SummaryData {
+  kind: 'summary';
+
   start: number;
   end: number;
-  title: string;
+  resolution: number;
+
+  bucketSizeSeconds: number;
+  utilizations: Float64Array;
 }
 
-export interface CpuSliceTrackData { slices: CpuSlice[]; }
+export interface SliceData {
+  kind: 'slice';
+
+  start: number;
+  end: number;
+  resolution: number;
+
+  // Slices are stored in a columnar fashion. All fields have the same length.
+  starts: Float64Array;
+  ends: Float64Array;
+  utids: Uint32Array;
+}
+
+export type Data = SummaryData | SliceData;
+
+
+export interface Config { cpu: number; }

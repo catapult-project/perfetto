@@ -17,103 +17,125 @@ import '../tracks/all_frontend';
 import * as m from 'mithril';
 
 import {forwardRemoteCalls} from '../base/remote';
-import {setState} from '../common/actions';
-import {loadState} from '../common/permalinks';
-import {createEmptyState, State} from '../common/state';
-import {
-  takeWasmEngineWorkerPort,
-  warmupWasmEngineWorker,
-} from '../controller/wasm_engine_proxy';
+import {Actions} from '../common/actions';
+import {State} from '../common/state';
 
-import {FrontendLocalState} from './frontend_local_state';
-import {globals} from './globals';
+import {globals, QuantizedLoad, ThreadDesc} from './globals';
 import {HomePage} from './home_page';
-import {RafScheduler} from './raf_scheduler';
+import {openBufferWithLegacyTraceViewer} from './legacy_trace_viewer';
+import {RecordPage} from './record_page';
+import {Router} from './router';
 import {ViewerPage} from './viewer_page';
-
-function createController(): Worker {
-  const worker = new Worker('controller_bundle.js');
-  worker.onerror = e => {
-    console.error(e);
-  };
-  return worker;
-}
 
 /**
  * The API the main thread exposes to the controller.
  */
 class FrontendApi {
+  constructor(private router: Router) {}
+
   updateState(state: State) {
     globals.state = state;
+    // If the visible time in the global state has been updated more recently
+    // than the visible time handled by the frontend @ 60fps, update it. This
+    // typically happens when restoring the state from a permalink.
+    globals.frontendLocalState.mergeState(state.frontendLocalState);
     this.redraw();
   }
 
-  publishTrackData(id: string, data: {}) {
-    globals.trackDataStore.set(id, data);
+  // TODO: we can't have a publish method for each batch of data that we don't
+  // want to keep in the global state. Figure out a more generic and type-safe
+  // mechanism to achieve this.
+
+  publishOverviewData(data: {[key: string]: QuantizedLoad | QuantizedLoad[]}) {
+    for (const [key, value] of Object.entries(data)) {
+      if (!globals.overviewStore.has(key)) {
+        globals.overviewStore.set(key, []);
+      }
+      if (value instanceof Array) {
+        globals.overviewStore.get(key)!.push(...value);
+      } else {
+        globals.overviewStore.get(key)!.push(value);
+      }
+    }
+    globals.rafScheduler.scheduleRedraw();
+  }
+
+  publishTrackData(args: {id: string, data: {}}) {
+    globals.trackDataStore.set(args.id, args.data);
+    globals.rafScheduler.scheduleRedraw();
+  }
+
+  publishQueryResult(args: {id: string, data: {}}) {
+    globals.queryResults.set(args.id, args.data);
     this.redraw();
   }
 
-  publishQueryResult(id: string, data: {}) {
-    globals.queryResults.set(id, data);
+  publishThreads(data: ThreadDesc[]) {
+    globals.threads.clear();
+    data.forEach(thread => {
+      globals.threads.set(thread.utid, thread);
+    });
     this.redraw();
   }
 
-  /**
-   * Creates a new trace processor wasm engine (backed by a worker running
-   * engine_bundle.js) and returns a MessagePort for talking to it.
-   * This indirection is due to workers not being able create workers in
-   * Chrome which is tracked at: crbug.com/31666
-   * TODO(hjd): Remove this once the fix has landed.
-   */
-  createWasmEnginePort(): MessagePort {
-    return takeWasmEngineWorkerPort();
+  // For opening JSON/HTML traces with the legacy catapult viewer.
+  publishLegacyTrace(args: {data: ArrayBuffer, size: number}) {
+    const arr = new Uint8Array(args.data, 0, args.size);
+    const str = (new TextDecoder('utf-8')).decode(arr);
+    openBufferWithLegacyTraceViewer('trace.json', str, 0);
   }
 
   private redraw(): void {
-    if (globals.state.route && globals.state.route !== m.route.get()) {
-      m.route.set(globals.state.route);
-    } else {
-      m.redraw();
+    if (globals.state.route &&
+        globals.state.route !== this.router.getRouteFromHash()) {
+      this.router.setRouteOnHash(globals.state.route);
     }
+
+    globals.rafScheduler.scheduleFullRedraw();
   }
 }
 
-async function main() {
-  const controller = createController();
+function main() {
+  const controller = new Worker('controller_bundle.js');
+  controller.onerror = e => {
+    console.error(e);
+  };
   const channel = new MessageChannel();
-  forwardRemoteCalls(channel.port2, new FrontendApi());
   controller.postMessage(channel.port1, [channel.port1]);
+  const dispatch = controller.postMessage.bind(controller);
+  const router = new Router(
+      '/',
+      {
+        '/': HomePage,
+        '/viewer': ViewerPage,
+        '/record': RecordPage,
+      },
+      dispatch);
+  forwardRemoteCalls(channel.port2, new FrontendApi(router));
+  globals.initialize(dispatch, controller);
 
-  globals.initialize(
-      controller.postMessage.bind(controller),  // dispatch
-      createEmptyState(),                       // state
-      new Map<string, {}>(),                    // trackDataStore
-      new Map<string, {}>(),                    // queryResults
-      new FrontendLocalState(),                 // frontendState
-      new RafScheduler(),                       // rafSheduler
-      );
+  globals.rafScheduler.domRedraw = () =>
+      m.render(document.body, m(router.resolve(globals.state.route)));
 
-  warmupWasmEngineWorker();
-
-  m.route(document.body, '/', {
-    '/': HomePage,
-    '/viewer': ViewerPage,
-  });
 
   // Put these variables in the global scope for better debugging.
   (window as {} as {m: {}}).m = m;
   (window as {} as {globals: {}}).globals = globals;
 
-  const stateHash = m.route.param('s');
+  // /?s=xxxx for permalinks.
+  const stateHash = router.param('s');
   if (stateHash) {
-    const state = await loadState(stateHash);
-    globals.dispatch(setState(state));
+    globals.dispatch(Actions.loadPermalink({
+      hash: stateHash,
+    }));
   }
 
   // Prevent pinch zoom.
   document.body.addEventListener('wheel', (e: MouseEvent) => {
     if (e.ctrlKey) e.preventDefault();
   });
+
+  router.navigateToCurrentHash();
 }
 
 main();

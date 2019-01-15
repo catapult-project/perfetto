@@ -14,7 +14,7 @@
 
 import * as m from 'mithril';
 
-import {deleteQuery, executeQuery} from '../common/actions';
+import {Actions} from '../common/actions';
 import {QueryResponse} from '../common/queries';
 import {EngineConfig} from '../common/state';
 
@@ -25,10 +25,11 @@ const QUERY_ID = 'quicksearch';
 let selResult = 0;
 let numResults = 0;
 let mode: 'search'|'command' = 'search';
+let omniboxValue = '';
 
 function clearOmniboxResults() {
   globals.queryResults.delete(QUERY_ID);
-  globals.dispatch(deleteQuery(QUERY_ID));
+  globals.dispatch(Actions.deleteQuery({queryId: QUERY_ID}));
 }
 
 function onKeyDown(e: Event) {
@@ -42,21 +43,22 @@ function onKeyDown(e: Event) {
     return;
   }
   const txt = (e.target as HTMLInputElement);
+  omniboxValue = txt.value;
   if (key === ':' && txt.value === '') {
     mode = 'command';
-    m.redraw();
+    globals.rafScheduler.scheduleFullRedraw();
     e.preventDefault();
     return;
   }
   if (key === 'Escape' && mode === 'command') {
     txt.value = '';
     mode = 'search';
-    m.redraw();
+    globals.rafScheduler.scheduleFullRedraw();
     return;
   }
   if (key === 'Backspace' && txt.value.length === 0 && mode === 'command') {
     mode = 'search';
-    m.redraw();
+    globals.rafScheduler.scheduleFullRedraw();
     return;
   }
 }
@@ -65,38 +67,58 @@ function onKeyUp(e: Event) {
   e.stopPropagation();
   const key = (e as KeyboardEvent).key;
   const txt = e.target as HTMLInputElement;
+  omniboxValue = txt.value;
   if (key === 'ArrowUp' || key === 'ArrowDown') {
     selResult += (key === 'ArrowUp') ? -1 : 1;
     selResult = Math.max(selResult, 0);
     selResult = Math.min(selResult, numResults - 1);
     e.preventDefault();
-    m.redraw();
+    globals.rafScheduler.scheduleFullRedraw();
     return;
   }
   if (txt.value.length <= 0 || key === 'Escape') {
     clearOmniboxResults();
-    m.redraw();
+    globals.rafScheduler.scheduleFullRedraw();
     return;
   }
   if (mode === 'search') {
     const name = txt.value.replace(/'/g, '\\\'').replace(/[*]/g, '%');
     const query = `select str from strings where str like '%${name}%' limit 10`;
-    globals.dispatch(executeQuery('0', QUERY_ID, query));
+    globals.dispatch(
+        Actions.executeQuery({engineId: '0', queryId: QUERY_ID, query}));
   }
   if (mode === 'command' && key === 'Enter') {
-    globals.dispatch(executeQuery('0', 'command', txt.value));
+    globals.dispatch(Actions.executeQuery(
+        {engineId: '0', queryId: 'command', query: txt.value}));
   }
 }
 
 
-const Omnibox: m.Component = {
-  oncreate(vnode) {
+class Omnibox implements m.ClassComponent {
+  oncreate(vnode: m.VnodeDOM) {
     const txt = vnode.dom.querySelector('input') as HTMLInputElement;
     txt.addEventListener('blur', clearOmniboxResults);
     txt.addEventListener('keydown', onKeyDown);
     txt.addEventListener('keyup', onKeyUp);
-  },
+  }
+
   view() {
+    const msgTTL = globals.state.status.timestamp + 1 - Date.now() / 1e3;
+    let enginesAreBusy = false;
+    for (const engine of Object.values(globals.state.engines)) {
+      enginesAreBusy = enginesAreBusy || !engine.ready;
+    }
+
+    if (msgTTL > 0 || enginesAreBusy) {
+      setTimeout(
+          () => globals.rafScheduler.scheduleFullRedraw(), msgTTL * 1000);
+      return m(
+          `.omnibox.message-mode`,
+          m(`input[placeholder=${globals.state.status.msg}][readonly]`, {
+            value: '',
+          }));
+    }
+
     // TODO(primiano): handle query results here.
     const results = [];
     const resp = globals.queryResults.get(QUERY_ID) as QueryResponse;
@@ -111,15 +133,19 @@ const Omnibox: m.Component = {
       search: 'Search or type : to enter command mode',
       command: 'e.g., select * from sched left join thread using(utid) limit 10'
     };
+
     const commandMode = mode === 'command';
     return m(
         `.omnibox${commandMode ? '.command-mode' : ''}`,
-        m(`input[type=text][placeholder=${placeholder[mode]}]`),
+        m(`input[placeholder=${placeholder[mode]}]`, {
+          onchange: m.withAttr('value', v => omniboxValue = v),
+          value: omniboxValue,
+        }),
         m('.omnibox-results', results));
-  },
-};
+  }
+}
 
-export const Topbar: m.Component = {
+export class Topbar implements m.ClassComponent {
   view() {
     const progBar = [];
     const engine: EngineConfig = globals.state.engines['0'];
@@ -127,7 +153,6 @@ export const Topbar: m.Component = {
         (engine !== undefined && !engine.ready)) {
       progBar.push(m('.progress'));
     }
-
     return m('.topbar', m(Omnibox), ...progBar);
-  },
-};
+  }
+}

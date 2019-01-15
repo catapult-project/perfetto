@@ -36,6 +36,7 @@ namespace perfetto {
 class CommitDataRequest;
 class PatchList;
 class TraceWriter;
+class TraceWriterImpl;
 
 namespace base {
 class TaskRunner;
@@ -56,6 +57,8 @@ class SharedMemoryArbiterImpl : public SharedMemoryArbiter {
   // |OnPagesCompleteCallback|: a callback that will be posted on the passed
   // |TaskRunner| when one or more pages are complete (and hence the Producer
   // should send a CommitData request to the Service).
+  // |TaskRunner|: Task runner for perfetto's main thread, which executes the
+  // OnPagesCompleteCallback and IPC calls to the |ProducerEndpoint|.
   SharedMemoryArbiterImpl(void* start,
                           size_t size,
                           size_t page_size,
@@ -73,13 +76,20 @@ class SharedMemoryArbiterImpl : public SharedMemoryArbiter {
   // service to move it to the central tracing buffer. |target_buffer| is the
   // absolute trace buffer ID where the service should move the chunk onto (the
   // producer is just to copy back the same number received in the
-  // DataSourceConfig upon the CreateDataSourceInstance() reques).
+  // DataSourceConfig upon the StartDataSource() reques).
   // PatchList is a pointer to the list of patches for previous chunks. The
   // first patched entries will be removed from the patched list and sent over
   // to the service in the same CommitData() IPC request.
   void ReturnCompletedChunk(SharedMemoryABI::Chunk,
                             BufferID target_buffer,
                             PatchList*);
+
+  // Send a request to the service to apply completed patches from |patch_list|.
+  // |writer_id| is the ID of the TraceWriter that calls this method,
+  // |target_buffer| is the global trace buffer ID of its target buffer.
+  void SendPatches(WriterID writer_id,
+                   BufferID target_buffer,
+                   PatchList* patch_list);
 
   // Forces a synchronous commit of the completed packets without waiting for
   // the next task.
@@ -94,7 +104,9 @@ class SharedMemoryArbiterImpl : public SharedMemoryArbiter {
   // SharedMemoryArbiter implementation.
   // See include/perfetto/tracing/core/shared_memory_arbiter.h for comments.
   std::unique_ptr<TraceWriter> CreateTraceWriter(
-      BufferID target_buffer = 0) override;
+      BufferID target_buffer) override;
+  bool BindStartupTraceWriter(StartupTraceWriter* writer,
+                              BufferID target_buffer) override;
 
   void NotifyFlushComplete(FlushRequestID) override;
 
@@ -105,6 +117,11 @@ class SharedMemoryArbiterImpl : public SharedMemoryArbiter {
 
   SharedMemoryArbiterImpl(const SharedMemoryArbiterImpl&) = delete;
   SharedMemoryArbiterImpl& operator=(const SharedMemoryArbiterImpl&) = delete;
+
+  void UpdateCommitDataRequest(SharedMemoryABI::Chunk chunk,
+                               WriterID writer_id,
+                               BufferID target_buffer,
+                               PatchList* patch_list);
 
   // Called by the TraceWriter destructor.
   void ReleaseWriterID(WriterID);

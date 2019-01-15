@@ -16,18 +16,28 @@ import * as protos from '../gen/protos';
 
 // Aliases protos to avoid the super nested namespaces.
 // See https://www.typescriptlang.org/docs/handbook/namespaces.html#aliases
-import TraceConfig = protos.perfetto.protos.TraceConfig;
-import TraceProcessor = protos.perfetto.protos.TraceProcessor;
+import IAndroidPowerConfig = protos.perfetto.protos.IAndroidPowerConfig;
+import IProcessStatsConfig = protos.perfetto.protos.IProcessStatsConfig;
 import IRawQueryArgs = protos.perfetto.protos.IRawQueryArgs;
+import ISysStatsConfig = protos.perfetto.protos.ISysStatsConfig;
+import ITraceConfig = protos.perfetto.protos.ITraceConfig;
+import BatteryCounters =
+    protos.perfetto.protos.AndroidPowerConfig.BatteryCounters;
+import MeminfoCounters = protos.perfetto.protos.MeminfoCounters;
 import RawQueryArgs = protos.perfetto.protos.RawQueryArgs;
 import RawQueryResult = protos.perfetto.protos.RawQueryResult;
+import StatCounters = protos.perfetto.protos.SysStatsConfig.StatCounters;
+import TraceConfig = protos.perfetto.protos.TraceConfig;
+import TraceProcessor = protos.perfetto.protos.TraceProcessor;
+import VmstatCounters = protos.perfetto.protos.VmstatCounters;
 
 // TODO(hjd): Maybe these should go in their own file.
 export interface Row { [key: string]: number|string; }
 
 function getCell(result: RawQueryResult, column: number, row: number): number|
-    string {
+    string|null {
   const values = result.columns[column];
+  if (values.isNulls![row]) return null;
   switch (result.columnDescriptors[column].type) {
     case RawQueryResult.ColumnDesc.Type.LONG:
       return +values.longValues![row];
@@ -41,7 +51,28 @@ function getCell(result: RawQueryResult, column: number, row: number): number|
 }
 
 export function rawQueryResultColumns(result: RawQueryResult): string[] {
-  return result.columnDescriptors.map(d => d.name || '');
+  // Two columns can conflict on the same name, e.g.
+  // select x.foo, y.foo from x join y. In that case store them using the
+  // full table.column notation.
+  const res = [] as string[];
+  const uniqColNames = new Set<string>();
+  const colNamesToDedupe = new Set<string>();
+  for (const col of result.columnDescriptors) {
+    const colName = col.name || '';
+    if (uniqColNames.has(colName)) {
+      colNamesToDedupe.add(colName);
+    }
+    uniqColNames.add(colName);
+  }
+  for (let i = 0; i < result.columnDescriptors.length; i++) {
+    const colName = result.columnDescriptors[i].name || '';
+    if (colNamesToDedupe.has(colName)) {
+      res.push(`${colName}.${i + 1}`);
+    } else {
+      res.push(colName);
+    }
+  }
+  return res;
 }
 
 export function* rawQueryResultIter(result: RawQueryResult) {
@@ -50,16 +81,25 @@ export function* rawQueryResultIter(result: RawQueryResult) {
   for (let rowNum = 0; rowNum < result.numRecords; rowNum++) {
     const row: Row = {};
     for (const [name, colNum] of columns) {
-      row[name] = getCell(result, colNum, rowNum);
+      const cell = getCell(result, colNum, rowNum);
+      row[name] = cell === null ? '[NULL]' : cell;
     }
     yield row;
   }
 }
 
 export {
-  TraceConfig,
-  TraceProcessor,
+  IAndroidPowerConfig,
+  IProcessStatsConfig,
   IRawQueryArgs,
+  ISysStatsConfig,
+  ITraceConfig,
+  BatteryCounters,
+  MeminfoCounters,
   RawQueryArgs,
   RawQueryResult,
+  StatCounters,
+  TraceConfig,
+  TraceProcessor,
+  VmstatCounters,
 };

@@ -56,9 +56,11 @@ class MockProducer : public Producer {
   // Producer implementation.
   MOCK_METHOD0(OnConnect, void());
   MOCK_METHOD0(OnDisconnect, void());
-  MOCK_METHOD2(CreateDataSourceInstance,
+  MOCK_METHOD2(SetupDataSource,
                void(DataSourceInstanceID, const DataSourceConfig&));
-  MOCK_METHOD1(TearDownDataSourceInstance, void(DataSourceInstanceID));
+  MOCK_METHOD2(StartDataSource,
+               void(DataSourceInstanceID, const DataSourceConfig&));
+  MOCK_METHOD1(StopDataSource, void(DataSourceInstanceID));
   MOCK_METHOD0(uid, uid_t());
   MOCK_METHOD0(OnTracingSetup, void());
   MOCK_METHOD3(Flush,
@@ -74,6 +76,8 @@ class MockConsumer : public Consumer {
   MOCK_METHOD0(OnDisconnect, void());
   MOCK_METHOD0(OnTracingDisabled, void());
   MOCK_METHOD2(OnTracePackets, void(std::vector<TracePacket>*, bool));
+  MOCK_METHOD1(OnDetach, void(bool));
+  MOCK_METHOD2(OnAttach, void(bool, const TraceConfig&));
 
   // Workaround, gmock doesn't support yet move-only types, passing a pointer.
   void OnTraceData(std::vector<TracePacket> packets, bool has_more) {
@@ -94,6 +98,8 @@ void CheckTraceStats(const protos::TracePacket& packet) {
   EXPECT_GT(buf_stats.bytes_written(), 0u);
   EXPECT_GT(buf_stats.chunks_written(), 0u);
   EXPECT_EQ(0u, buf_stats.chunks_overwritten());
+  EXPECT_EQ(0u, buf_stats.chunks_rewritten());
+  EXPECT_EQ(0u, buf_stats.chunks_committed_out_of_order());
   EXPECT_EQ(0u, buf_stats.write_wrap_count());
   EXPECT_EQ(0u, buf_stats.patches_failed());
   EXPECT_EQ(0u, buf_stats.readaheads_failed());
@@ -187,10 +193,31 @@ TEST_F(TracingIntegrationTest, WithIPCTransport) {
   auto on_create_ds_instance =
       task_runner_->CreateCheckpoint("on_create_ds_instance");
   EXPECT_CALL(producer_, OnTracingSetup());
-  EXPECT_CALL(producer_, CreateDataSourceInstance(_, _))
+
+  // Store the arguments passed to SetupDataSource() and later check that they
+  // match the ones passed to StartDataSource().
+  DataSourceInstanceID setup_id;
+  perfetto::protos::DataSourceConfig setup_cfg_proto;
+  EXPECT_CALL(producer_, SetupDataSource(_, _))
       .WillOnce(
-          Invoke([on_create_ds_instance, &ds_iid, &global_buf_id](
-                     DataSourceInstanceID id, const DataSourceConfig& cfg) {
+          Invoke([&setup_id, &setup_cfg_proto](DataSourceInstanceID id,
+                                               const DataSourceConfig& cfg) {
+
+            setup_id = id;
+            cfg.ToProto(&setup_cfg_proto);
+          }));
+  EXPECT_CALL(producer_, StartDataSource(_, _))
+      .WillOnce(
+          Invoke([on_create_ds_instance, &ds_iid, &global_buf_id, &setup_id,
+                  &setup_cfg_proto](DataSourceInstanceID id,
+                                    const DataSourceConfig& cfg) {
+            // id and config should match the ones passed to SetupDataSource.
+            ASSERT_EQ(id, setup_id);
+            perfetto::protos::DataSourceConfig cfg_proto;
+            cfg.ToProto(&cfg_proto);
+            ASSERT_EQ(cfg_proto.SerializeAsString(),
+                      setup_cfg_proto.SerializeAsString());
+
             ASSERT_NE(0u, id);
             ds_iid = id;
             ASSERT_EQ("perfetto.test", cfg.name());
@@ -286,7 +313,7 @@ TEST_F(TracingIntegrationTest, WithIPCTransport) {
 
   auto on_tracing_disabled =
       task_runner_->CreateCheckpoint("on_tracing_disabled");
-  EXPECT_CALL(producer_, TearDownDataSourceInstance(_));
+  EXPECT_CALL(producer_, StopDataSource(_));
   EXPECT_CALL(consumer_, OnTracingDisabled())
       .WillOnce(Invoke(on_tracing_disabled));
   task_runner_->RunUntilCheckpoint("on_tracing_disabled");
@@ -309,7 +336,8 @@ TEST_F(TracingIntegrationTest, WriteIntoFile) {
   auto on_create_ds_instance =
       task_runner_->CreateCheckpoint("on_create_ds_instance");
   EXPECT_CALL(producer_, OnTracingSetup());
-  EXPECT_CALL(producer_, CreateDataSourceInstance(_, _))
+  EXPECT_CALL(producer_, SetupDataSource(_, _));
+  EXPECT_CALL(producer_, StartDataSource(_, _))
       .WillOnce(Invoke([on_create_ds_instance, &global_buf_id](
                            DataSourceInstanceID, const DataSourceConfig& cfg) {
         global_buf_id = static_cast<BufferID>(cfg.target_buffer());
@@ -337,7 +365,7 @@ TEST_F(TracingIntegrationTest, WriteIntoFile) {
 
   auto on_tracing_disabled =
       task_runner_->CreateCheckpoint("on_tracing_disabled");
-  EXPECT_CALL(producer_, TearDownDataSourceInstance(_));
+  EXPECT_CALL(producer_, StopDataSource(_));
   EXPECT_CALL(consumer_, OnTracingDisabled())
       .WillOnce(Invoke(on_tracing_disabled));
   task_runner_->RunUntilCheckpoint("on_tracing_disabled");

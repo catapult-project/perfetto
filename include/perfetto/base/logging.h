@@ -28,6 +28,12 @@
 #define PERFETTO_DCHECK_IS_ON() 1
 #endif
 
+#if !defined(PERFETTO_FORCE_DLOG)
+#define PERFETTO_DLOG_IS_ON() PERFETTO_DCHECK_IS_ON()
+#else
+#define PERFETTO_DLOG_IS_ON() PERFETTO_FORCE_DLOG
+#endif
+
 #include "perfetto/base/build_config.h"
 #include "perfetto/base/utils.h"
 
@@ -114,12 +120,21 @@ constexpr const char* kLogFmt[] = {"\x1b[2m", "\x1b[39m", "\x1b[32m\x1b[1m",
 #define PERFETTO_PLOG(x, ...) \
   PERFETTO_ELOG(x " (errno: %d, %s)", ##__VA_ARGS__, errno, strerror(errno))
 
-#if PERFETTO_DCHECK_IS_ON()
+#if PERFETTO_DLOG_IS_ON()
 
 #define PERFETTO_DLOG(fmt, ...) PERFETTO_XLOG(kLogDebug, fmt, ##__VA_ARGS__)
 
 #define PERFETTO_DPLOG(x, ...) \
   PERFETTO_DLOG(x " (errno: %d, %s)", ##__VA_ARGS__, errno, strerror(errno))
+
+#else
+
+#define PERFETTO_DLOG(...) ::perfetto::base::ignore_result(__VA_ARGS__)
+#define PERFETTO_DPLOG(...) ::perfetto::base::ignore_result(__VA_ARGS__)
+
+#endif  // PERFETTO_DLOG_IS_ON()
+
+#if PERFETTO_DCHECK_IS_ON()
 
 #define PERFETTO_DCHECK(x)                            \
   do {                                                \
@@ -129,11 +144,19 @@ constexpr const char* kLogFmt[] = {"\x1b[2m", "\x1b[39m", "\x1b[32m\x1b[1m",
     }                                                 \
   } while (0)
 
+#define PERFETTO_DFATAL(fmt, ...)      \
+  do {                                 \
+    PERFETTO_PLOG(fmt, ##__VA_ARGS__); \
+    PERFETTO_IMMEDIATE_CRASH();        \
+  } while (0)
+
 #else
 
-#define PERFETTO_DLOG(...) ::perfetto::base::ignore_result(__VA_ARGS__)
-#define PERFETTO_DPLOG(...) ::perfetto::base::ignore_result(__VA_ARGS__)
-#define PERFETTO_DCHECK(x) ::perfetto::base::ignore_result(x)
+#define PERFETTO_DCHECK(x) \
+  do {                     \
+  } while (false && (x))
+
+#define PERFETTO_DFATAL(...) ::perfetto::base::ignore_result(__VA_ARGS__)
 
 #endif  // PERFETTO_DCHECK_IS_ON()
 

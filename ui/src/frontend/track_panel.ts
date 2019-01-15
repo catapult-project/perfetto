@@ -14,107 +14,193 @@
 
 import * as m from 'mithril';
 
-import {moveTrack} from '../common/actions';
+import {Actions, DeferredAction} from '../common/actions';
 import {TrackState} from '../common/state';
 
 import {globals} from './globals';
 import {drawGridLines} from './gridline_helper';
-import {quietDispatch} from './mithril_helpers';
-import {Panel} from './panel';
+import {Panel, PanelSize} from './panel';
 import {Track} from './track';
 import {trackRegistry} from './track_registry';
 
 // TODO(hjd): We should remove the constant where possible.
 // If any uses can't be removed we should read this constant from CSS.
-export const TRACK_SHELL_WIDTH = 300;
+export const TRACK_SHELL_WIDTH = 250;
 
-const TrackShell = {
-  view({attrs}) {
+function isPinned(id: string) {
+  return globals.state.pinnedTracks.indexOf(id) !== -1;
+}
+
+interface TrackShellAttrs {
+  trackState: TrackState;
+}
+
+class TrackShell implements m.ClassComponent<TrackShellAttrs> {
+  // Set to true when we click down and drag the
+  private dragging = false;
+  private dropping: 'before'|'after'|undefined = undefined;
+  private attrs?: TrackShellAttrs;
+
+  oninit(vnode: m.Vnode<TrackShellAttrs>) {
+    this.attrs = vnode.attrs;
+  }
+
+  view({attrs}: m.CVnode<TrackShellAttrs>) {
+    const dragClass = this.dragging ? `.drag` : '';
+    const dropClass = this.dropping ? `.drop-${this.dropping}` : '';
     return m(
-        '.track-shell',
+        `.track-shell${dragClass}${dropClass}[draggable=true]`,
+        {
+          onmousedown: this.onmousedown.bind(this),
+          ondragstart: this.ondragstart.bind(this),
+          ondragend: this.ondragend.bind(this),
+          ondragover: this.ondragover.bind(this),
+          ondragleave: this.ondragleave.bind(this),
+          ondrop: this.ondrop.bind(this),
+        },
         m('h1', attrs.trackState.name),
-        m(TrackMoveButton, {
-          direction: 'up',
-          trackId: attrs.trackState.id,
-        }),
-        m(TrackMoveButton, {
-          direction: 'down',
-          trackId: attrs.trackState.id,
+        m(TrackButton, {
+          action: Actions.toggleTrackPinned({trackId: attrs.trackState.id}),
+          i: isPinned(attrs.trackState.id) ? 'star' : 'star_border',
         }));
-  },
-} as m.Component<{trackState: TrackState}>;
+  }
 
-const TrackContent = {
-  view({attrs}) {
+  onmousedown(e: MouseEvent) {
+    // Prevent that the click is intercepted by the PanAndZoomHandler and that
+    // we start panning while dragging.
+    e.stopPropagation();
+  }
+
+  ondragstart(e: DragEvent) {
+    this.dragging = true;
+    globals.rafScheduler.scheduleFullRedraw();
+    e.dataTransfer.setData('perfetto/track', `${this.attrs!.trackState.id}`);
+    e.dataTransfer.setDragImage(new Image(), 0, 0);
+    e.stopImmediatePropagation();
+  }
+
+  ondragend() {
+    this.dragging = false;
+    globals.rafScheduler.scheduleFullRedraw();
+  }
+
+  ondragover(e: DragEvent) {
+    if (this.dragging) return;
+    if (!(e.target instanceof HTMLElement)) return;
+    if (!e.dataTransfer.types.includes('perfetto/track')) return;
+    e.dataTransfer.dropEffect = 'move';
+    e.preventDefault();
+
+    // Apply some hysteresis to the drop logic so that the lightened border
+    // changes only when we get close enough to the border.
+    if (e.offsetY < e.target.scrollHeight / 3) {
+      this.dropping = 'before';
+    } else if (e.offsetY > e.target.scrollHeight / 3 * 2) {
+      this.dropping = 'after';
+    }
+    globals.rafScheduler.scheduleFullRedraw();
+  }
+
+  ondragleave() {
+    this.dropping = undefined;
+    globals.rafScheduler.scheduleFullRedraw();
+  }
+
+  ondrop(e: DragEvent) {
+    if (this.dropping === undefined) return;
+    globals.rafScheduler.scheduleFullRedraw();
+    const srcId = e.dataTransfer.getData('perfetto/track');
+    const dstId = this.attrs!.trackState.id;
+    globals.dispatch(Actions.moveTrack({srcId, op: this.dropping, dstId}));
+    this.dropping = undefined;
+  }
+}
+
+interface TrackContentAttrs {
+  track: Track;
+}
+class TrackContent implements m.ClassComponent<TrackContentAttrs> {
+  view({attrs}: m.CVnode<TrackContentAttrs>) {
     return m('.track-content', {
       onmousemove: (e: MouseEvent) => {
         attrs.track.onMouseMove({x: e.layerX, y: e.layerY});
-        globals.rafScheduler.scheduleOneRedraw();
+        globals.rafScheduler.scheduleRedraw();
       },
       onmouseout: () => {
         attrs.track.onMouseOut();
-        globals.rafScheduler.scheduleOneRedraw();
+        globals.rafScheduler.scheduleRedraw();
       },
-    }, );
+    });
   }
-} as m.Component<{track: Track}>;
+}
 
-const TrackComponent = {
-  view({attrs}) {
+interface TrackComponentAttrs {
+  trackState: TrackState;
+  track: Track;
+}
+class TrackComponent implements m.ClassComponent<TrackComponentAttrs> {
+  view({attrs}: m.CVnode<TrackComponentAttrs>) {
     return m('.track', [
       m(TrackShell, {trackState: attrs.trackState}),
       m(TrackContent, {track: attrs.track})
     ]);
   }
-} as m.Component<{trackState: TrackState, track: Track}>;
+}
 
-const TrackMoveButton = {
-  view({attrs}) {
+interface TrackButtonAttrs {
+  action: DeferredAction;
+  i: string;
+}
+class TrackButton implements m.ClassComponent<TrackButtonAttrs> {
+  view({attrs}: m.CVnode<TrackButtonAttrs>) {
     return m(
-        'i.material-icons.track-move-icons',
+        'i.material-icons.track-button',
         {
-          onclick: quietDispatch(moveTrack(attrs.trackId, attrs.direction)),
+          onclick: () => globals.dispatch(attrs.action),
         },
-        attrs.direction === 'up' ? 'arrow_upward_alt' : 'arrow_downward_alt');
+        attrs.i);
   }
-} as m.Component<{
-  direction: 'up' | 'down',
-  trackId: string,
-},
-                        {}>;
+}
 
-export class TrackPanel implements Panel {
+interface TrackPanelAttrs {
+  id: string;
+}
+
+export class TrackPanel extends Panel<TrackPanelAttrs> {
   private track: Track;
-  constructor(public trackState: TrackState) {
-    // TODO: Since ES6 modules are asynchronous and it is conceivable that we
-    // want to load a track implementation on demand, we should not rely here on
-    // the fact that the track is already registered. We should show some
-    // default content until a track implementation is found.
+  private trackState: TrackState;
+  constructor(vnode: m.CVnode<TrackPanelAttrs>) {
+    super();
+    this.trackState = globals.state.tracks[vnode.attrs.id];
     const trackCreator = trackRegistry.get(this.trackState.kind);
     this.track = trackCreator.create(this.trackState);
   }
 
-  getHeight(): number {
-    return this.track.getHeight();
+  view() {
+    return m(
+        '.track',
+        {
+          style: {
+            height: `${this.track.getHeight()}px`,
+          }
+        },
+        [
+          m(TrackShell, {trackState: this.trackState}),
+          m(TrackContent, {track: this.track})
+        ]);
+    return m(TrackComponent, {trackState: this.trackState, track: this.track});
   }
 
-  updateDom(dom: HTMLElement): void {
-    // TODO: Let tracks render DOM in the content area.
-    m.render(
-        dom,
-        m(TrackComponent, {trackState: this.trackState, track: this.track}));
-  }
-
-  renderCanvas(ctx: CanvasRenderingContext2D) {
+  renderCanvas(ctx: CanvasRenderingContext2D, size: PanelSize) {
+    ctx.save();
     ctx.translate(TRACK_SHELL_WIDTH, 0);
     drawGridLines(
         ctx,
         globals.frontendLocalState.timeScale,
         globals.frontendLocalState.visibleWindowTime,
-        this.track.getHeight());
+        size.height);
 
-    const trackData = globals.trackDataStore.get(this.trackState.id);
-    if (trackData !== undefined) this.track.consumeData(trackData);
     this.track.renderCanvas(ctx);
+    ctx.restore();
   }
 }

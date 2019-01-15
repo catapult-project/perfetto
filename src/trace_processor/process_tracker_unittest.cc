@@ -17,9 +17,7 @@
 #include "src/trace_processor/process_tracker.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "src/trace_processor/proto_trace_parser.h"
-#include "src/trace_processor/sched_tracker.h"
-#include "src/trace_processor/trace_processor.h"
+#include "src/trace_processor/event_tracker.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -32,9 +30,9 @@ using ::testing::Invoke;
 class ProcessTrackerTest : public ::testing::Test {
  public:
   ProcessTrackerTest() {
-    context.process_tracker.reset(new ProcessTracker(&context));
-    context.sched_tracker.reset(new SchedTracker(&context));
     context.storage.reset(new TraceStorage());
+    context.process_tracker.reset(new ProcessTracker(&context));
+    context.event_tracker.reset(new EventTracker(&context));
   }
 
  protected:
@@ -73,18 +71,15 @@ TEST_F(ProcessTrackerTest, AddProcessEntry_CorrectName) {
 
 TEST_F(ProcessTrackerTest, UpdateThreadMatch) {
   uint32_t cpu = 3;
-  uint64_t timestamp = 100;
+  int64_t timestamp = 100;
   uint32_t prev_state = 32;
   static const char kCommProc1[] = "process1";
   static const char kCommProc2[] = "process2";
 
-  context.sched_tracker->PushSchedSwitch(cpu, timestamp, /*tid=*/1, prev_state,
-                                         kCommProc1,
-                                         /*tid=*/4);
-  context.sched_tracker->PushSchedSwitch(cpu, timestamp + 1, /*tid=*/4,
-                                         prev_state, kCommProc2,
-
-                                         /*tid=*/1);
+  context.event_tracker->PushSchedSwitch(cpu, timestamp, /*tid=*/1, prev_state,
+                                         /*tid=*/4, kCommProc1);
+  context.event_tracker->PushSchedSwitch(cpu, timestamp + 1, /*tid=*/4,
+                                         prev_state, /*tid=*/1, kCommProc2);
 
   context.process_tracker->UpdateProcess(2, "test");
   context.process_tracker->UpdateThread(4, 2);
@@ -93,7 +88,7 @@ TEST_F(ProcessTrackerTest, UpdateThreadMatch) {
   TraceStorage::Process process = context.storage->GetProcess(/*utid=*/1);
 
   ASSERT_EQ(thread.tid, 4);
-  ASSERT_EQ(thread.upid, 1);
+  ASSERT_EQ(thread.upid.value(), 1);
   ASSERT_EQ(process.pid, 2);
   ASSERT_EQ(process.start_ns, timestamp);
 }
@@ -106,7 +101,7 @@ TEST_F(ProcessTrackerTest, UpdateThreadCreate) {
   ASSERT_EQ(context.storage->thread_count(), 1);
   auto tid_it = context.process_tracker->UtidsForTid(12);
   ASSERT_NE(tid_it.first, tid_it.second);
-  ASSERT_EQ(thread.upid, 1);
+  ASSERT_EQ(thread.upid.value(), 1);
   auto pid_it = context.process_tracker->UpidsForPid(2);
   ASSERT_NE(pid_it.first, pid_it.second);
   ASSERT_EQ(context.storage->process_count(), 1);

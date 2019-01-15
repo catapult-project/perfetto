@@ -24,11 +24,15 @@ namespace perfetto {
 namespace trace_processor {
 
 ProcessTracker::ProcessTracker(TraceProcessorContext* context)
-    : context_(context){};
+    : context_(context) {
+  // Create a mapping from (t|p)id 0 -> u(t|p)id 0 for the idle process.
+  tids_.emplace(0, 0);
+  pids_.emplace(0, 0);
+}
 
 ProcessTracker::~ProcessTracker() = default;
 
-UniqueTid ProcessTracker::UpdateThread(uint64_t timestamp,
+UniqueTid ProcessTracker::UpdateThread(int64_t timestamp,
                                        uint32_t tid,
                                        StringId thread_name_id) {
   auto pair_it = tids_.equal_range(tid);
@@ -38,7 +42,8 @@ UniqueTid ProcessTracker::UpdateThread(uint64_t timestamp,
     auto prev_utid = std::prev(pair_it.second)->second;
     TraceStorage::Thread* thread =
         context_->storage->GetMutableThread(prev_utid);
-    thread->name_id = thread_name_id;
+    if (thread_name_id)
+      thread->name_id = thread_name_id;
     return prev_utid;
   }
 
@@ -70,14 +75,15 @@ UniqueTid ProcessTracker::UpdateThread(uint32_t tid, uint32_t pid) {
   for (auto it = tids_pair.first; it != tids_pair.second; it++) {
     UniqueTid iter_utid = it->second;
     auto* iter_thread = context_->storage->GetMutableThread(iter_utid);
-    if (iter_thread->upid == 0) {
+    if (!iter_thread->upid.has_value()) {
       // We haven't discovered the parent process for the thread. Assign it
       // now and use this thread.
       thread = iter_thread;
       utid = iter_utid;
       break;
     }
-    const auto& iter_process = context_->storage->GetProcess(iter_thread->upid);
+    const auto& iter_process =
+        context_->storage->GetProcess(iter_thread->upid.value());
     if (iter_process.pid == pid) {
       // We found a thread that matches both the tid and its parent pid.
       thread = iter_thread;
@@ -94,7 +100,7 @@ UniqueTid ProcessTracker::UpdateThread(uint32_t tid, uint32_t pid) {
   }
 
   // Find matching process or create new one.
-  if (thread->upid == 0) {  // Not set, upid == 0 is invalid.
+  if (!thread->upid.has_value()) {
     std::tie(thread->upid, std::ignore) =
         GetOrCreateProcess(pid, thread->start_ns);
   }
@@ -112,19 +118,30 @@ UniquePid ProcessTracker::UpdateProcess(uint32_t pid, base::StringView name) {
   return upid;
 }
 
+UniquePid ProcessTracker::UpdateProcess(uint32_t pid) {
+  UniquePid upid;
+  TraceStorage::Process* process;
+  std::tie(upid, process) = GetOrCreateProcess(pid, 0 /* start_ns */);
+  UpdateThread(/*tid=*/pid, pid);  // Create an entry for the main thread.
+  return upid;
+}
+
 std::tuple<UniquePid, TraceStorage::Process*>
-ProcessTracker::GetOrCreateProcess(uint32_t pid, uint64_t start_ns) {
+ProcessTracker::GetOrCreateProcess(uint32_t pid, int64_t start_ns) {
   auto pids_pair = pids_.equal_range(pid);
 
-  UniquePid upid = 0;
+  base::Optional<UniquePid> found_upid;
   for (auto it = pids_pair.first; it != pids_pair.second; it++) {
     if (it->first == pid) {
-      upid = it->second;
+      found_upid = it->second;
       break;
     }
   }
 
-  if (upid == 0) {
+  UniquePid upid;
+  if (found_upid.has_value()) {
+    upid = found_upid.value();
+  } else {
     upid = context_->storage->AddEmptyProcess(pid);
     pids_.emplace(pid, upid);
   }

@@ -56,9 +56,9 @@
                 outline: none;
             }
             &::placeholder {
-                color: #aaa;
+                color: #b4b7ba;
                 font-family: 'Raleway';
-                font-weight: 100;
+                font-weight: 400;
             }
         }
         &.command-mode {
@@ -80,6 +80,18 @@
                 color: #9ddc67;
                 font-size: 26px;
                 padding-top: 5px;
+            }
+        }
+        &.message-mode {
+            background-color: hsl(0, 0%, 89%);
+            border-radius: 4px;
+            input::placeholder {
+                font-weight: 400;
+                font-family: var(--monospace-font);
+                color: hsl(213, 40%, 50%);
+            }
+            &:before {
+                content: 'bubble_chart';
             }
         }
     }

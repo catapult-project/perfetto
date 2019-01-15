@@ -14,41 +14,73 @@
 
 import * as m from 'mithril';
 
-import {PERMALINK_ID} from '../common/permalinks';
+import {Actions} from '../common/actions';
 import {globals} from './globals';
 import {Sidebar} from './sidebar';
 import {Topbar} from './topbar';
 
 function renderPermalink(): m.Children {
-  if (!globals.state.permalink) {
-    return null;
-  }
-  const config =
-      globals.trackDataStore.get(PERMALINK_ID) as {} as {url: string};
-  const url = config ? config.url : null;
-  return m(
-      '.alert-permalink',
-      url ? ['Permalink: ', m(`a[href=${url}]`, url)] : 'Uploading...');
+  const permalink = globals.state.permalink;
+  if (!permalink.requestId || !permalink.hash) return null;
+  const url = `${self.location.origin}#!/?s=${permalink.hash}`;
+  return m('.alert-permalink', [
+    m('div', 'Permalink: ', m(`a[href=${url}]`, url)),
+    m('button',
+      {
+        onclick: () => globals.dispatch(Actions.clearPermalink({})),
+      },
+      m('i.material-icons', 'close')),
+  ]);
 }
 
-const Alerts: m.Component = {
+class Alerts implements m.ClassComponent {
   view() {
     return m('.alerts', renderPermalink());
-  },
+  }
+}
+
+const TogglePerfDebugButton = {
+  view() {
+    return m(
+        '.perf-monitor-button',
+        m('button',
+          {
+            onclick: () => globals.frontendLocalState.togglePerfDebug(),
+          },
+          m('i.material-icons',
+            {
+              title: 'Toggle Perf Debug Mode',
+            },
+            'assessment')));
+  }
+};
+
+const PerfStats: m.Component = {
+  view() {
+    const perfDebug = globals.frontendLocalState.perfDebug;
+    const children = [m(TogglePerfDebugButton)];
+    if (perfDebug) {
+      children.unshift(m('.perf-stats-content'));
+    }
+    return m(`.perf-stats[expanded=${perfDebug}]`, children);
+  }
 };
 
 /**
  * Wrap component with common UI elements (nav bar etc).
  */
 export function createPage(component: m.Component): m.Component {
-  return {
+  const pageComponent = {
     view() {
       return [
         m(Sidebar),
         m(Topbar),
-        m(component),
         m(Alerts),
+        m(component),
+        m(PerfStats),
       ];
     },
   };
+
+  return pageComponent;
 }

@@ -22,7 +22,7 @@ namespace perfetto {
 namespace trace_processor {
 
 TraceStorage::TraceStorage() {
-  // Upid/utid 0 is reserved for invalid processes/threads.
+  // Upid/utid 0 is reserved for idle processes/threads.
   unique_processes_.emplace_back(0);
   unique_threads_.emplace_back(0);
 
@@ -32,13 +32,6 @@ TraceStorage::TraceStorage() {
 
 TraceStorage::~TraceStorage() {}
 
-void TraceStorage::AddSliceToCpu(uint32_t cpu,
-                                 uint64_t start_ns,
-                                 uint64_t duration_ns,
-                                 UniqueTid utid) {
-  cpu_events_[cpu].AddSlice(start_ns, duration_ns, utid);
-};
-
 StringId TraceStorage::InternString(base::StringView str) {
   auto hash = str.Hash();
   auto id_it = string_index_.find(hash);
@@ -47,13 +40,34 @@ StringId TraceStorage::InternString(base::StringView str) {
     return id_it->second;
   }
   string_pool_.emplace_back(str.ToStdString());
-  StringId string_id = string_pool_.size() - 1;
+  StringId string_id = static_cast<uint32_t>(string_pool_.size() - 1);
   string_index_.emplace(hash, string_id);
   return string_id;
 }
 
 void TraceStorage::ResetStorage() {
   *this = TraceStorage();
+}
+
+void TraceStorage::SqlStats::RecordQueryBegin(const std::string& query,
+                                              int64_t time_queued,
+                                              int64_t time_started) {
+  if (queries_.size() >= kMaxLogEntries) {
+    queries_.pop_front();
+    times_queued_.pop_front();
+    times_started_.pop_front();
+    times_ended_.pop_front();
+  }
+  queries_.push_back(query);
+  times_queued_.push_back(time_queued);
+  times_started_.push_back(time_started);
+  times_ended_.push_back(0);
+}
+
+void TraceStorage::SqlStats::RecordQueryEnd(int64_t time_ended) {
+  PERFETTO_DCHECK(!times_ended_.empty());
+  PERFETTO_DCHECK(times_ended_.back() == 0);
+  times_ended_.back() = time_ended;
 }
 
 }  // namespace trace_processor

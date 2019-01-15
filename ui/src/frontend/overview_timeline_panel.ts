@@ -12,47 +12,53 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import * as m from 'mithril';
+
+import {assertExists} from '../base/logging';
 import {TimeSpan, timeToString} from '../common/time';
 
 import {DragGestureHandler} from './drag_gesture_handler';
 import {globals} from './globals';
-import {Panel} from './panel';
+import {Panel, PanelSize} from './panel';
 import {TimeScale} from './time_scale';
-import {OVERVIEW_QUERY_ID} from './viewer_page';
 
-export class OverviewTimelinePanel implements Panel {
-  private width?: number;
+export class OverviewTimelinePanel extends Panel {
+  private width = 0;
   private dragStartPx = 0;
   private gesture?: DragGestureHandler;
   private timeScale?: TimeScale;
   private totTime = new TimeSpan(0, 0);
 
-  constructor() {}
-
-  getHeight(): number {
-    return 100;
-  }
-
-  updateDom(dom: HTMLElement) {
+  // Must explicitly type now; arguments types are no longer auto-inferred.
+  // https://github.com/Microsoft/TypeScript/issues/1373
+  onupdate({dom}: m.CVnodeDOM) {
     this.width = dom.getBoundingClientRect().width;
     this.totTime = new TimeSpan(
-        0, globals.state.traceTime.endSec - globals.state.traceTime.startSec);
-    this.timeScale = new TimeScale(this.totTime, [0, this.width]);
+        globals.state.traceTime.startSec, globals.state.traceTime.endSec);
+    this.timeScale = new TimeScale(this.totTime, [0, assertExists(this.width)]);
 
     if (this.gesture === undefined) {
       this.gesture = new DragGestureHandler(
-          dom,
+          dom as HTMLElement,
           this.onDrag.bind(this),
           this.onDragStart.bind(this),
           this.onDragEnd.bind(this));
     }
   }
 
-  renderCanvas(ctx: CanvasRenderingContext2D) {
+  oncreate(vnode: m.CVnodeDOM) {
+    this.onupdate(vnode);
+  }
+
+  view() {
+    return m('.overview-timeline');
+  }
+
+  renderCanvas(ctx: CanvasRenderingContext2D, size: PanelSize) {
     if (this.width === undefined) return;
     if (this.timeScale === undefined) return;
     const headerHeight = 25;
-    const tracksHeight = this.getHeight() - headerHeight;
+    const tracksHeight = size.height - headerHeight;
 
     // Draw time labels on the top header.
     ctx.font = '10px Google Sans';
@@ -60,56 +66,57 @@ export class OverviewTimelinePanel implements Panel {
     for (let i = 0; i < 100; i++) {
       const xPos = i * this.width / 100;
       const t = this.timeScale.pxToTime(xPos);
-      if (xPos < 0) continue;
+      if (xPos <= 0) continue;
       if (xPos > this.width) break;
       if (i % 10 === 0) {
         ctx.fillRect(xPos, 0, 1, headerHeight - 5);
-        ctx.fillText(timeToString(t), xPos + 5, 18);
+        ctx.fillText(timeToString(t - this.totTime.start), xPos + 5, 18);
       } else {
         ctx.fillRect(xPos, 0, 1, 5);
       }
     }
 
     // Draw mini-tracks with quanitzed density for each process.
-    if (globals.queryResults.has(OVERVIEW_QUERY_ID)) {
-      const res: {[key: string]: {name: string, load: Uint8Array}} =
-          globals.queryResults.get(OVERVIEW_QUERY_ID)!;
-      const numProcs = Object.keys(res).length;
-      const hueStep = Math.floor(255 / numProcs);
+    if (globals.overviewStore.size > 0) {
+      const numTracks = globals.overviewStore.size;
+      let hue = 128;
       let y = 0;
-      const trackHeight = (tracksHeight - 2) / numProcs;
-      for (const upid of Object.keys(res)) {
-        const loads = res[upid].load;
-        const px = this.width / loads.length;
+      const trackHeight = (tracksHeight - 1) / numTracks;
+      for (const key of globals.overviewStore.keys()) {
+        const loads = globals.overviewStore.get(key)!;
         for (let i = 0; i < loads.length; i++) {
-          const lightness = Math.ceil((1 - loads[i] / 0xff * 0.7) * 100);
-          ctx.fillStyle = `hsl(${255 - y * hueStep}, 50%, ${lightness}%)`;
-          ctx.fillRect(i * px, headerHeight + y * trackHeight, px, trackHeight);
+          const xStart = this.timeScale.timeToPx(loads[i].startSec);
+          const xEnd = this.timeScale.timeToPx(loads[i].endSec);
+          const yOff = headerHeight + y * trackHeight;
+          const lightness = Math.ceil((1 - loads[i].load * 0.7) * 100);
+          ctx.fillStyle = `hsl(${hue}, 50%, ${lightness}%)`;
+          ctx.fillRect(xStart, yOff, xEnd - xStart, trackHeight);
         }
         y++;
+        hue = (hue + 32) % 256;
       }
     }
 
     // Draw bottom border.
     ctx.fillStyle = 'hsl(219, 40%, 50%)';
-    ctx.fillRect(0, this.getHeight() - 2, this.width, 2);
+    ctx.fillRect(0, size.height - 1, this.width, 1);
 
     // Draw semi-opaque rects that occlude the non-visible time range.
     const vizTime = globals.frontendLocalState.visibleWindowTime;
-    const vizStartPx = this.timeScale.timeToPx(vizTime.start);
-    const vizEndPx = this.timeScale.timeToPx(vizTime.end);
+    const vizStartPx = Math.floor(this.timeScale.timeToPx(vizTime.start));
+    const vizEndPx = Math.ceil(this.timeScale.timeToPx(vizTime.end));
 
-    ctx.fillStyle = 'rgba(240, 240, 240, 0.7)';
+    ctx.fillStyle = 'rgba(200, 200, 200, 0.8)';
     ctx.fillRect(0, headerHeight, vizStartPx, tracksHeight);
     ctx.fillRect(vizEndPx, headerHeight, this.width - vizEndPx, tracksHeight);
 
     // Draw brushes.
-    ctx.fillStyle = '#999';
-    ctx.fillRect(vizStartPx, headerHeight, 1, tracksHeight);
-    ctx.fillRect(vizEndPx, headerHeight, 1, tracksHeight);
     const handleWidth = 3;
     const handleHeight = 25;
     const y = headerHeight + (tracksHeight - handleHeight) / 2;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(vizStartPx - 1, headerHeight, 1, tracksHeight);
+    ctx.fillRect(vizEndPx, headerHeight, 1, tracksHeight);
     ctx.fillRect(vizStartPx - handleWidth, y, handleWidth, handleHeight);
     ctx.fillRect(vizEndPx + 1, y, handleWidth, handleHeight);
   }
@@ -122,7 +129,7 @@ export class OverviewTimelinePanel implements Panel {
     if (tStart > tEnd) [tStart, tEnd] = [tEnd, tStart];
     const vizTime = new TimeSpan(tStart, tEnd);
     globals.frontendLocalState.updateVisibleTime(vizTime);
-    globals.rafScheduler.scheduleOneRedraw();
+    globals.rafScheduler.scheduleRedraw();
   }
 
   onDragStart(x: number) {

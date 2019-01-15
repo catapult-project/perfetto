@@ -18,52 +18,127 @@
 #define SRC_TRACE_PROCESSOR_PROTO_TRACE_PARSER_H_
 
 #include <stdint.h>
+
+#include <array>
 #include <memory>
 
-#include "src/trace_processor/trace_parser.h"
+#include "perfetto/base/string_view.h"
+#include "src/trace_processor/trace_blob_view.h"
+#include "src/trace_processor/trace_storage.h"
 
 namespace perfetto {
 namespace trace_processor {
 
-class BlobReader;
 class TraceProcessorContext;
 
-// Reads a protobuf trace in chunks and parses it into a form which is
-// efficient to query.
-class ProtoTraceParser : public TraceParser {
+struct SystraceTracePoint {
+  char phase;
+  uint32_t tid;
+
+  // For phase = 'B' and phase = 'C' only.
+  base::StringView name;
+
+  // For phase = 'C' only.
+  double value;
+};
+
+inline bool operator==(const SystraceTracePoint& x,
+                       const SystraceTracePoint& y) {
+  return std::tie(x.phase, x.tid, x.name, x.value) ==
+         std::tie(y.phase, y.tid, y.name, y.value);
+}
+
+bool ParseSystraceTracePoint(base::StringView, SystraceTracePoint* out);
+
+class ProtoTraceParser {
  public:
-  // |reader| is the abstract method of getting chunks of size |chunk_size_b|
-  // from a trace file with these chunks parsed into |trace|.
-  ProtoTraceParser(BlobReader*, TraceProcessorContext*);
-  ~ProtoTraceParser() override;
+  explicit ProtoTraceParser(TraceProcessorContext*);
+  virtual ~ProtoTraceParser();
 
-  // TraceParser implementation.
-
-  // Parses the next chunk of TracePackets from the BlobReader. Returns true
-  // if there are more chunks which can be read and false otherwise.
-  bool ParseNextChunk() override;
-
-  void set_chunk_size_for_testing(uint32_t n) { chunk_size_ = n; }
+  // virtual for testing.
+  virtual void ParseTracePacket(int64_t timestamp, TraceBlobView);
+  virtual void ParseFtracePacket(uint32_t cpu,
+                                 int64_t timestamp,
+                                 TraceBlobView);
+  void ParseProcessTree(TraceBlobView);
+  void ParseProcessStats(int64_t timestamp, TraceBlobView);
+  void ParseProcMemCounters(int64_t timestamp, TraceBlobView);
+  void ParseSchedSwitch(uint32_t cpu, int64_t timestamp, TraceBlobView);
+  void ParseCpuFreq(int64_t timestamp, TraceBlobView);
+  void ParseCpuIdle(int64_t timestamp, TraceBlobView);
+  void ParsePrint(uint32_t cpu, int64_t timestamp, uint32_t pid, TraceBlobView);
+  void ParseThread(TraceBlobView);
+  void ParseProcess(TraceBlobView);
+  void ParseSysStats(int64_t ts, TraceBlobView);
+  void ParseMemInfo(int64_t ts, TraceBlobView);
+  void ParseVmStat(int64_t ts, TraceBlobView);
+  void ParseCpuTimes(int64_t ts, TraceBlobView);
+  void ParseIrqCount(int64_t ts, TraceBlobView, bool is_soft);
+  void ParseRssStat(int64_t ts, uint32_t pid, TraceBlobView);
+  void ParseIonHeapGrowOrShrink(int64_t ts,
+                                uint32_t pid,
+                                TraceBlobView,
+                                bool grow);
+  void ParseSignalDeliver(int64_t ts, uint32_t pid, TraceBlobView);
+  void ParseSignalGenerate(int64_t ts, TraceBlobView);
+  void ParseLowmemoryKill(int64_t ts, TraceBlobView);
+  void ParseBatteryCounters(int64_t ts, TraceBlobView);
+  void ParseOOMScoreAdjUpdate(int64_t ts, TraceBlobView);
+  void ParseClockSnapshot(TraceBlobView);
+  std::pair<int /*type*/, int64_t> ParseClockField(TraceBlobView);
+  void ParseAndroidLogPacket(TraceBlobView);
+  void ParseAndroidLogEvent(TraceBlobView);
+  void ParseAndroidLogBinaryArg(TraceBlobView, char** str, size_t avail);
+  void ParseAndroidLogStats(TraceBlobView);
+  void ParseGenericFtrace(int64_t timestamp,
+                          uint32_t cpu,
+                          uint32_t pid,
+                          TraceBlobView view);
+  void ParseGenericFtraceField(RowId generic_row_id, TraceBlobView view);
+  void ParseTypedFtraceToRaw(uint32_t ftrace_id,
+                             int64_t timestamp,
+                             uint32_t cpu,
+                             uint32_t pid,
+                             TraceBlobView view);
+  void ParseTraceStats(TraceBlobView);
+  void ParseFtraceStats(TraceBlobView);
 
  private:
-  static constexpr uint32_t kTraceChunkSize = 16 * 1024 * 1024;  // 16 MB
-
-  void ParsePacket(const uint8_t* data, size_t length);
-  void ParseFtraceEventBundle(const uint8_t* data, size_t length);
-  void ParseFtraceEvent(uint32_t cpu, const uint8_t* data, size_t length);
-  void ParseSchedSwitch(uint32_t cpu,
-                        uint64_t timestamp,
-                        const uint8_t* data,
-                        size_t length);
-  void ParseProcessTree(const uint8_t* data, size_t length);
-  void ParseProcess(const uint8_t* data, size_t length);
-  void ParseThread(const uint8_t* data, size_t length);
-
-  BlobReader* const reader_;
   TraceProcessorContext* context_;
-  uint32_t chunk_size_ = kTraceChunkSize;
-  uint64_t offset_ = 0;
-  std::unique_ptr<uint8_t[]> buffer_;
+  const StringId utid_name_id_;
+  const StringId cpu_freq_name_id_;
+  const StringId cpu_idle_name_id_;
+  const StringId comm_name_id_;
+  const StringId num_forks_name_id_;
+  const StringId num_irq_total_name_id_;
+  const StringId num_softirq_total_name_id_;
+  const StringId num_irq_name_id_;
+  const StringId num_softirq_name_id_;
+  const StringId cpu_times_user_ns_id_;
+  const StringId cpu_times_user_ice_ns_id_;
+  const StringId cpu_times_system_mode_ns_id_;
+  const StringId cpu_times_idle_ns_id_;
+  const StringId cpu_times_io_wait_ns_id_;
+  const StringId cpu_times_irq_ns_id_;
+  const StringId cpu_times_softirq_ns_id_;
+  const StringId signal_deliver_id_;
+  const StringId signal_generate_id_;
+  const StringId batt_charge_id_;
+  const StringId batt_capacity_id_;
+  const StringId batt_current_id_;
+  const StringId batt_current_avg_id_;
+  const StringId lmk_id_;
+  const StringId oom_score_adj_id_;
+  const StringId ion_total_unknown_id_;
+  const StringId ion_change_unknown_id_;
+  std::vector<StringId> meminfo_strs_id_;
+  std::vector<StringId> vmstat_strs_id_;
+  std::vector<StringId> rss_members_;
+
+  // Maps a proto field number from ProcessStats::MemCounters to its StringId.
+  // Keep kProcMemCounterSize equal to 1 + max proto field id of MemCounters.
+  static constexpr size_t kProcMemCounterSize = 10;
+  std::array<StringId, kProcMemCounterSize> proc_mem_counter_names_{};
 };
 
 }  // namespace trace_processor

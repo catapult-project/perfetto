@@ -67,6 +67,15 @@ void MockProducer::UnregisterDataSource(const std::string& name) {
   service_endpoint_->UnregisterDataSource(name);
 }
 
+void MockProducer::RegisterTraceWriter(uint32_t writer_id,
+                                       uint32_t target_buffer) {
+  service_endpoint_->RegisterTraceWriter(writer_id, target_buffer);
+}
+
+void MockProducer::UnregisterTraceWriter(uint32_t writer_id) {
+  service_endpoint_->UnregisterTraceWriter(writer_id);
+}
+
 void MockProducer::WaitForTracingSetup() {
   static int i = 0;
   auto checkpoint_name =
@@ -76,12 +85,12 @@ void MockProducer::WaitForTracingSetup() {
   task_runner_->RunUntilCheckpoint(checkpoint_name);
 }
 
-void MockProducer::WaitForDataSourceStart(const std::string& name) {
+void MockProducer::WaitForDataSourceSetup(const std::string& name) {
   static int i = 0;
-  auto checkpoint_name = "on_ds_start_" + name + "_" + std::to_string(i++);
+  auto checkpoint_name = "on_ds_setup_" + name + "_" + std::to_string(i++);
   auto on_ds_start = task_runner_->CreateCheckpoint(checkpoint_name);
-  EXPECT_CALL(*this, CreateDataSourceInstance(
-                         _, Property(&DataSourceConfig::name, Eq(name))))
+  EXPECT_CALL(*this,
+              SetupDataSource(_, Property(&DataSourceConfig::name, Eq(name))))
       .WillOnce(Invoke([on_ds_start, this](DataSourceInstanceID ds_id,
                                            const DataSourceConfig& cfg) {
         EXPECT_FALSE(data_source_instances_.count(cfg.name()));
@@ -95,13 +104,35 @@ void MockProducer::WaitForDataSourceStart(const std::string& name) {
   task_runner_->RunUntilCheckpoint(checkpoint_name);
 }
 
+void MockProducer::WaitForDataSourceStart(const std::string& name) {
+  static int i = 0;
+  auto checkpoint_name = "on_ds_start_" + name + "_" + std::to_string(i++);
+  auto on_ds_start = task_runner_->CreateCheckpoint(checkpoint_name);
+  EXPECT_CALL(*this,
+              StartDataSource(_, Property(&DataSourceConfig::name, Eq(name))))
+      .WillOnce(Invoke([on_ds_start, this](DataSourceInstanceID ds_id,
+                                           const DataSourceConfig& cfg) {
+        // The data source might have been seen already through
+        // WaitForDataSourceSetup().
+        if (data_source_instances_.count(cfg.name()) == 0) {
+          auto target_buffer = static_cast<BufferID>(cfg.target_buffer());
+          auto session_id =
+              static_cast<TracingSessionID>(cfg.tracing_session_id());
+          data_source_instances_.emplace(
+              cfg.name(), EnabledDataSource{ds_id, target_buffer, session_id});
+        }
+        on_ds_start();
+      }));
+  task_runner_->RunUntilCheckpoint(checkpoint_name);
+}
+
 void MockProducer::WaitForDataSourceStop(const std::string& name) {
   static int i = 0;
   auto checkpoint_name = "on_ds_stop_" + name + "_" + std::to_string(i++);
   auto on_ds_stop = task_runner_->CreateCheckpoint(checkpoint_name);
   ASSERT_EQ(1u, data_source_instances_.count(name));
   DataSourceInstanceID ds_id = data_source_instances_[name].id;
-  EXPECT_CALL(*this, TearDownDataSourceInstance(ds_id))
+  EXPECT_CALL(*this, StopDataSource(ds_id))
       .WillOnce(InvokeWithoutArgs(on_ds_stop));
   task_runner_->RunUntilCheckpoint(checkpoint_name);
   data_source_instances_.erase(name);
@@ -114,15 +145,15 @@ std::unique_ptr<TraceWriter> MockProducer::CreateTraceWriter(
   return service_endpoint_->CreateTraceWriter(buf_id);
 }
 
-void MockProducer::WaitForFlush(TraceWriter* writer_to_flush) {
+void MockProducer::WaitForFlush(TraceWriter* writer_to_flush, bool reply) {
   auto& expected_call = EXPECT_CALL(*this, Flush(_, _, _));
-  if (!writer_to_flush)
-    return;
-  expected_call.WillOnce(
-      Invoke([this, writer_to_flush](FlushRequestID flush_req_id,
+  expected_call.WillOnce(Invoke(
+      [this, writer_to_flush, reply](FlushRequestID flush_req_id,
                                      const DataSourceInstanceID*, size_t) {
-        writer_to_flush->Flush();
-        service_endpoint_->NotifyFlushComplete(flush_req_id);
+        if (writer_to_flush)
+          writer_to_flush->Flush();
+        if (reply)
+          service_endpoint_->NotifyFlushComplete(flush_req_id);
       }));
 }
 

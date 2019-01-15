@@ -23,48 +23,36 @@
 #include <tuple>
 #include <unordered_map>
 
-#include "src/trace_processor/trace_parser.h"
+#include "src/trace_processor/chunked_trace_reader.h"
 #include "src/trace_processor/trace_storage.h"
+
+namespace Json {
+class Value;
+}
 
 namespace perfetto {
 namespace trace_processor {
 
-class BlobReader;
 class TraceProcessorContext;
+
+base::Optional<int64_t> CoerceToNs(const Json::Value& value);
+base::Optional<int64_t> CoerceToInt64(const Json::Value& value);
+base::Optional<uint32_t> CoerceToUint32(const Json::Value& value);
 
 // Parses legacy chrome JSON traces. The support for now is extremely rough
 // and supports only explicit TRACE_EVENT_BEGIN/END events.
-class JsonTraceParser : public TraceParser {
+class JsonTraceParser : public ChunkedTraceReader {
  public:
-  static constexpr char kPreamble[] = "{\"traceEvents\":[";
-
-  JsonTraceParser(BlobReader*, TraceProcessorContext*);
+  explicit JsonTraceParser(TraceProcessorContext*);
   ~JsonTraceParser() override;
 
   // TraceParser implementation.
-
-  // Parses a batch of JSON events from the BlobReader. Returns true
-  // if there are more chunks which can be read and false otherwise.
-  bool ParseNextChunk() override;
+  bool Parse(std::unique_ptr<uint8_t[]>, size_t) override;
 
  private:
-  struct Slice {
-    StringId cat_id;
-    StringId name_id;
-    uint64_t start_ts;
-    uint64_t end_ts;  // Only for complete events (scoped TRACE_EVENT macros).
-  };
-  using SlicesStack = std::vector<Slice>;
-
-  static inline void MaybeCloseStack(uint64_t end_ts, SlicesStack&);
-  static inline std::tuple<uint64_t, uint64_t> GetStackHashes(
-      const SlicesStack&);
-
-  BlobReader* const reader_;
   TraceProcessorContext* const context_;
   uint64_t offset_ = 0;
-  std::unique_ptr<char[]> buffer_;
-  std::unordered_map<UniqueTid, SlicesStack> threads_;
+  std::vector<char> buffer_;
 };
 
 }  // namespace trace_processor

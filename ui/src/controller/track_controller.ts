@@ -12,32 +12,73 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {assertExists} from '../base/logging';
+import {Actions} from '../common/actions';
+import {Engine} from '../common/engine';
+import {Registry} from '../common/registry';
 import {TrackState} from '../common/state';
-import {Engine} from './engine';
 
-export interface PublishFn { (data: {}): void; }
+import {Controller} from './controller';
+import {ControllerFactory} from './controller';
+import {globals} from './globals';
 
-/**
- * This interface forces track implementations to have two static properties:
- * kind and a create function.
- */
-export interface TrackControllerCreator {
-  // Store the kind explicitly as a string as opposed to using class.name in
-  // case we ever minify our code.
-  readonly kind: string;
+// TrackController is a base class overridden by track implementations (e.g.,
+// sched slices, nestable slices, counters).
+export abstract class TrackController<Config = {}, Data = {}> extends
+    Controller<'main'> {
+  readonly trackId: string;
+  readonly engine: Engine;
 
-  create(config: TrackState, engine: Engine, publish: PublishFn):
-      TrackController;
+  constructor(args: TrackControllerArgs) {
+    super('main');
+    this.trackId = args.trackId;
+    this.engine = args.engine;
+  }
+
+  // Must be overridden by the track implementation. Is invoked when the track
+  // frontend runs out of cached data. The derived track controller is expected
+  // to publish new track data in response to this call.
+  abstract onBoundsChange(start: number, end: number, resolution: number): void;
+
+  get trackState(): TrackState {
+    return assertExists(globals.state.tracks[this.trackId]);
+  }
+
+  get config(): Config {
+    return this.trackState.config as Config;
+  }
+
+  publish(data: Data): void {
+    globals.publish('TrackData', {id: this.trackId, data});
+  }
+
+  /**
+   * Returns a valid SQL table name with the given prefix that should be unique
+   * for each track.
+   */
+  tableName(prefix: string) {
+    // Derive table name from, since that is unique for each track.
+    // Track ID can be UUID but '-' is not valid for sql table name.
+    const idSuffix = this.trackId.split('-').join('_');
+    return `${prefix}_${idSuffix}`;
+  }
+
+  run() {
+    const dataReq = this.trackState.dataReq;
+    if (dataReq === undefined) return;
+    globals.dispatch(Actions.clearTrackDataReq({trackId: this.trackId}));
+    this.onBoundsChange(dataReq.start, dataReq.end, dataReq.resolution);
+  }
 }
 
-export abstract class TrackController {
-  // TODO(hjd): Maybe this should be optional?
-  abstract onBoundsChange(start: number, end: number): void;
+export interface TrackControllerArgs {
+  trackId: string;
+  engine: Engine;
 }
 
-// Re-export these so track implementors don't have to import from several
-// files.
-export {
-  TrackState,
-  Engine,
-};
+export interface TrackControllerFactory extends
+    ControllerFactory<TrackControllerArgs> {
+  kind: string;
+}
+
+export const trackControllerRegistry = new Registry<TrackControllerFactory>();

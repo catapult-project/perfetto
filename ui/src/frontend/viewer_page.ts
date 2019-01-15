@@ -17,17 +17,24 @@ import * as m from 'mithril';
 import {QueryResponse} from '../common/queries';
 import {TimeSpan} from '../common/time';
 
+import {copyToClipboard} from './clipboard';
+import {DragGestureHandler} from './drag_gesture_handler';
 import {globals} from './globals';
+import {HeaderPanel} from './header_panel';
+import {OverviewTimelinePanel} from './overview_timeline_panel';
 import {createPage} from './pages';
 import {PanAndZoomHandler} from './pan_and_zoom_handler';
-import {ScrollingPanelContainer} from './scrolling_panel_container';
+import {Panel} from './panel';
+import {AnyAttrsVnode, PanelContainer} from './panel_container';
+import {TimeAxisPanel} from './time_axis_panel';
+import {computeZoom} from './time_scale';
+import {TrackGroupPanel} from './track_group_panel';
 import {TRACK_SHELL_WIDTH} from './track_panel';
+import {TrackPanel} from './track_panel';
 
-export const OVERVIEW_QUERY_ID = 'overview_query';
+const DRAG_HANDLE_HEIGHT_PX = 12;
 
-const MAX_ZOOM_SPAN_SEC = 1e-4;  // 0.1 ms.
-
-const QueryTable: m.Component<{}, {}> = {
+class QueryTable extends Panel {
   view() {
     const resp = globals.queryResults.get('command') as QueryResponse;
     if (resp === undefined) {
@@ -50,129 +57,207 @@ const QueryTable: m.Component<{}, {}> = {
     return m(
         'div',
         m('header.overview',
-          `Query result - ${resp.durationMs} ms`,
-          m('span.code', resp.query)),
+          `Query result - ${Math.round(resp.durationMs)} ms`,
+          m('span.code', resp.query),
+          resp.error ? null :
+                       m('button.query-ctrl',
+                         {
+                           onclick: () => {
+                             const lines: string[][] = [];
+                             lines.push(resp.columns);
+                             for (const row of resp.rows) {
+                               const line = [];
+                               for (const col of resp.columns) {
+                                 line.push(row[col].toString());
+                               }
+                               lines.push(line);
+                             }
+                             copyToClipboard(
+                                 lines.map(line => line.join('\t')).join('\n'));
+                           },
+                         },
+                         'Copy as .tsv'),
+          m('button.query-ctrl',
+            {
+              onclick: () => {
+                globals.queryResults.delete('command');
+                globals.rafScheduler.scheduleFullRedraw();
+              }
+            },
+            'Close'), ),
         resp.error ?
             m('.query-error', `SQL error: ${resp.error}`) :
             m('table.query-table', m('thead', header), m('tbody', rows)));
-  },
-};
+  }
 
+  renderCanvas() {}
+}
 
-/**
- * CanvasRedrawTrigger hooks our canvas redraw into the Mithril redraw cycle.
- * Everytime the Mithril redraws (and CanvasRedrawTrigger is in the tree)
- * it calls either oncreate/onupdate from there we call syncRedraw().
- *
- * Ideally the canvas redraw should be:
- * a) synchronous
- * b) the very last thing that happens in the Mithril redraw raf
- * Since oncreate/onupdate is called in pre-order (in terms of the dom:
- * least-nested to most-nested, top to bottom) so the CanvasRedrawTrigger
- * should be placed last on the page.
- */
-const CanvasRedrawTrigger: m.Component = {
+interface DragHandleAttrs {
+  height: number;
+  resize: (height: number) => void;
+}
 
-  oncreate() {
-    globals.rafScheduler.syncRedraw();
-  },
+class DragHandle implements m.ClassComponent<DragHandleAttrs> {
+  private dragStartHeight = 0;
+  private height = 0;
+  private resize: undefined|((height: number) => void);
 
-  onupdate() {
-    globals.rafScheduler.syncRedraw();
-  },
+  oncreate({dom, attrs}: m.CVnodeDOM<DragHandleAttrs>) {
+    this.resize = attrs.resize;
+    this.height = attrs.height;
+    const elem = dom as HTMLElement;
+    new DragGestureHandler(
+        elem,
+        this.onDrag.bind(this),
+        this.onDragStart.bind(this),
+        this.onDragEnd.bind(this));
+  }
+
+  onupdate({attrs}: m.CVnodeDOM<DragHandleAttrs>) {
+    this.resize = attrs.resize;
+    this.height = attrs.height;
+  }
+
+  onDrag(_x: number, y: number) {
+    if (this.resize) {
+      const newHeight = this.dragStartHeight + (DRAG_HANDLE_HEIGHT_PX / 2) - y;
+      this.resize(Math.floor(newHeight));
+    }
+    globals.rafScheduler.scheduleFullRedraw();
+  }
+
+  onDragStart(_x: number, _y: number) {
+    this.dragStartHeight = this.height;
+  }
+
+  onDragEnd() {}
 
   view() {
-    return null;
-  },
-};
+    return m('.handle');
+  }
+}
 
 /**
  * Top-most level component for the viewer page. Holds tracks, brush timeline,
  * panels, and everything else that's part of the main trace viewer page.
  */
-const TraceViewer = {
-  oninit() {
-    this.width = 0;
-  },
+class TraceViewer implements m.ClassComponent {
+  private onResize: () => void = () => {};
+  private zoomContent?: PanAndZoomHandler;
+  private detailsHeight = DRAG_HANDLE_HEIGHT_PX;
 
-  oncreate(vnode) {
+  oncreate(vnode: m.CVnodeDOM) {
     const frontendLocalState = globals.frontendLocalState;
-    this.onResize = () => {
+    const updateDimensions = () => {
       const rect = vnode.dom.getBoundingClientRect();
-      this.width = rect.width;
       frontendLocalState.timeScale.setLimitsPx(
-          0, this.width - TRACK_SHELL_WIDTH);
-      // m.redraw();
+          0, rect.width - TRACK_SHELL_WIDTH);
     };
 
-    // Have to redraw after initialization to provide dimensions to view().
-    setTimeout(() => this.onResize());
+    updateDimensions();
+
+    // TODO: Do resize handling better.
+    this.onResize = () => {
+      updateDimensions();
+      globals.rafScheduler.scheduleFullRedraw();
+    };
 
     // Once ResizeObservers are out, we can stop accessing the window here.
     window.addEventListener('resize', this.onResize);
 
     const panZoomEl =
-        vnode.dom.getElementsByClassName('tracks-content')[0] as HTMLElement;
+        vnode.dom.querySelector('.pan-and-zoom-content') as HTMLElement;
 
     this.zoomContent = new PanAndZoomHandler({
       element: panZoomEl,
       contentOffsetX: TRACK_SHELL_WIDTH,
       onPanned: (pannedPx: number) => {
-        let vizTime = globals.frontendLocalState.visibleWindowTime;
-        let tDelta = frontendLocalState.timeScale.deltaPxToDuration(pannedPx);
-        const maxTime = globals.state.traceTime;
-        tDelta -= Math.max(vizTime.end + tDelta - maxTime.endSec, 0);
-        if (vizTime.start + tDelta < maxTime.startSec) {
-          tDelta +=
-              Math.abs(tDelta) - Math.abs(vizTime.start - maxTime.startSec);
+        const traceTime = globals.state.traceTime;
+        const vizTime = globals.frontendLocalState.visibleWindowTime;
+        const origDelta = vizTime.duration;
+        const tDelta = frontendLocalState.timeScale.deltaPxToDuration(pannedPx);
+        let tStart = vizTime.start + tDelta;
+        let tEnd = vizTime.end + tDelta;
+        if (tStart < traceTime.startSec) {
+          tStart = traceTime.startSec;
+          tEnd = tStart + origDelta;
+        } else if (tEnd > traceTime.endSec) {
+          tEnd = traceTime.endSec;
+          tStart = tEnd - origDelta;
         }
-        // tDelta += Math.min(maxTime.startSec + tDelta + vizTime.start, 0);
-        vizTime = vizTime.add(tDelta);
-        frontendLocalState.updateVisibleTime(vizTime);
+        frontendLocalState.updateVisibleTime(new TimeSpan(tStart, tEnd));
+        globals.rafScheduler.scheduleRedraw();
       },
-      onZoomed: (_: number, zoomRatio: number) => {
-        const vizTime = frontendLocalState.visibleWindowTime;
-        const curSpanSec = vizTime.duration;
-        const newSpanSec =
-            Math.max(curSpanSec - curSpanSec * zoomRatio, MAX_ZOOM_SPAN_SEC);
-        const deltaSec = (curSpanSec - newSpanSec) / 2;
-        const newStartSec = vizTime.start + deltaSec;
-        const newEndSec = vizTime.end - deltaSec;
-        frontendLocalState.updateVisibleTime(
-            new TimeSpan(newStartSec, newEndSec));
+      onZoomed: (zoomedPositionPx: number, zoomRatio: number) => {
+        // TODO(hjd): Avoid hardcoding TRACK_SHELL_WIDTH.
+        // TODO(hjd): Improve support for zooming in overview timeline.
+        const span = frontendLocalState.visibleWindowTime;
+        const scale = frontendLocalState.timeScale;
+        const zoomPx = zoomedPositionPx - TRACK_SHELL_WIDTH;
+        const newSpan = computeZoom(scale, span, 1 - zoomRatio, zoomPx);
+        frontendLocalState.updateVisibleTime(newSpan);
+        globals.rafScheduler.scheduleRedraw();
       }
     });
-  },
+  }
 
   onremove() {
     window.removeEventListener('resize', this.onResize);
-    this.zoomContent.shutdown();
-  },
+    if (this.zoomContent) this.zoomContent.shutdown();
+  }
 
   view() {
+    const scrollingPanels: AnyAttrsVnode[] =
+        globals.state.scrollingTracks.length > 0 ?
+        [
+          m(HeaderPanel, {title: 'Tracks', key: 'tracksheader'}),
+          ...globals.state.scrollingTracks.map(
+              id => m(TrackPanel, {key: id, id})),
+        ] :
+        [];
+
+    for (const group of Object.values(globals.state.trackGroups)) {
+      scrollingPanels.push(m(TrackGroupPanel, {
+        trackGroupId: group.id,
+        key: `trackgroup-${group.id}`,
+      }));
+      if (group.collapsed) continue;
+      for (const trackId of group.tracks) {
+        scrollingPanels.push(m(TrackPanel, {
+          key: `track-${group.id}-${trackId}`,
+          id: trackId,
+        }));
+      }
+    }
+    scrollingPanels.unshift(m(QueryTable));
+
     return m(
         '.page',
-        m(QueryTable),
-        m('.tracks-content',
-          {
-            style: {
-              width: '100%',
-              height: '100%',
-              position: 'relative',
-            }
-          },
-          m('header', 'Tracks'),
-          m(ScrollingPanelContainer), ),
-        m(CanvasRedrawTrigger), );
-  },
-
-} as m.Component<{}, {
-  onResize: () => void,
-  width: number,
-  zoomContent: PanAndZoomHandler,
-  overviewQueryExecuted: boolean,
-  overviewQueryResponse: QueryResponse,
-}>;
+        m('.pan-and-zoom-content',
+          m('.pinned-panel-container', m(PanelContainer, {
+              doesScroll: false,
+              panels: [
+                m(OverviewTimelinePanel, {key: 'overview'}),
+                m(TimeAxisPanel, {key: 'timeaxis'}),
+                ...globals.state.pinnedTracks.map(
+                    id => m(TrackPanel, {key: id, id})),
+              ],
+            })),
+          m('.scrolling-panel-container', m(PanelContainer, {
+              doesScroll: true,
+              panels: scrollingPanels,
+            }))),
+        m('.details-content',
+          {style: {height: `${this.detailsHeight}px`}},
+          m(DragHandle, {
+            resize: (height: number) => {
+              this.detailsHeight = Math.max(height, DRAG_HANDLE_HEIGHT_PX);
+            },
+            height: this.detailsHeight,
+          })));
+  }
+}
 
 export const ViewerPage = createPage({
   view() {

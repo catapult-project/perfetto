@@ -21,7 +21,10 @@ config("extra_warnings") {
     "-Wall",
     "-Wextra",
   ]
-  if (is_clang) {
+
+  # Disable Weverything on fuzzers to avoid breakages when new versions of clang
+  # are rolled into OSS-fuzz.
+  if (is_clang && !is_fuzzer) {
     cflags += [
       "-Weverything",
       "-Wno-c++98-compat-pedantic",
@@ -75,7 +78,7 @@ config("default") {
     "-Werror",
   ]
 
-  if (!is_wasm) {
+  if (!is_wasm && !is_lto) {
     cflags += [ "-Wa,--noexecstack" ]
   }
 
@@ -85,6 +88,11 @@ config("default") {
       "-fcolor-diagnostics",
       "-fdiagnostics-show-template-tree",
     ]
+  }
+
+  if (is_lto) {
+    cflags += [ "-flto=full" ]
+    ldflags += [ "-flto=full" ]
   }
 
   if (current_cpu == "arm") {
@@ -127,13 +135,17 @@ config("default") {
       "-isystem$android_compile_sysroot/$android_compile_sysroot_subdir",
       "-isystem$android_compile_sysroot",
       "-DANDROID",
-      "-D__ANDROID_API__=21",
+      "-D__ANDROID_API__=${android_api_level}",
       "--target=$android_abi_target",
     ]
     cflags_cc += [
       "-I$android_ndk_root/sources/cxx-stl/llvm-libc++/include",
       "-I$android_ndk_root/sources/android/support/include",
       "-I$android_ndk_root/sources/cxx-stl/llvm-libc++abi/include",
+
+      # This is needed for NDK libc++. Using -isystem instead of -I above
+      # results in build breakage related to cmath.h.
+      "-Wno-format-nonliteral",
     ]
     ldflags += [
       "-Wl,-z,nocopyreloc",
@@ -159,8 +171,12 @@ config("default") {
       "gcc",
       "c++_static",
       "c++abi",
-      "android_support",
     ]
+
+    if (current_cpu == "arm") {
+      # New NDKs don't have libandroid_support for arm64.
+      libs += [ "android_support" ]
+    }
   }
 }
 
@@ -178,6 +194,8 @@ config("release") {
   ]
   if (is_android) {
     cflags += [ "-Oz" ]
+  } else if (is_fuzzer) {
+    cflags += [ "-O1" ]
   } else {
     cflags += [ "-O3" ]
   }

@@ -50,7 +50,7 @@ class ProcessTracker {
   // Called when a sched switch event is seen in the trace. Retrieves the
   // UniqueTid that matches the tid or assigns a new UniqueTid and stores
   // the thread_name_id.
-  UniqueTid UpdateThread(uint64_t timestamp,
+  UniqueTid UpdateThread(int64_t timestamp,
                          uint32_t tid,
                          StringId thread_name_id);
 
@@ -67,6 +67,11 @@ class ProcessTracker {
   // Virtual for testing.
   virtual UniquePid UpdateProcess(uint32_t pid, base::StringView name);
 
+  // Called when a process is seen in a process tree. Retrieves the UniquePid
+  // for that pid or assigns a new one.
+  // Virtual for testing.
+  virtual UniquePid UpdateProcess(uint32_t pid);
+
   // Returns the bounds of a range that includes all UniquePids that have the
   // requested pid.
   UniqueProcessBounds UpidsForPid(uint32_t pid) {
@@ -81,7 +86,7 @@ class ProcessTracker {
 
   std::tuple<UniquePid, TraceStorage::Process*> GetOrCreateProcess(
       uint32_t pid,
-      uint64_t start_ns);
+      int64_t start_ns);
 
  private:
   TraceProcessorContext* const context_;

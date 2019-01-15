@@ -131,6 +131,11 @@ InodeFileDataSource::InodeFileDataSource(
 
 InodeFileDataSource::~InodeFileDataSource() = default;
 
+void InodeFileDataSource::Start() {
+  // Nothing special to do, this data source is only reacting to on-demand
+  // events such as OnInodes().
+}
+
 void InodeFileDataSource::AddInodesFromStaticMap(
     BlockDeviceID block_device_id,
     std::set<Inode>* inode_numbers) {
@@ -177,9 +182,10 @@ void InodeFileDataSource::AddInodesFromLRUCache(
     PERFETTO_DLOG("%" PRIu64 " inodes found in cache", cache_found_count);
 }
 
-void InodeFileDataSource::Flush() {
+void InodeFileDataSource::Flush(FlushRequestID,
+                                std::function<void()> callback) {
   ResetTracePacket();
-  writer_->Flush();
+  writer_->Flush(callback);
 }
 
 void InodeFileDataSource::OnInodes(

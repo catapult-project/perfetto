@@ -22,7 +22,7 @@
  * by
  * ../../tools/proto_to_cpp/proto_to_cpp.cc.
  * If you need to make changes here, change the .proto file and then run
- * ./tools/gen_tracing_cpp_headers_from_protos.py
+ * ./tools/gen_tracing_cpp_headers_from_protos
  */
 
 #ifndef INCLUDE_PERFETTO_TRACING_CORE_DATA_SOURCE_CONFIG_H_
@@ -35,10 +35,14 @@
 
 #include "perfetto/base/export.h"
 
+#include "perfetto/tracing/core/android_log_config.h"
+#include "perfetto/tracing/core/android_power_config.h"
 #include "perfetto/tracing/core/chrome_config.h"
 #include "perfetto/tracing/core/ftrace_config.h"
+#include "perfetto/tracing/core/heapprofd_config.h"
 #include "perfetto/tracing/core/inode_file_config.h"
 #include "perfetto/tracing/core/process_stats_config.h"
+#include "perfetto/tracing/core/sys_stats_config.h"
 #include "perfetto/tracing/core/test_config.h"
 
 // Forward declarations for protobuf types.
@@ -50,7 +54,13 @@ class ChromeConfig;
 class InodeFileConfig;
 class InodeFileConfig_MountPointMappingEntry;
 class ProcessStatsConfig;
+class SysStatsConfig;
+class HeapprofdConfig;
+class HeapprofdConfig_ContinuousDumpConfig;
+class AndroidPowerConfig;
+class AndroidLogConfig;
 class TestConfig;
+class TestConfig_DummyFields;
 }  // namespace protos
 }  // namespace perfetto
 
@@ -99,6 +109,26 @@ class PERFETTO_EXPORT DataSourceConfig {
     return &process_stats_config_;
   }
 
+  const SysStatsConfig& sys_stats_config() const { return sys_stats_config_; }
+  SysStatsConfig* mutable_sys_stats_config() { return &sys_stats_config_; }
+
+  const HeapprofdConfig& heapprofd_config() const { return heapprofd_config_; }
+  HeapprofdConfig* mutable_heapprofd_config() { return &heapprofd_config_; }
+
+  const AndroidPowerConfig& android_power_config() const {
+    return android_power_config_;
+  }
+  AndroidPowerConfig* mutable_android_power_config() {
+    return &android_power_config_;
+  }
+
+  const AndroidLogConfig& android_log_config() const {
+    return android_log_config_;
+  }
+  AndroidLogConfig* mutable_android_log_config() {
+    return &android_log_config_;
+  }
+
   const std::string& legacy_config() const { return legacy_config_; }
   void set_legacy_config(const std::string& value) { legacy_config_ = value; }
 
@@ -114,6 +144,10 @@ class PERFETTO_EXPORT DataSourceConfig {
   ChromeConfig chrome_config_ = {};
   InodeFileConfig inode_file_config_ = {};
   ProcessStatsConfig process_stats_config_ = {};
+  SysStatsConfig sys_stats_config_ = {};
+  HeapprofdConfig heapprofd_config_ = {};
+  AndroidPowerConfig android_power_config_ = {};
+  AndroidLogConfig android_log_config_ = {};
   std::string legacy_config_ = {};
   TestConfig for_testing_ = {};
 
@@ -123,4 +157,5 @@ class PERFETTO_EXPORT DataSourceConfig {
 };
 
 }  // namespace perfetto
+
 #endif  // INCLUDE_PERFETTO_TRACING_CORE_DATA_SOURCE_CONFIG_H_

@@ -26,7 +26,9 @@ const WHEEL_ZOOM_SPEED = -0.02;
 // event is not captured by the document, e.g. if it loses focus first, then
 // we want to stop the animation as soon as possible.
 const ANIMATION_AUTO_END_AFTER_INITIAL_KEYPRESS_MS = 700;
-const ANIMATION_AUTO_END_AFTER_KEYPRESS_MS = 80;
+// This value must be larger than the maximum delta between keydown repeat
+// events. Largest observed value so far: 86ms.
+const ANIMATION_AUTO_END_AFTER_KEYPRESS_MS = 100;
 
 // This defines the step size for an individual pan or zoom keyboard tap.
 const TAP_ANIMATION_TIME = 200;
@@ -125,12 +127,12 @@ export class PanAndZoomHandler {
   private onWheel(e: WheelEvent) {
     if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
       this.onPanned(e.deltaX * HORIZONTAL_WHEEL_PAN_SPEED);
-      globals.rafScheduler.scheduleOneRedraw();
+      globals.rafScheduler.scheduleRedraw();
     } else if (e.ctrlKey && this.mousePositionX) {
       const sign = e.deltaY < 0 ? -1 : 1;
       const deltaY = sign * Math.log2(1 + Math.abs(e.deltaY));
       this.onZoomed(this.mousePositionX, deltaY * WHEEL_ZOOM_SPEED);
-      globals.rafScheduler.scheduleOneRedraw();
+      globals.rafScheduler.scheduleRedraw();
     }
   }
 

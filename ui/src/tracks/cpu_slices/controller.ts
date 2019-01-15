@@ -12,74 +12,158 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {rawQueryResultIter} from '../../common/protos';
+import {fromNs} from '../../common/time';
 import {
-  Engine,
-  PublishFn,
   TrackController,
-  TrackState
-} from '../../controller/track_controller';
-import {
   trackControllerRegistry
-} from '../../controller/track_controller_registry';
+} from '../../controller/track_controller';
 
-import {TRACK_KIND} from './common';
+import {
+  Config,
+  CPU_SLICE_TRACK_KIND,
+  Data,
+  SliceData,
+  SummaryData
+} from './common';
 
-// Need this because some values in query result is string|number.
-function convertToNumber(x: string|number): number {
-  // tslint:disable-next-line:ban Temporary. parseInt banned by style guide.
-  return typeof x === 'number' ? x : parseInt(x, 10);
-}
+class CpuSliceTrackController extends TrackController<Config, Data> {
+  static readonly kind = CPU_SLICE_TRACK_KIND;
+  private busy = false;
+  private setup = false;
 
-// TODO(hjd): Too much bolierplate here. Prehaps TrackController/Track
-// should be an interface and we provide a TrackControllerBase/TrackBase
-// you can inherit from which does the basic things.
-class CpuSliceTrackController extends TrackController {
-  static readonly kind = TRACK_KIND;
-
-  static create(config: TrackState, engine: Engine, publish: PublishFn):
-      TrackController {
-    return new CpuSliceTrackController(config.cpu, engine, publish);
+  onBoundsChange(start: number, end: number, resolution: number): void {
+    this.update(start, end, resolution);
   }
 
-  private cpu: number;
-  private engine: Engine;
-  // TODO: This publish function should be better typed to only accept
-  // CpuSliceTrackData. Perhaps we can do PublishFn<T>.
-  private publish: PublishFn;
+  private async update(start: number, end: number, resolution: number):
+      Promise<void> {
+    // TODO: we should really call TraceProcessor.Interrupt() at this point.
+    if (this.busy) return;
 
-  constructor(cpu: number, engine: Engine, publish: PublishFn) {
-    super();
-    this.cpu = cpu;
-    this.engine = engine;
-    this.publish = publish;
-    this.init();
-  }
+    const startNs = Math.round(start * 1e9);
+    const endNs = Math.round(end * 1e9);
 
-  async init() {
-    const query = `select * from sched where cpu = ${this.cpu} limit 1000;`;
-    const rawResult = await this.engine.rawQuery({'sqlQuery': query});
-    // TODO(hjd): Remove.
-    const result = [...rawQueryResultIter(rawResult)];
-    const slices = [];
-
-    // Hacking time for now. http://bit.ly/2LNElLB
-    // TODO: We're currently not setting the maxVisible window anywhere. Should
-    // there even be a max visible window? Should it be the job of track
-    // controllers to tell us what the max visible window is?
-    if (result.length === 0) return;
-    const firstTimestamp = convertToNumber(result[0].ts);
-
-    for (const row of result) {
-      const start = convertToNumber(row.ts) - firstTimestamp;
-      const end = start + convertToNumber(row.dur);
-      slices.push({start, end, title: 'Placeholder'});
+    this.busy = true;
+    if (this.setup === false) {
+      await this.query(
+          `create virtual table ${this.tableName('window')} using window;`);
+      await this.query(`create virtual table ${this.tableName('span')}
+              using span_join(sched PARTITIONED cpu,
+                              ${this.tableName('window')} PARTITIONED cpu);`);
+      this.setup = true;
     }
-    this.publish({slices});
+
+    // |resolution| is in s/px (to nearest power of 10) asumming a display
+    // of ~1000px 0.001 is 1s.
+    const isQuantized = resolution >= 0.001;
+    // |resolution| is in s/px we want # ns for 10px window:
+    const bucketSizeNs = Math.round(resolution * 10 * 1e9);
+    let windowStartNs = startNs;
+    if (isQuantized) {
+      windowStartNs = Math.floor(windowStartNs / bucketSizeNs) * bucketSizeNs;
+    }
+    const windowDurNs = Math.max(1, endNs - windowStartNs);
+
+    this.query(`update window_${this.trackState.id} set
+      window_start=${windowStartNs},
+      window_dur=${windowDurNs},
+      quantum=${isQuantized ? bucketSizeNs : 0}
+      where rowid = 0;`);
+
+    if (isQuantized) {
+      this.publish(await this.computeSummary(
+          fromNs(windowStartNs), end, resolution, bucketSizeNs));
+    } else {
+      this.publish(
+          await this.computeSlices(fromNs(windowStartNs), end, resolution));
+    }
+    this.busy = false;
   }
 
-  onBoundsChange(_start: number, _end: number): void {
-    // TODO: Implement.
+  private async computeSummary(
+      start: number, end: number, resolution: number,
+      bucketSizeNs: number): Promise<SummaryData> {
+    const startNs = Math.round(start * 1e9);
+    const endNs = Math.round(end * 1e9);
+    const numBuckets = Math.ceil((endNs - startNs) / bucketSizeNs);
+
+    const query = `select
+        quantum_ts as bucket,
+        sum(dur)/cast(${bucketSizeNs} as float) as utilization
+        from ${this.tableName('span')}
+        where cpu = ${this.config.cpu}
+        and utid != 0
+        group by quantum_ts`;
+
+    const rawResult = await this.query(query);
+    const numRows = +rawResult.numRecords;
+
+    const summary: Data = {
+      kind: 'summary',
+      start,
+      end,
+      resolution,
+      bucketSizeSeconds: fromNs(bucketSizeNs),
+      utilizations: new Float64Array(numBuckets),
+    };
+    const cols = rawResult.columns;
+    for (let row = 0; row < numRows; row++) {
+      const bucket = +cols[0].longValues![row];
+      summary.utilizations[bucket] = +cols[1].doubleValues![row];
+    }
+    return summary;
+  }
+
+  private async computeSlices(start: number, end: number, resolution: number):
+      Promise<SliceData> {
+    // TODO(hjd): Remove LIMIT
+    const LIMIT = 10000;
+
+    const query = `select ts,dur,utid from span_${this.trackState.id}
+        where cpu = ${this.config.cpu}
+        and utid != 0
+        limit ${LIMIT};`;
+    const rawResult = await this.query(query);
+
+    const numRows = +rawResult.numRecords;
+    const slices: SliceData = {
+      kind: 'slice',
+      start,
+      end,
+      resolution,
+      starts: new Float64Array(numRows),
+      ends: new Float64Array(numRows),
+      utids: new Uint32Array(numRows),
+    };
+
+    const cols = rawResult.columns;
+    for (let row = 0; row < numRows; row++) {
+      const startSec = fromNs(+cols[0].longValues![row]);
+      slices.starts[row] = startSec;
+      slices.ends[row] = startSec + fromNs(+cols[1].longValues![row]);
+      slices.utids[row] = +cols[2].longValues![row];
+    }
+    if (numRows === LIMIT) {
+      slices.end = slices.ends[slices.ends.length - 1];
+    }
+    return slices;
+  }
+
+  private async query(query: string) {
+    const result = await this.engine.query(query);
+    if (result.error) {
+      console.error(`Query error "${query}": ${result.error}`);
+      throw new Error(`Query error "${query}": ${result.error}`);
+    }
+    return result;
+  }
+
+  onDestroy(): void {
+    if (this.setup) {
+      this.query(`drop table ${this.tableName('window')}`);
+      this.query(`drop table ${this.tableName('span')}`);
+      this.setup = false;
+    }
   }
 }
 

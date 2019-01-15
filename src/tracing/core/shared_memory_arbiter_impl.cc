@@ -21,6 +21,7 @@
 #include "perfetto/base/time.h"
 #include "perfetto/tracing/core/commit_data_request.h"
 #include "perfetto/tracing/core/shared_memory.h"
+#include "perfetto/tracing/core/startup_trace_writer.h"
 #include "src/tracing/core/null_trace_writer.h"
 #include "src/tracing/core/trace_writer_impl.h"
 
@@ -133,40 +134,63 @@ Chunk SharedMemoryArbiterImpl::GetNewChunk(
 void SharedMemoryArbiterImpl::ReturnCompletedChunk(Chunk chunk,
                                                    BufferID target_buffer,
                                                    PatchList* patch_list) {
+  PERFETTO_DCHECK(chunk.is_valid());
+  const WriterID writer_id = chunk.writer_id();
+  UpdateCommitDataRequest(std::move(chunk), writer_id, target_buffer,
+                          patch_list);
+}
+
+void SharedMemoryArbiterImpl::SendPatches(WriterID writer_id,
+                                          BufferID target_buffer,
+                                          PatchList* patch_list) {
+  PERFETTO_DCHECK(!patch_list->empty() && patch_list->front().is_patched());
+  UpdateCommitDataRequest(Chunk(), writer_id, target_buffer, patch_list);
+}
+
+void SharedMemoryArbiterImpl::UpdateCommitDataRequest(Chunk chunk,
+                                                      WriterID writer_id,
+                                                      BufferID target_buffer,
+                                                      PatchList* patch_list) {
+  // Note: chunk will be invalid if the call came from SendPatches().
   bool should_post_callback = false;
   bool should_commit_synchronously = false;
   base::WeakPtr<SharedMemoryArbiterImpl> weak_this;
   {
     std::lock_guard<std::mutex> scoped_lock(lock_);
-    uint8_t chunk_idx = chunk.chunk_idx();
-    const WriterID writer_id = chunk.writer_id();
-    bytes_pending_commit_ += chunk.size();
-    size_t page_idx = shmem_abi_.ReleaseChunkAsComplete(std::move(chunk));
-
-    // DO NOT access |chunk| after this point, has been std::move()-d above.
 
     if (!commit_data_req_) {
       commit_data_req_.reset(new CommitDataRequest());
       weak_this = weak_ptr_factory_.GetWeakPtr();
       should_post_callback = true;
     }
-    CommitDataRequest::ChunksToMove* ctm =
-        commit_data_req_->add_chunks_to_move();
-    ctm->set_page(static_cast<uint32_t>(page_idx));
-    ctm->set_chunk(chunk_idx);
-    ctm->set_target_buffer(target_buffer);
 
-    // If more than half of the SMB.size() is filled with completed chunks for
-    // which we haven't notified the service yet (i.e. they are still enqueued
-    // in |commit_data_req_|), force a synchronous CommitDataRequest(), to
-    // reduce the likeliness of stalling the writer.
-    if (bytes_pending_commit_ >= shmem_abi_.size() / 2) {
-      should_commit_synchronously = true;
-      should_post_callback = false;
+    // If a valid chunk is specified, return it and attach it to the request.
+    if (chunk.is_valid()) {
+      PERFETTO_DCHECK(chunk.writer_id() == writer_id);
+      uint8_t chunk_idx = chunk.chunk_idx();
+      bytes_pending_commit_ += chunk.size();
+      size_t page_idx = shmem_abi_.ReleaseChunkAsComplete(std::move(chunk));
+
+      // DO NOT access |chunk| after this point, has been std::move()-d above.
+
+      CommitDataRequest::ChunksToMove* ctm =
+          commit_data_req_->add_chunks_to_move();
+      ctm->set_page(static_cast<uint32_t>(page_idx));
+      ctm->set_chunk(chunk_idx);
+      ctm->set_target_buffer(target_buffer);
+
+      // If more than half of the SMB.size() is filled with completed chunks for
+      // which we haven't notified the service yet (i.e. they are still enqueued
+      // in |commit_data_req_|), force a synchronous CommitDataRequest(), to
+      // reduce the likeliness of stalling the writer.
+      if (bytes_pending_commit_ >= shmem_abi_.size() / 2) {
+        should_commit_synchronously = true;
+        should_post_callback = false;
+      }
     }
 
-    // Get the patches completed for the previous chunk from the |patch_list|
-    // and update it.
+    // Get the completed patches for previous chunks from the |patch_list|
+    // and attach them.
     ChunkID last_chunk_id = 0;  // 0 is irrelevant but keeps the compiler happy.
     CommitDataRequest::ChunkToPatch* last_chunk_req = nullptr;
     while (!patch_list->empty() && patch_list->front().is_patched()) {
@@ -243,8 +267,18 @@ std::unique_ptr<TraceWriter> SharedMemoryArbiterImpl::CreateTraceWriter(
   }
   if (!id)
     return std::unique_ptr<TraceWriter>(new NullTraceWriter());
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
+  task_runner_->PostTask([weak_this, id, target_buffer] {
+    if (weak_this)
+      weak_this->producer_endpoint_->RegisterTraceWriter(id, target_buffer);
+  });
   return std::unique_ptr<TraceWriter>(
       new TraceWriterImpl(this, id, target_buffer));
+}
+
+bool SharedMemoryArbiterImpl::BindStartupTraceWriter(StartupTraceWriter* writer,
+                                                     BufferID target_buffer) {
+  return writer->BindToArbiter(this, target_buffer);
 }
 
 void SharedMemoryArbiterImpl::NotifyFlushComplete(FlushRequestID req_id) {
@@ -273,6 +307,12 @@ void SharedMemoryArbiterImpl::NotifyFlushComplete(FlushRequestID req_id) {
 }
 
 void SharedMemoryArbiterImpl::ReleaseWriterID(WriterID id) {
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
+  task_runner_->PostTask([weak_this, id] {
+    if (weak_this)
+      weak_this->producer_endpoint_->UnregisterTraceWriter(id);
+  });
+
   std::lock_guard<std::mutex> scoped_lock(lock_);
   active_writer_ids_.Free(id);
 }

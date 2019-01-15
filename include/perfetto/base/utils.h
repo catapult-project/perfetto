@@ -22,6 +22,9 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdlib.h>
+#if !PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+#include <sys/types.h>
+#endif
 
 #define PERFETTO_EINTR(x)                                   \
   ({                                                        \
@@ -50,8 +53,21 @@ using ssize_t = long;
 #define PERFETTO_WARN_UNUSED_RESULT
 #endif
 
+#if defined(__clang__)
+#define PERFETTO_ALWAYS_INLINE __attribute__((__always_inline__))
+#else
+// GCC is too pedantic and often fails with the error:
+// "always_inline function might not be inlinable"
+#define PERFETTO_ALWAYS_INLINE
+#endif
+
 namespace perfetto {
 namespace base {
+
+#if !PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+constexpr uid_t kInvalidUid = static_cast<uid_t>(-1);
+constexpr pid_t kInvalidPid = static_cast<pid_t>(-1);
+#endif
 
 constexpr size_t kPageSize = 4096;
 constexpr size_t kMaxCpus = 128;

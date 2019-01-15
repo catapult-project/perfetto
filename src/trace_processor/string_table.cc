@@ -23,23 +23,31 @@
 #include <bitset>
 #include <numeric>
 
+#include "src/trace_processor/sqlite_utils.h"
 #include "src/trace_processor/trace_storage.h"
 
 namespace perfetto {
 namespace trace_processor {
 
-StringTable::StringTable(const TraceStorage* storage) : storage_(storage) {}
+StringTable::StringTable(sqlite3*, const TraceStorage* storage)
+    : storage_(storage) {}
 
 void StringTable::RegisterTable(sqlite3* db, const TraceStorage* storage) {
-  Table::Register<StringTable>(db, storage,
-                               "CREATE TABLE strings("
-                               "id UNSIGNED BIG INT, "
-                               "str STRING,"
-                               "PRIMARY KEY(id)"
-                               ") WITHOUT ROWID;");
+  Table::Register<StringTable>(db, storage, "strings");
 }
 
-std::unique_ptr<Table::Cursor> StringTable::CreateCursor() {
+base::Optional<Table::Schema> StringTable::Init(int, const char* const*) {
+  return Schema(
+      {
+          Table::Column(Column::kStringId, "id", ColumnType::kUint),
+          Table::Column(Column::kString, "str", ColumnType::kString),
+      },
+      {Column::kStringId});
+}
+
+std::unique_ptr<Table::Cursor> StringTable::CreateCursor(
+    const QueryConstraints&,
+    sqlite3_value**) {
   return std::unique_ptr<Table::Cursor>(new Cursor(storage_));
 }
 
@@ -54,11 +62,6 @@ StringTable::Cursor::Cursor(const TraceStorage* storage) : storage_(storage) {
 }
 
 StringTable::Cursor::~Cursor() = default;
-
-int StringTable::Cursor::Filter(const QueryConstraints&,
-                                sqlite3_value** /*argv*/) {
-  return SQLITE_OK;
-}
 
 int StringTable::Cursor::Next() {
   row_++;
@@ -77,7 +80,7 @@ int StringTable::Cursor::Column(sqlite3_context* context, int col) {
       break;
     case Column::kString:
       sqlite3_result_text(context, storage_->GetString(string_id).c_str(), -1,
-                          nullptr);
+                          sqlite_utils::kSqliteStatic);
       break;
   }
   return SQLITE_OK;
