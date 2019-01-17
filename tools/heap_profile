@@ -30,8 +30,8 @@ import time
 import urllib
 
 TRACE_TO_TEXT_SHAS = {
-  'linux': 'c704cf765b9c5445c16a8e7ec5757cad364a8d92',
-  'mac': 'aed4ad02da526a3f1e4f9df47d4989ae9305b30e',
+  'linux': '02b80116b5873dc00d82ff50c79f89909e054e78',
+  'mac': 'f0fcf2e9adaacd28c1b712b241d5f02e9f746741',
 }
 TRACE_TO_TEXT_PATH = tempfile.gettempdir()
 TRACE_TO_TEXT_BASE_URL = (
@@ -210,7 +210,13 @@ def main(argv):
 
   subprocess.check_call(['gzip'] + [os.path.join(profile_path, x) for x in
                                     os.listdir(profile_path)])
-  print("Wrote profiles to {}".format(profile_path))
+
+  symlink_path = os.path.join(os.path.dirname(profile_path),
+                                        "heap_profile-latest")
+  os.unlink(symlink_path)
+  os.symlink(profile_path, symlink_path)
+
+  print("Wrote profiles to {} (symlink {})".format(profile_path, symlink_path))
   print("These can be viewed using pprof. Googlers: head to pprof/ and "
         "upload them.")
 
