@@ -82,7 +82,8 @@ bool ParseSystraceTracePoint(base::StringView str, SystraceTracePoint* out) {
   switch (s[0]) {
     case 'B': {
       size_t name_index = 2 + tid_length + 1;
-      out->name = base::StringView(s + name_index, len - name_index);
+      out->name = base::StringView(
+          s + name_index, len - name_index - (s[len - 1] == '\n' ? 1 : 0));
       return true;
     }
     case 'E': {
@@ -166,22 +167,53 @@ ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
       context->storage->InternString("mem.rss.unknown"));  // Keep this last.
 
   using ProcessStats = protos::ProcessStats;
-  proc_mem_counter_names_[ProcessStats::Process::kVmSizeKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmSizeKbFieldNumber] =
       context->storage->InternString("mem.virt");
-  proc_mem_counter_names_[ProcessStats::Process::kVmRssKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmRssKbFieldNumber] =
       context->storage->InternString("mem.rss");
-  proc_mem_counter_names_[ProcessStats::Process::kRssAnonKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kRssAnonKbFieldNumber] =
       context->storage->InternString("mem.rss.anon");
-  proc_mem_counter_names_[ProcessStats::Process::kRssFileKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kRssFileKbFieldNumber] =
       context->storage->InternString("mem.rss.file");
-  proc_mem_counter_names_[ProcessStats::Process::kRssShmemKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kRssShmemKbFieldNumber] =
       context->storage->InternString("mem.rss.shmem");
-  proc_mem_counter_names_[ProcessStats::Process::kVmSwapKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmSwapKbFieldNumber] =
       context->storage->InternString("mem.swap");
-  proc_mem_counter_names_[ProcessStats::Process::kVmLockedKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmLockedKbFieldNumber] =
       context->storage->InternString("mem.locked");
-  proc_mem_counter_names_[ProcessStats::Process::kVmHwmKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmHwmKbFieldNumber] =
       context->storage->InternString("mem.rss.watermark");
+  proc_stats_process_names_[ProcessStats::Process::kOomScoreAdjFieldNumber] =
+      oom_score_adj_id_;
+
+  mm_event_counter_names_[0] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.min_flt.count"),
+      context->storage->InternString("mem.mm.min_flt.max_lat"),
+      context->storage->InternString("mem.mm.min_flt.avg_lat"));
+  mm_event_counter_names_[1] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.maj_flt.count"),
+      context->storage->InternString("mem.mm.maj_flt.max_lat"),
+      context->storage->InternString("mem.mm.maj_flt.avg_lat"));
+  mm_event_counter_names_[2] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.read_io.count"),
+      context->storage->InternString("mem.mm.read_io.max_lat"),
+      context->storage->InternString("mem.mm.read_io.avg_lat"));
+  mm_event_counter_names_[3] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.compaction.count"),
+      context->storage->InternString("mem.mm.compaction.max_lat"),
+      context->storage->InternString("mem.mm.compaction.avg_lat"));
+  mm_event_counter_names_[4] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.reclaim.count"),
+      context->storage->InternString("mem.mm.reclaim.max_lat"),
+      context->storage->InternString("mem.mm.reclaim.avg_lat"));
+  mm_event_counter_names_[5] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.swp_flt.count"),
+      context->storage->InternString("mem.mm.swp_flt.max_lat"),
+      context->storage->InternString("mem.mm.swp_flt.avg_lat"));
+  mm_event_counter_names_[6] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.kern_alloc.count"),
+      context->storage->InternString("mem.mm.kern_alloc.max_lat"),
+      context->storage->InternString("mem.mm.kern_alloc.avg_lat"));
 }
 
 ProtoTraceParser::~ProtoTraceParser() = default;
@@ -457,7 +489,7 @@ void ProtoTraceParser::ParseProcessStats(int64_t ts, TraceBlobView stats) {
     const size_t fld_off = stats.offset_of(fld.data());
     switch (fld.id) {
       case protos::ProcessStats::kProcessesFieldNumber: {
-        ParseProcMemCounters(ts, stats.slice(fld_off, fld.size()));
+        ParseProcessStatsProcess(ts, stats.slice(fld_off, fld.size()));
         break;
       }
       default:
@@ -467,34 +499,41 @@ void ProtoTraceParser::ParseProcessStats(int64_t ts, TraceBlobView stats) {
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
 
-void ProtoTraceParser::ParseProcMemCounters(int64_t ts,
-                                            TraceBlobView proc_stat) {
+void ProtoTraceParser::ParseProcessStatsProcess(int64_t ts,
+                                                TraceBlobView proc_stat) {
   ProtoDecoder decoder(proc_stat.data(), proc_stat.length());
   uint32_t pid = 0;
+
   // Maps a process counter field it to its value.
   // E.g., 4 := 1024 -> "mem.rss.anon" := 1024.
-  std::array<uint64_t, kProcMemCounterSize> counter_values{};
-  std::array<uint8_t, kProcMemCounterSize> has_counter{};
+  std::array<int64_t, kProcStatsProcessSize> counter_values{};
+  std::array<bool, kProcStatsProcessSize> has_counter{};
 
   for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
     switch (fld.id) {
       case protos::ProcessStats::Process::kPidFieldNumber:
         pid = fld.as_uint32();
         break;
-      default:
-        if (fld.id < counter_values.size()) {
+      default: {
+        bool is_counter_field = fld.id < has_counter.size() &&
+                                proc_stats_process_names_[fld.id] != 0;
+        if (is_counter_field) {
           // Memory counters are in KB, keep values in bytes in the trace
           // processor.
-          counter_values[fld.id] = fld.as_uint64() * 1024;
-          has_counter[fld.id] = 1;
+          counter_values[fld.id] =
+              fld.id == protos::ProcessStats::Process::kOomScoreAdjFieldNumber
+                  ? fld.as_int64()
+                  : fld.as_int64() * 1024;
+          has_counter[fld.id] = true;
         } else {
-          PERFETTO_ELOG("Skipping unknown process counters %" PRIu32, fld.id);
+          PERFETTO_ELOG("Skipping unknown process stats field %" PRIu32,
+                        fld.id);
           context_->storage->IncrementStats(stats::proc_stat_unknown_counters);
         }
+        break;
+      }
     }
   }
-
-  UniqueTid utid = context_->process_tracker->UpdateThread(ts, pid, 0);
 
   // Skip field_id 0 (invalid) and 1 (pid).
   for (size_t field_id = 2; field_id < counter_values.size(); field_id++) {
@@ -502,13 +541,13 @@ void ProtoTraceParser::ParseProcMemCounters(int64_t ts,
       continue;
 
     // Lookup the interned string id from the field name using the
-    // pre-cached |proc_mem_counter_names_| map.
-    StringId name = proc_mem_counter_names_[field_id];
-    uint64_t value = counter_values[field_id];
-    auto row_id = context_->event_tracker->PushCounter(
-        ts, value, name, utid, RefType::kRefUtidLookupUpid);
-    context_->storage->mutable_args()->AddArg(
-        row_id, utid_name_id_, utid_name_id_, Variadic::Integer(utid));
+    // pre-cached |proc_stats_process_names_| map.
+    StringId name = proc_stats_process_names_[field_id];
+    int64_t value = counter_values[field_id];
+
+    UniquePid upid = context_->process_tracker->UpdateProcess(pid);
+    context_->event_tracker->PushCounter(ts, value, name, upid,
+                                         RefType::kRefUpid);
   }
 
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
@@ -579,6 +618,8 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
       continue;
 
     const size_t fld_off = ftrace.offset_of(fld.data());
+    // TODO(b/123252504): don't parse raw events for now.
+    /*
     if (fld.id == protos::FtraceEvent::kGenericFieldNumber) {
       ParseGenericFtrace(timestamp, cpu, pid,
                          ftrace.slice(fld_off, fld.size()));
@@ -586,6 +627,7 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
       ParseTypedFtraceToRaw(fld.id, timestamp, cpu, pid,
                             ftrace.slice(fld_off, fld.size()));
     }
+    */
 
     switch (fld.id) {
       case protos::FtraceEvent::kSchedSwitchFieldNumber: {
@@ -632,6 +674,11 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
       }
       case protos::FtraceEvent::kOomScoreAdjUpdate: {
         ParseOOMScoreAdjUpdate(timestamp, ftrace.slice(fld_off, fld.size()));
+        break;
+      }
+      case protos::FtraceEvent::kMmEventRecordFieldNumber: {
+        ParseMmEventRecordField(timestamp, pid,
+                                ftrace.slice(fld_off, fld.size()));
         break;
       }
       default:
@@ -987,6 +1034,52 @@ void ProtoTraceParser::ParseOOMScoreAdjUpdate(int64_t ts,
   UniquePid upid = context_->process_tracker->UpdateProcess(pid);
   context_->event_tracker->PushCounter(ts, oom_adj, oom_score_adj_id_, upid,
                                        RefType::kRefUpid);
+}
+
+void ProtoTraceParser::ParseMmEventRecordField(int64_t ts,
+                                               uint32_t pid,
+                                               TraceBlobView view) {
+  ProtoDecoder decoder(view.data(), view.length());
+
+  uint32_t type = 0;
+  uint32_t count = 0;
+  uint32_t max_lat = 0;
+  uint32_t avg_lat = 0;
+  for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
+    switch (fld.id) {
+      case protos::MmEventRecordFtraceEvent::kTypeFieldNumber:
+        type = fld.as_uint32();
+        break;
+      case protos::MmEventRecordFtraceEvent::kCountFieldNumber:
+        count = fld.as_uint32();
+        break;
+      case protos::MmEventRecordFtraceEvent::kMaxLatFieldNumber:
+        max_lat = fld.as_uint32();
+        break;
+      case protos::MmEventRecordFtraceEvent::kAvgLatFieldNumber:
+        avg_lat = fld.as_uint32();
+        break;
+      default:
+        context_->storage->IncrementStats(stats::mm_unknown_counter);
+        break;
+    }
+  }
+
+  UniqueTid utid = context_->process_tracker->UpdateThread(ts, pid, 0);
+  if (type >= mm_event_counter_names_.size()) {
+    context_->storage->IncrementStats(stats::mm_unknown_type);
+    return;
+  }
+
+  const auto& counter_names = mm_event_counter_names_[type];
+  context_->event_tracker->PushCounter(ts, count, counter_names.count, utid,
+                                       RefType::kRefUtidLookupUpid);
+  context_->event_tracker->PushCounter(ts, max_lat, counter_names.max_lat, utid,
+                                       RefType::kRefUtidLookupUpid);
+  context_->event_tracker->PushCounter(ts, avg_lat, counter_names.avg_lat, utid,
+                                       RefType::kRefUtidLookupUpid);
+
+  PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
 
 void ProtoTraceParser::ParseGenericFtrace(int64_t timestamp,
