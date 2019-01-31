@@ -206,7 +206,8 @@ bool DoUnwind(WireMessage* msg, UnwindingMetadata* metadata, AllocRecord* out) {
     if (error_code != unwindstack::ERROR_INVALID_MAP)
       break;
   }
-  for (unwindstack::FrameData fd : unwinder.frames()) {
+  std::vector<unwindstack::FrameData> frames = unwinder.ConsumeFrames();
+  for (unwindstack::FrameData& fd : frames) {
     std::string build_id;
     if (fd.map_name != "") {
       unwindstack::MapInfo* map_info = metadata->maps.Find(fd.pc);
@@ -245,12 +246,14 @@ bool HandleUnwindingRecord(UnwindingRecord* rec, BookkeepingRecord* out) {
 
     out->alloc_record.alloc_metadata = *msg.alloc_header;
     out->pid = rec->pid;
+    out->client_generation = msg.alloc_header->client_generation;
     out->record_type = BookkeepingRecord::Type::Malloc;
     DoUnwind(&msg, metadata.get(), &out->alloc_record);
     return true;
   } else if (msg.record_type == RecordType::Free) {
     out->record_type = BookkeepingRecord::Type::Free;
     out->pid = rec->pid;
+    out->client_generation = msg.free_header->client_generation;
     // We need to keep this alive, because msg.free_header is a pointer into
     // this.
     out->free_record.free_data = std::move(rec->data);
