@@ -17,6 +17,7 @@
 #include "src/profiling/memory/client.h"
 
 #include <inttypes.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -46,6 +47,8 @@ namespace {
 
 constexpr std::chrono::seconds kLockTimeout{1};
 
+// TODO(rsavitski): consider setting a receive timeout as well, otherwise the
+// constructor can block indefinitely (while waiting on the client config).
 std::vector<base::UnixSocketRaw> ConnectPool(const std::string& sock_name,
                                              size_t n) {
   std::vector<base::UnixSocketRaw> res;
@@ -90,6 +93,11 @@ char* FindMainThreadStack() {
   return nullptr;
 }
 
+int UnsetDumpable(int) {
+  prctl(PR_SET_DUMPABLE, 0);
+  return 0;
+}
+
 }  // namespace
 
 bool FreePage::Add(const uint64_t addr,
@@ -99,10 +107,10 @@ bool FreePage::Add(const uint64_t addr,
   if (!l.owns_lock())
     return false;
   if (offset_ == kFreePageSize) {
-    bool success = FlushLocked(pool);
+    if (!FlushLocked(pool))
+      return false;
     // Now that we have flushed, reset to after the header.
     offset_ = 0;
-    return success;
   }
   FreePageEntry& current_entry = free_page_.entries[offset_++];
   current_entry.sequence_number = sequence_number;
@@ -192,19 +200,43 @@ const char* GetThreadStackBase() {
   return stackaddr + stacksize;
 }
 
+std::atomic<uint64_t> Client::max_generation_{0};
+
 Client::Client(std::vector<base::UnixSocketRaw> socks)
-    : pthread_key_(ThreadLocalSamplingData::KeyDestructor),
+    : generation_(++max_generation_),
+      pthread_key_(ThreadLocalSamplingData::KeyDestructor),
       socket_pool_(std::move(socks)),
+      free_page_(generation_),
       main_thread_stack_base_(FindMainThreadStack()) {
   PERFETTO_DCHECK(pthread_key_.valid());
 
-  uint64_t size = 0;
+  // We might be running in a process that is not dumpable (such as app
+  // processes on user builds), in which case the /proc/self/mem will be chown'd
+  // to root:root, and will not be accessible even to the process itself (see
+  // man 5 proc). In such situations, temporarily mark the process dumpable to
+  // be able to open the files, unsetting dumpability immediately afterwards.
+  int orig_dumpable = prctl(PR_GET_DUMPABLE);
+
+  enum { kNop, kDoUnset };
+  base::ScopedResource<int, UnsetDumpable, kNop, false> unset_dumpable(kNop);
+  if (orig_dumpable == 0) {
+    unset_dumpable.reset(kDoUnset);
+    prctl(PR_SET_DUMPABLE, 1);
+  }
+
   base::ScopedFile maps(base::OpenFile("/proc/self/maps", O_RDONLY));
-  base::ScopedFile mem(base::OpenFile("/proc/self/mem", O_RDONLY));
-  if (!maps || !mem) {
-    PERFETTO_DFATAL("Failed to open /proc/self/{maps,mem}");
+  if (!maps) {
+    PERFETTO_DFATAL("Failed to open /proc/self/maps");
     return;
   }
+  base::ScopedFile mem(base::OpenFile("/proc/self/mem", O_RDONLY));
+  if (!mem) {
+    PERFETTO_DFATAL("Failed to open /proc/self/mem");
+    return;
+  }
+  // Restore original dumpability value if we overrode it.
+  unset_dumpable.reset();
+
   int fds[2];
   fds[0] = *maps;
   fds[1] = *mem;
@@ -213,6 +245,7 @@ Client::Client(std::vector<base::UnixSocketRaw> socks)
     return;
   // Send an empty record to transfer fds for /proc/self/maps and
   // /proc/self/mem.
+  uint64_t size = 0;
   if (sock->Send(&size, sizeof(size), fds, 2) != sizeof(size)) {
     PERFETTO_DFATAL("Failed to send file descriptors.");
     return;
@@ -253,11 +286,12 @@ const char* Client::GetStackBase() {
 //               +------------+    |
 //               |  main      |    v
 // stackbase +-> +------------+ 0xffff
-void Client::RecordMalloc(uint64_t alloc_size,
+bool Client::RecordMalloc(uint64_t alloc_size,
                           uint64_t total_size,
                           uint64_t alloc_address) {
-  if (!inited_.load(std::memory_order_acquire))
-    return;
+  if (!inited_.load(std::memory_order_acquire)) {
+    return false;
+  }
   AllocMetadata metadata;
   const char* stackbase = GetStackBase();
   const char* stacktop = reinterpret_cast<char*>(__builtin_frame_address(0));
@@ -265,10 +299,12 @@ void Client::RecordMalloc(uint64_t alloc_size,
 
   if (stackbase < stacktop) {
     PERFETTO_DFATAL("Stackbase >= stacktop.");
-    return;
+    Shutdown();
+    return false;
   }
 
   uint64_t stack_size = static_cast<uint64_t>(stackbase - stacktop);
+  metadata.client_generation = generation_;
   metadata.total_size = total_size;
   metadata.alloc_size = alloc_size;
   metadata.alloc_address = alloc_address;
@@ -289,36 +325,43 @@ void Client::RecordMalloc(uint64_t alloc_size,
     PERFETTO_PLOG("Failed to send wire message.");
     sock.Shutdown();
     Shutdown();
+    return false;
   }
+  return true;
 }
 
-void Client::RecordFree(uint64_t alloc_address) {
-  if (!inited_.load(std::memory_order_acquire))
-    return;
-  if (!free_page_.Add(
-          alloc_address,
-          1 + sequence_number_.fetch_add(1, std::memory_order_acq_rel),
-          &socket_pool_))
-    Shutdown();
-}
-
-size_t Client::ShouldSampleAlloc(uint64_t alloc_size,
-                                 void* (*unhooked_malloc)(size_t),
-                                 void (*unhooked_free)(void*)) {
+bool Client::RecordFree(uint64_t alloc_address) {
   if (!inited_.load(std::memory_order_acquire))
     return false;
-  return SampleSize(pthread_key_.get(), alloc_size, client_config_.interval,
-                    unhooked_malloc, unhooked_free);
+  bool success = free_page_.Add(
+      alloc_address,
+      1 + sequence_number_.fetch_add(1, std::memory_order_acq_rel),
+      &socket_pool_);
+  if (!success)
+    Shutdown();
+  return success;
 }
 
-void Client::MaybeSampleAlloc(uint64_t alloc_size,
+ssize_t Client::ShouldSampleAlloc(uint64_t alloc_size,
+                                  void* (*unhooked_malloc)(size_t),
+                                  void (*unhooked_free)(void*)) {
+  if (!inited_.load(std::memory_order_acquire))
+    return -1;
+  return static_cast<ssize_t>(SampleSize(pthread_key_.get(), alloc_size,
+                                         client_config_.interval,
+                                         unhooked_malloc, unhooked_free));
+}
+
+bool Client::MaybeSampleAlloc(uint64_t alloc_size,
                               uint64_t alloc_address,
                               void* (*unhooked_malloc)(size_t),
                               void (*unhooked_free)(void*)) {
-  size_t total_size =
+  ssize_t total_size =
       ShouldSampleAlloc(alloc_size, unhooked_malloc, unhooked_free);
   if (total_size > 0)
-    RecordMalloc(alloc_size, total_size, alloc_address);
+    return RecordMalloc(alloc_size, static_cast<size_t>(total_size),
+                        alloc_address);
+  return total_size != -1;
 }
 
 void Client::Shutdown() {

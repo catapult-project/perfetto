@@ -21,6 +21,7 @@
 #include <string>
 
 #include "perfetto/base/logging.h"
+#include "perfetto/base/optional.h"
 #include "perfetto/base/string_view.h"
 #include "perfetto/base/utils.h"
 #include "perfetto/protozero/proto_decoder.h"
@@ -55,41 +56,42 @@ bool ParseSystraceTracePoint(base::StringView str, SystraceTracePoint* out) {
   const char* s = str.data();
   size_t len = str.size();
 
-  // If str matches '[BEC]\|[0-9]+[\|\n]' set tid_length to the length of
+  // If str matches '[BEC]\|[0-9]+[\|\n]' set tgid_length to the length of
   // the number. Otherwise return false.
   if (s[1] != '|' && s[1] != '\n')
     return false;
   if (s[0] != 'B' && s[0] != 'E' && s[0] != 'C')
     return false;
-  size_t tid_length = 0;
+  size_t tgid_length = 0;
   for (size_t i = 2; i < len; i++) {
     if (s[i] == '|' || s[i] == '\n') {
-      tid_length = i - 2;
+      tgid_length = i - 2;
       break;
     }
     if (s[i] < '0' || s[i] > '9')
       return false;
   }
 
-  if (tid_length == 0) {
-    out->tid = 0;
+  if (tgid_length == 0) {
+    out->tgid = 0;
   } else {
-    std::string tid_str(s + 2, tid_length);
-    out->tid = static_cast<uint32_t>(std::stoi(tid_str.c_str()));
+    std::string tgid_str(s + 2, tgid_length);
+    out->tgid = static_cast<uint32_t>(std::stoi(tgid_str.c_str()));
   }
 
   out->phase = s[0];
   switch (s[0]) {
     case 'B': {
-      size_t name_index = 2 + tid_length + 1;
-      out->name = base::StringView(s + name_index, len - name_index);
+      size_t name_index = 2 + tgid_length + 1;
+      out->name = base::StringView(
+          s + name_index, len - name_index - (s[len - 1] == '\n' ? 1 : 0));
       return true;
     }
     case 'E': {
       return true;
     }
     case 'C': {
-      size_t name_index = 2 + tid_length + 1;
+      size_t name_index = 2 + tgid_length + 1;
       size_t name_length = 0;
       for (size_t i = name_index; i < len; i++) {
         if (s[i] == '|' || s[i] == '\n') {
@@ -158,34 +160,61 @@ ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
   for (const auto& name : BuildVmstatCounterNames()) {
     vmstat_strs_id_.emplace_back(context->storage->InternString(name));
   }
+  rss_members_.emplace_back(context->storage->InternString("mem.rss.file"));
+  rss_members_.emplace_back(context->storage->InternString("mem.rss.anon"));
+  rss_members_.emplace_back(context->storage->InternString("mem.swap"));
+  rss_members_.emplace_back(context->storage->InternString("mem.rss.shmem"));
   rss_members_.emplace_back(
-      context->storage->InternString("rss_stat.mm_filepages"));
-  rss_members_.emplace_back(
-      context->storage->InternString("rss_stat.mm_anonpages"));
-  rss_members_.emplace_back(
-      context->storage->InternString("rss_stat.mm_swapents"));
-  rss_members_.emplace_back(
-      context->storage->InternString("rss_stat.mm_shmempages"));
-  rss_members_.emplace_back(
-      context->storage->InternString("rss_stat.unknown"));  // Keep this last.
+      context->storage->InternString("mem.rss.unknown"));  // Keep this last.
 
-  using MemCounters = protos::ProcessStats::MemCounters;
-  proc_mem_counter_names_[MemCounters::kVmSizeKbFieldNumber] =
+  using ProcessStats = protos::ProcessStats;
+  proc_stats_process_names_[ProcessStats::Process::kVmSizeKbFieldNumber] =
       context->storage->InternString("mem.virt");
-  proc_mem_counter_names_[MemCounters::kVmRssKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmRssKbFieldNumber] =
       context->storage->InternString("mem.rss");
-  proc_mem_counter_names_[MemCounters::kRssAnonKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kRssAnonKbFieldNumber] =
       context->storage->InternString("mem.rss.anon");
-  proc_mem_counter_names_[MemCounters::kRssFileKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kRssFileKbFieldNumber] =
       context->storage->InternString("mem.rss.file");
-  proc_mem_counter_names_[MemCounters::kRssShmemKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kRssShmemKbFieldNumber] =
       context->storage->InternString("mem.rss.shmem");
-  proc_mem_counter_names_[MemCounters::kVmSwapKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmSwapKbFieldNumber] =
       context->storage->InternString("mem.swap");
-  proc_mem_counter_names_[MemCounters::kVmLockedKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmLockedKbFieldNumber] =
       context->storage->InternString("mem.locked");
-  proc_mem_counter_names_[MemCounters::kVmHwmKbFieldNumber] =
+  proc_stats_process_names_[ProcessStats::Process::kVmHwmKbFieldNumber] =
       context->storage->InternString("mem.rss.watermark");
+  proc_stats_process_names_[ProcessStats::Process::kOomScoreAdjFieldNumber] =
+      oom_score_adj_id_;
+
+  mm_event_counter_names_[0] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.min_flt.count"),
+      context->storage->InternString("mem.mm.min_flt.max_lat"),
+      context->storage->InternString("mem.mm.min_flt.avg_lat"));
+  mm_event_counter_names_[1] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.maj_flt.count"),
+      context->storage->InternString("mem.mm.maj_flt.max_lat"),
+      context->storage->InternString("mem.mm.maj_flt.avg_lat"));
+  mm_event_counter_names_[2] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.read_io.count"),
+      context->storage->InternString("mem.mm.read_io.max_lat"),
+      context->storage->InternString("mem.mm.read_io.avg_lat"));
+  mm_event_counter_names_[3] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.compaction.count"),
+      context->storage->InternString("mem.mm.compaction.max_lat"),
+      context->storage->InternString("mem.mm.compaction.avg_lat"));
+  mm_event_counter_names_[4] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.reclaim.count"),
+      context->storage->InternString("mem.mm.reclaim.max_lat"),
+      context->storage->InternString("mem.mm.reclaim.avg_lat"));
+  mm_event_counter_names_[5] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.swp_flt.count"),
+      context->storage->InternString("mem.mm.swp_flt.max_lat"),
+      context->storage->InternString("mem.mm.swp_flt.avg_lat"));
+  mm_event_counter_names_[6] = MmEventCounterNames(
+      context->storage->InternString("mem.mm.kern_alloc.count"),
+      context->storage->InternString("mem.mm.kern_alloc.max_lat"),
+      context->storage->InternString("mem.mm.kern_alloc.avg_lat"));
 }
 
 ProtoTraceParser::~ProtoTraceParser() = default;
@@ -233,6 +262,11 @@ void ProtoTraceParser::ParseTracePacket(int64_t ts, TraceBlobView packet) {
       case protos::TracePacket::kAndroidLogFieldNumber: {
         const size_t fld_off = packet.offset_of(fld.data());
         ParseAndroidLogPacket(packet.slice(fld_off, fld.size()));
+        break;
+      }
+      case protos::TracePacket::kProfilePacketFieldNumber: {
+        const size_t fld_off = packet.offset_of(fld.data());
+        ParseProfilePacket(packet.slice(fld_off, fld.size()));
         break;
       }
       default:
@@ -460,8 +494,8 @@ void ProtoTraceParser::ParseProcessStats(int64_t ts, TraceBlobView stats) {
   for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
     const size_t fld_off = stats.offset_of(fld.data());
     switch (fld.id) {
-      case protos::ProcessStats::kMemCountersFieldNumber: {
-        ParseProcMemCounters(ts, stats.slice(fld_off, fld.size()));
+      case protos::ProcessStats::kProcessesFieldNumber: {
+        ParseProcessStatsProcess(ts, stats.slice(fld_off, fld.size()));
         break;
       }
       default:
@@ -471,34 +505,39 @@ void ProtoTraceParser::ParseProcessStats(int64_t ts, TraceBlobView stats) {
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
 
-void ProtoTraceParser::ParseProcMemCounters(int64_t ts,
-                                            TraceBlobView proc_stat) {
+void ProtoTraceParser::ParseProcessStatsProcess(int64_t ts,
+                                                TraceBlobView proc_stat) {
   ProtoDecoder decoder(proc_stat.data(), proc_stat.length());
   uint32_t pid = 0;
+
   // Maps a process counter field it to its value.
   // E.g., 4 := 1024 -> "mem.rss.anon" := 1024.
-  std::array<uint64_t, kProcMemCounterSize> counter_values{};
-  std::array<uint8_t, kProcMemCounterSize> has_counter{};
+  std::array<int64_t, kProcStatsProcessSize> counter_values{};
+  std::array<bool, kProcStatsProcessSize> has_counter{};
 
   for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
     switch (fld.id) {
-      case protos::ProcessStats::MemCounters::kPidFieldNumber:
+      case protos::ProcessStats::Process::kPidFieldNumber:
         pid = fld.as_uint32();
         break;
-      default:
-        if (fld.id < counter_values.size()) {
+      default: {
+        bool is_counter_field = fld.id < has_counter.size() &&
+                                proc_stats_process_names_[fld.id] != 0;
+        if (is_counter_field) {
           // Memory counters are in KB, keep values in bytes in the trace
           // processor.
-          counter_values[fld.id] = fld.as_uint64() * 1024;
-          has_counter[fld.id] = 1;
+          counter_values[fld.id] =
+              fld.id == protos::ProcessStats::Process::kOomScoreAdjFieldNumber
+                  ? fld.as_int64()
+                  : fld.as_int64() * 1024;
+          has_counter[fld.id] = true;
         } else {
-          PERFETTO_ELOG("Skipping unknown process counters %" PRIu32, fld.id);
           context_->storage->IncrementStats(stats::proc_stat_unknown_counters);
         }
+        break;
+      }
     }
   }
-
-  UniqueTid utid = context_->process_tracker->UpdateThread(ts, pid, 0);
 
   // Skip field_id 0 (invalid) and 1 (pid).
   for (size_t field_id = 2; field_id < counter_values.size(); field_id++) {
@@ -506,13 +545,13 @@ void ProtoTraceParser::ParseProcMemCounters(int64_t ts,
       continue;
 
     // Lookup the interned string id from the field name using the
-    // pre-cached |proc_mem_counter_names_| map.
-    StringId name = proc_mem_counter_names_[field_id];
-    uint64_t value = counter_values[field_id];
-    auto row_id = context_->event_tracker->PushCounter(
-        ts, value, name, utid, RefType::kRefUtidLookupUpid);
-    context_->storage->mutable_args()->AddArg(
-        row_id, utid_name_id_, utid_name_id_, Variadic::Integer(utid));
+    // pre-cached |proc_stats_process_names_| map.
+    StringId name = proc_stats_process_names_[field_id];
+    int64_t value = counter_values[field_id];
+
+    UniquePid upid = context_->process_tracker->UpdateProcess(pid);
+    context_->event_tracker->PushCounter(ts, value, name, upid,
+                                         RefType::kRefUpid);
   }
 
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
@@ -583,6 +622,8 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
       continue;
 
     const size_t fld_off = ftrace.offset_of(fld.data());
+    // TODO(b/123252504): don't parse raw events for now.
+    /*
     if (fld.id == protos::FtraceEvent::kGenericFieldNumber) {
       ParseGenericFtrace(timestamp, cpu, pid,
                          ftrace.slice(fld_off, fld.size()));
@@ -590,6 +631,7 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
       ParseTypedFtraceToRaw(fld.id, timestamp, cpu, pid,
                             ftrace.slice(fld_off, fld.size()));
     }
+    */
 
     switch (fld.id) {
       case protos::FtraceEvent::kSchedSwitchFieldNumber: {
@@ -636,6 +678,11 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
       }
       case protos::FtraceEvent::kOomScoreAdjUpdate: {
         ParseOOMScoreAdjUpdate(timestamp, ftrace.slice(fld_off, fld.size()));
+        break;
+      }
+      case protos::FtraceEvent::kMmEventRecordFieldNumber: {
+        ParseMmEventRecordField(timestamp, pid,
+                                ftrace.slice(fld_off, fld.size()));
         break;
       }
       default:
@@ -849,16 +896,17 @@ void ProtoTraceParser::ParseSchedSwitch(uint32_t cpu,
   ProtoDecoder decoder(sswitch.data(), sswitch.length());
 
   uint32_t prev_pid = 0;
-  uint32_t prev_state = 0;
+  int64_t prev_state = 0;
   base::StringView next_comm;
   uint32_t next_pid = 0;
+  int32_t next_prio = 0;
   for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
     switch (fld.id) {
       case protos::SchedSwitchFtraceEvent::kPrevPidFieldNumber:
         prev_pid = fld.as_uint32();
         break;
       case protos::SchedSwitchFtraceEvent::kPrevStateFieldNumber:
-        prev_state = fld.as_uint32();
+        prev_state = fld.as_int64();
         break;
       case protos::SchedSwitchFtraceEvent::kNextPidFieldNumber:
         next_pid = fld.as_uint32();
@@ -866,12 +914,15 @@ void ProtoTraceParser::ParseSchedSwitch(uint32_t cpu,
       case protos::SchedSwitchFtraceEvent::kNextCommFieldNumber:
         next_comm = fld.as_string();
         break;
+      case protos::SchedSwitchFtraceEvent::kNextPrioFieldNumber:
+        next_prio = fld.as_int32();
+        break;
       default:
         break;
     }
   }
   context_->event_tracker->PushSchedSwitch(cpu, timestamp, prev_pid, prev_state,
-                                           next_pid, next_comm);
+                                           next_pid, next_comm, next_prio);
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
 
@@ -896,13 +947,13 @@ void ProtoTraceParser::ParsePrint(uint32_t,
   switch (point.phase) {
     case 'B': {
       StringId name_id = context_->storage->InternString(point.name);
-      context_->slice_tracker->BeginAndroid(timestamp, pid, point.tid,
+      context_->slice_tracker->BeginAndroid(timestamp, pid, point.tgid,
                                             0 /*cat_id*/, name_id);
       break;
     }
 
     case 'E': {
-      context_->slice_tracker->EndAndroid(timestamp, pid, point.tid);
+      context_->slice_tracker->EndAndroid(timestamp, pid, point.tgid);
       break;
     }
 
@@ -920,14 +971,15 @@ void ProtoTraceParser::ParsePrint(uint32_t,
           context_->storage->mutable_instants()->AddInstantEvent(
               timestamp, lmk_id_, 0, killed_upid, RefType::kRefUpid);
         }
-        // TODO(tilal6991): we should not add LMK events to the counters table
+        // TODO(lalitm): we should not add LMK events to the counters table
         // once the UI has support for displaying instants.
       }
-      UniqueTid utid =
-          context_->process_tracker->UpdateThread(timestamp, point.tid, 0);
+      // This is per upid on purpose. Some counters are pushed from arbitrary
+      // threads but are really per process.
+      UniquePid upid = context_->process_tracker->UpdateProcess(point.tgid);
       StringId name_id = context_->storage->InternString(point.name);
       context_->event_tracker->PushCounter(timestamp, point.value, name_id,
-                                           utid, RefType::kRefUtid);
+                                           upid, RefType::kRefUpid);
     }
   }
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
@@ -987,6 +1039,52 @@ void ProtoTraceParser::ParseOOMScoreAdjUpdate(int64_t ts,
   UniquePid upid = context_->process_tracker->UpdateProcess(pid);
   context_->event_tracker->PushCounter(ts, oom_adj, oom_score_adj_id_, upid,
                                        RefType::kRefUpid);
+}
+
+void ProtoTraceParser::ParseMmEventRecordField(int64_t ts,
+                                               uint32_t pid,
+                                               TraceBlobView view) {
+  ProtoDecoder decoder(view.data(), view.length());
+
+  uint32_t type = 0;
+  uint32_t count = 0;
+  uint32_t max_lat = 0;
+  uint32_t avg_lat = 0;
+  for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
+    switch (fld.id) {
+      case protos::MmEventRecordFtraceEvent::kTypeFieldNumber:
+        type = fld.as_uint32();
+        break;
+      case protos::MmEventRecordFtraceEvent::kCountFieldNumber:
+        count = fld.as_uint32();
+        break;
+      case protos::MmEventRecordFtraceEvent::kMaxLatFieldNumber:
+        max_lat = fld.as_uint32();
+        break;
+      case protos::MmEventRecordFtraceEvent::kAvgLatFieldNumber:
+        avg_lat = fld.as_uint32();
+        break;
+      default:
+        context_->storage->IncrementStats(stats::mm_unknown_counter);
+        break;
+    }
+  }
+
+  UniqueTid utid = context_->process_tracker->UpdateThread(ts, pid, 0);
+  if (type >= mm_event_counter_names_.size()) {
+    context_->storage->IncrementStats(stats::mm_unknown_type);
+    return;
+  }
+
+  const auto& counter_names = mm_event_counter_names_[type];
+  context_->event_tracker->PushCounter(ts, count, counter_names.count, utid,
+                                       RefType::kRefUtidLookupUpid);
+  context_->event_tracker->PushCounter(ts, max_lat, counter_names.max_lat, utid,
+                                       RefType::kRefUtidLookupUpid);
+  context_->event_tracker->PushCounter(ts, avg_lat, counter_names.avg_lat, utid,
+                                       RefType::kRefUtidLookupUpid);
+
+  PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
 
 void ProtoTraceParser::ParseGenericFtrace(int64_t timestamp,
@@ -1259,13 +1357,15 @@ void ProtoTraceParser::ParseAndroidLogEvent(TraceBlobView event) {
     msg_id = context_->storage->InternString(&arg_msg[1]);
   }
   UniquePid utid = tid ? context_->process_tracker->UpdateThread(tid, pid) : 0;
-  int64_t trace_time =
+  base::Optional<int64_t> opt_trace_time =
       context_->clock_tracker->ToTraceTime(ClockDomain::kRealTime, ts);
+  if (!opt_trace_time)
+    return;
 
   // Log events are NOT required to be sorted by trace_time. The virtual table
   // will take care of sorting on-demand.
-  context_->storage->mutable_android_log()->AddLogEvent(trace_time, utid, prio,
-                                                        tag_id, msg_id);
+  context_->storage->mutable_android_log()->AddLogEvent(
+      opt_trace_time.value(), utid, prio, tag_id, msg_id);
 }
 
 void ProtoTraceParser::ParseAndroidLogBinaryArg(TraceBlobView arg,
@@ -1349,9 +1449,31 @@ void ProtoTraceParser::ParseTraceStats(TraceBlobView packet) {
         ProtoDecoder buf_d(buf_data.data(), buf_data.length());
         for (auto fld2 = buf_d.ReadField(); fld2.id; fld2 = buf_d.ReadField()) {
           switch (fld2.id) {
+            case protos::TraceStats::BufferStats::kBufferSizeFieldNumber:
+              storage->SetIndexedStats(stats::traced_buf_buffer_size, buf_num,
+                                       fld2.as_int64());
+              break;
             case protos::TraceStats::BufferStats::kBytesWrittenFieldNumber:
               storage->SetIndexedStats(stats::traced_buf_bytes_written, buf_num,
                                        fld2.as_int64());
+              break;
+            case protos::TraceStats::BufferStats::kBytesOverwrittenFieldNumber:
+              storage->SetIndexedStats(stats::traced_buf_bytes_overwritten,
+                                       buf_num, fld2.as_int64());
+              break;
+            case protos::TraceStats::BufferStats::kBytesReadFieldNumber:
+              storage->SetIndexedStats(stats::traced_buf_bytes_read, buf_num,
+                                       fld2.as_int64());
+              break;
+            case protos::TraceStats::BufferStats::
+                kPaddingBytesWrittenFieldNumber:
+              storage->SetIndexedStats(stats::traced_buf_padding_bytes_written,
+                                       buf_num, fld2.as_int64());
+              break;
+            case protos::TraceStats::BufferStats::
+                kPaddingBytesClearedFieldNumber:
+              storage->SetIndexedStats(stats::traced_buf_padding_bytes_cleared,
+                                       buf_num, fld2.as_int64());
               break;
             case protos::TraceStats::BufferStats::kChunksWrittenFieldNumber:
               storage->SetIndexedStats(stats::traced_buf_chunks_written,
@@ -1364,6 +1486,14 @@ void ProtoTraceParser::ParseTraceStats(TraceBlobView packet) {
             case protos::TraceStats::BufferStats::kChunksOverwrittenFieldNumber:
               storage->SetIndexedStats(stats::traced_buf_chunks_overwritten,
                                        buf_num, fld2.as_int64());
+              break;
+            case protos::TraceStats::BufferStats::kChunksDiscardedFieldNumber:
+              storage->SetIndexedStats(stats::traced_buf_chunks_discarded,
+                                       buf_num, fld2.as_int64());
+              break;
+            case protos::TraceStats::BufferStats::kChunksReadFieldNumber:
+              storage->SetIndexedStats(stats::traced_buf_chunks_read, buf_num,
+                                       fld2.as_int64());
               break;
             case protos::TraceStats::BufferStats::
                 kChunksCommittedOutOfOrderFieldNumber:
@@ -1477,6 +1607,55 @@ void ProtoTraceParser::ParseFtraceStats(TraceBlobView packet) {
       }
       default:
         break;
+    }
+  }
+  PERFETTO_DCHECK(decoder.IsEndOfBuffer());
+}
+
+void ProtoTraceParser::ParseProfilePacket(TraceBlobView packet) {
+  ProtoDecoder decoder(packet.data(), packet.length());
+  for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
+    switch (fld.id) {
+      case protos::ProfilePacket::kStringsFieldNumber: {
+        const size_t fld_off = packet.offset_of(fld.data());
+        TraceBlobView nestedPacket = packet.slice(fld_off, fld.size());
+        ProtoDecoder nested(nestedPacket.data(), nestedPacket.length());
+        for (auto sub = nested.ReadField(); sub.id != 0;
+             sub = nested.ReadField()) {
+          switch (sub.id) {
+            case protos::ProfilePacket::InternedString::kIdFieldNumber: {
+              break;
+            }
+            case protos::ProfilePacket::InternedString::kStrFieldNumber: {
+              context_->storage->InternString(sub.as_string());
+              break;
+            }
+          }
+        }
+        break;
+      }
+      case protos::ProfilePacket::kFramesFieldNumber: {
+        break;
+      }
+      case protos::ProfilePacket::kCallstacksFieldNumber: {
+        break;
+      }
+      case protos::ProfilePacket::kMappingsFieldNumber: {
+        break;
+      }
+      case protos::ProfilePacket::kProcessDumpsFieldNumber: {
+        break;
+      }
+      case protos::ProfilePacket::kContinuedFieldNumber: {
+        bool continued = fld.as_bool();
+        base::ignore_result(continued);
+        break;
+      }
+      case protos::ProfilePacket::kIndexFieldNumber: {
+        int64_t index = fld.as_int64();
+        base::ignore_result(index);
+        break;
+      }
     }
   }
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());

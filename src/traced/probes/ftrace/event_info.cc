@@ -3516,6 +3516,18 @@ std::vector<Event> GetStaticEventInfo() {
   {
     events.emplace_back(Event{});
     Event* event = &events.back();
+    event->name = "mm_event_record";
+    event->group = "mm_event";
+    event->proto_field_id = 328;
+    event->fields.push_back(MakeField("avg_lat", 1, ProtoSchemaType::kUint32));
+    event->fields.push_back(MakeField("count", 2, ProtoSchemaType::kUint32));
+    event->fields.push_back(MakeField("max_lat", 3, ProtoSchemaType::kUint32));
+    event->fields.push_back(MakeField("type", 4, ProtoSchemaType::kUint32));
+  }
+
+  {
+    events.emplace_back(Event{});
+    Event* event = &events.back();
     event->name = "oom_score_adj_update";
     event->group = "oom";
     event->proto_field_id = 326;
@@ -3598,6 +3610,25 @@ std::vector<Event> GetStaticEventInfo() {
     event->fields.push_back(MakeField("action", 1, ProtoSchemaType::kString));
     event->fields.push_back(MakeField("val", 2, ProtoSchemaType::kInt32));
     event->fields.push_back(MakeField("start", 3, ProtoSchemaType::kUint32));
+  }
+
+  {
+    events.emplace_back(Event{});
+    Event* event = &events.back();
+    event->name = "sys_enter";
+    event->group = "raw_syscalls";
+    event->proto_field_id = 329;
+    event->fields.push_back(MakeField("id", 1, ProtoSchemaType::kInt64));
+  }
+
+  {
+    events.emplace_back(Event{});
+    Event* event = &events.back();
+    event->name = "sys_exit";
+    event->group = "raw_syscalls";
+    event->proto_field_id = 330;
+    event->fields.push_back(MakeField("id", 1, ProtoSchemaType::kInt64));
+    event->fields.push_back(MakeField("ret", 2, ProtoSchemaType::kInt64));
   }
 
   {

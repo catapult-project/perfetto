@@ -30,8 +30,8 @@ import time
 import urllib
 
 TRACE_TO_TEXT_SHAS = {
-  'linux': 'c704cf765b9c5445c16a8e7ec5757cad364a8d92',
-  'mac': 'aed4ad02da526a3f1e4f9df47d4989ae9305b30e',
+  'linux': '4e52b07b2f6258643d16610ae1aae8ac73063624',
+  'mac': '0893f2892f519c6c48458bbc34a61dbed50c20a5',
 }
 TRACE_TO_TEXT_PATH = tempfile.gettempdir()
 TRACE_TO_TEXT_BASE_URL = (
@@ -79,16 +79,20 @@ data_sources {{
       all: {all}
       sampling_interval_bytes: {interval}
 {target_cfg}
-      continuous_dump_config {{
-        dump_phase_ms: 0
-        dump_interval_ms: 1000
-      }}
+{continuous_dump_cfg}
     }}
   }}
 }}
 
 duration_ms: {duration}
 '''
+
+CONTINUOUS_DUMP = """
+      continuous_dump_config {{
+        dump_phase_ms: 0
+        dump_interval_ms: {dump_interval}
+      }}
+"""
 
 PERFETTO_CMD=('CFG=\'{}\'; echo ${{CFG}} | '
               'perfetto --txt -c - -o /data/misc/perfetto-traces/profile -d')
@@ -101,9 +105,9 @@ def sigint_handler(sig, frame):
 def main(argv):
   parser = argparse.ArgumentParser()
   parser.add_argument("-i", "--interval", help="Sampling interval. "
-                      "Default 128000 (128kB)", type=int, default=128000)
+                      "Default 4096 (4KiB)", type=int, default=4096)
   parser.add_argument("-d", "--duration", help="Duration of profile (ms). "
-                      "Default 1 minute", type=int, default=60000)
+                      "Default 7 days", type=int, default=604800000)
   parser.add_argument("-a", "--all", help="Profile the whole system",
                       action='store_true')
   parser.add_argument("--no-start", help="Do not start heapprofd",
@@ -114,6 +118,9 @@ def main(argv):
                       nargs='+')
   parser.add_argument("-t", "--trace-to-text-binary",
                       help="Path to local trace to text. For debugging.")
+  parser.add_argument("-c", "--continuous-dump",
+                      help="Dump interval in ms. 0 to disable continuous dump.",
+                      type=int, default=0)
   parser.add_argument("--disable-selinux", action="store_true",
                       help="Disable SELinux enforcement for duration of "
                       "profile")
@@ -154,8 +161,13 @@ def main(argv):
 
     trace_to_text_binary = load_trace_to_text(platform)
 
+  continuous_dump_cfg = ""
+  if args.continuous_dump:
+    continuous_dump_cfg = CONTINUOUS_DUMP.format(
+        dump_interval=args.continuous_dump)
   cfg = CFG.format(all=str(args.all == True).lower(), interval=args.interval,
-                   duration=args.duration, target_cfg=target_cfg)
+                   duration=args.duration, target_cfg=target_cfg,
+                   continuous_dump_cfg=continuous_dump_cfg)
 
   if args.disable_selinux:
     enforcing = subprocess.check_output(['adb', 'shell', 'getenforce'])
@@ -164,9 +176,13 @@ def main(argv):
     subprocess.check_call(['adb', 'shell', 'su root setenforce 0'])
 
   if not args.no_start:
-    atexit.register(subprocess.check_call,
-                    ['adb', 'shell', 'su root stop heapprofd'])
-    subprocess.check_call(['adb', 'shell', 'su root start heapprofd'])
+    heapprofd_prop = subprocess.check_output(
+        ['adb', 'shell', 'getprop persist.heapprofd.enable'])
+    if heapprofd_prop.strip() != '1':
+      subprocess.check_call(
+          ['adb', 'shell', 'setprop persist.heapprofd.enable 1'])
+      atexit.register(subprocess.check_call,
+          ['adb', 'shell', 'setprop persist.heapprofd.enable 0'])
 
   perfetto_pid = subprocess.check_output(
       ['adb', 'exec-out', PERFETTO_CMD.format(cfg)]).strip()
@@ -181,8 +197,7 @@ def main(argv):
   signal.signal(signal.SIGINT, old_handler)
   if IS_INTERRUPTED:
     # Not check_call because it could have existed in the meantime.
-    subprocess.call(['adb', 'shell', 'su', 'root', 'kill', '-INT',
-                     perfetto_pid])
+    subprocess.call(['adb', 'shell', 'kill', '-INT', perfetto_pid])
 
   # Wait for perfetto cmd to return.
   while exists:
@@ -210,7 +225,14 @@ def main(argv):
 
   subprocess.check_call(['gzip'] + [os.path.join(profile_path, x) for x in
                                     os.listdir(profile_path)])
-  print("Wrote profiles to {}".format(profile_path))
+
+  symlink_path = os.path.join(os.path.dirname(profile_path),
+                                        "heap_profile-latest")
+  if os.path.exists(symlink_path):
+    os.unlink(symlink_path)
+  os.symlink(profile_path, symlink_path)
+
+  print("Wrote profiles to {} (symlink {})".format(profile_path, symlink_path))
   print("These can be viewed using pprof. Googlers: head to pprof/ and "
         "upload them.")
 

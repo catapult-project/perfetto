@@ -170,7 +170,7 @@ BUILD_DEPS_HOST = [
   # These dependencies are for libunwindstack, which is used by src/profiling.
   ('buildtools/android-core',
    'https://android.googlesource.com/platform/system/core.git',
-   '34f55bd45adc929937ed42504bb2b3181a71b904',
+   'dd70df2e69d06abd87c00b957840248397917dcc',
    'all'
   ),
 
@@ -188,8 +188,8 @@ BUILD_DEPS_HOST = [
 
   # Example traces for regression tests.
   ('buildtools/test_data.zip',
-   'https://storage.googleapis.com/perfetto/test-data-20190114.zip',
-   '1408d7d6544558e9f459f2a7879f3f664d7278d1',
+   'https://storage.googleapis.com/perfetto/test-data-20190123.zip',
+   '3761a0501669fc070022025678a8651f4a9495ad',
    'all',
   ),
 
@@ -251,6 +251,8 @@ TEST_DEPS_ANDROID = [
 # This variable is updated by tools/roll-catapult-trace-viewer.
 CATAPULT_SHA1 = 'ff5d8fd7244680b4d4456c25d5fdc04c76f9ef66'
 
+TYPEFACES_SHA1 = '756b0a015b8f99f5718f7fdf967d052c1ec55ab3'
+
 UI_DEPS = [
   ('buildtools/nodejs.tgz',
    'https://storage.googleapis.com/perfetto/node-v10.3.0-darwin-x64.tar.gz',
@@ -292,6 +294,11 @@ UI_DEPS = [
     CATAPULT_SHA1,
    'all'
   ),
+  ('buildtools/typefaces.tgz',
+   'https://storage.googleapis.com/perfetto/typefaces-%s.tar.gz' % TYPEFACES_SHA1,
+    TYPEFACES_SHA1,
+   'all'
+  )
 ]
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

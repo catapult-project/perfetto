@@ -27,6 +27,7 @@
 
 #include <sys/system_properties.h>
 
+#include <private/bionic_malloc.h>
 #include <private/bionic_malloc_dispatch.h>
 
 #include "perfetto/base/build_config.h"
@@ -34,6 +35,7 @@
 #include "perfetto/base/unix_socket.h"
 #include "perfetto/base/utils.h"
 #include "src/profiling/memory/client.h"
+#include "src/profiling/memory/proc_utils.h"
 #include "src/profiling/memory/wire_protocol.h"
 
 // The real malloc function pointers we get in initialize.
@@ -55,6 +57,10 @@ static perfetto::profiling::Client* GetClient() {
 
 static const MallocDispatch* GetDispatch() {
   return g_dispatch.load(std::memory_order_relaxed);
+}
+
+static void MallocDispatchReset(const MallocDispatch* dispatch) {
+  android_mallopt(M_RESET_HOOKS, nullptr, 0);
 }
 
 // This is so we can make an so that we can swap out with the existing
@@ -174,7 +180,14 @@ std::unique_ptr<perfetto::profiling::Client> CreateClientAndPrivateDaemon() {
 
   child_sock.RetainOnExec();
 
+  // Record own pid and cmdline, to pass down to the forked heapprofd.
   pid_t target_pid = getpid();
+  std::string target_cmdline;
+  if (!perfetto::profiling::GetCmdlineForPID(target_pid, &target_cmdline)) {
+    PERFETTO_ELOG("Failed to read own cmdline.");
+    return nullptr;
+  }
+
   pid_t fork_pid = fork();
   if (fork_pid == -1) {
     PERFETTO_PLOG("Failed to fork.");
@@ -190,10 +203,12 @@ std::unique_ptr<perfetto::profiling::Client> CreateClientAndPrivateDaemon() {
     }
     std::string pid_arg =
         std::string("--exclusive-for-pid=") + std::to_string(target_pid);
+    std::string cmd_arg =
+        std::string("--exclusive-for-cmdline=") + target_cmdline;
     std::string fd_arg =
         std::string("--inherit-socket-fd=") + std::to_string(child_sock.fd());
-    const char* argv[] = {kHeapprofdBinPath, pid_arg.c_str(), fd_arg.c_str(),
-                          nullptr};
+    const char* argv[] = {kHeapprofdBinPath, pid_arg.c_str(), cmd_arg.c_str(),
+                          fd_arg.c_str(), nullptr};
 
     execv(kHeapprofdBinPath, const_cast<char**>(argv));
     PERFETTO_PLOG("Failed to execute private heapprofd.");
@@ -215,9 +230,11 @@ std::unique_ptr<perfetto::profiling::Client> CreateClientAndPrivateDaemon() {
     return nullptr;
   }
 
-  PERFETTO_ELOG(
-      "Fork mode profiling not implemented yet. Not creating a client.");
-  return nullptr;
+  using perfetto::profiling::Client;
+  std::vector<perfetto::base::UnixSocketRaw> client_sockets;
+  client_sockets.emplace_back(std::move(parent_sock));
+  return std::unique_ptr<Client>(new (std::nothrow)
+                                     Client(std::move(client_sockets)));
 }
 
 }  // namespace
@@ -236,8 +253,10 @@ bool HEAPPROFD_ADD_PREFIX(_initialize)(const MallocDispatch* malloc_dispatch,
       ShouldForkPrivateDaemon() ? CreateClientAndPrivateDaemon()
                                 : CreateClientForCentralDaemon();
 
-  if (!client || !client->inited())
+  if (!client || !client->inited()) {
+    PERFETTO_LOG("Client not initialized, not installing hooks.");
     return false;
+  }
 
   g_client.store(client.release());
   return true;
@@ -248,6 +267,7 @@ void HEAPPROFD_ADD_PREFIX(_finalize)() {
   perfetto::profiling::Client* client = GetClient();
   if (client)
     client->Shutdown();
+  MallocDispatchReset(GetDispatch());
 }
 
 void HEAPPROFD_ADD_PREFIX(_dump_heap)(const char*) {}
@@ -275,8 +295,9 @@ void* HEAPPROFD_ADD_PREFIX(_malloc)(size_t size) {
   perfetto::profiling::Client* client = GetClient();
   void* addr = dispatch->malloc(size);
   if (client) {
-    client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
-                             dispatch->malloc, dispatch->free);
+    if (!client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
+                                  dispatch->malloc, dispatch->free))
+      MallocDispatchReset(GetDispatch());
   }
   return addr;
 }
@@ -285,7 +306,8 @@ void HEAPPROFD_ADD_PREFIX(_free)(void* pointer) {
   const MallocDispatch* dispatch = GetDispatch();
   perfetto::profiling::Client* client = GetClient();
   if (client)
-    client->RecordFree(reinterpret_cast<uint64_t>(pointer));
+    if (!client->RecordFree(reinterpret_cast<uint64_t>(pointer)))
+      MallocDispatchReset(GetDispatch());
   return dispatch->free(pointer);
 }
 
@@ -294,8 +316,9 @@ void* HEAPPROFD_ADD_PREFIX(_aligned_alloc)(size_t alignment, size_t size) {
   perfetto::profiling::Client* client = GetClient();
   void* addr = dispatch->aligned_alloc(alignment, size);
   if (client) {
-    client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
-                             dispatch->malloc, dispatch->free);
+    if (!client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
+                                  dispatch->malloc, dispatch->free))
+      MallocDispatchReset(GetDispatch());
   }
   return addr;
 }
@@ -305,8 +328,9 @@ void* HEAPPROFD_ADD_PREFIX(_memalign)(size_t alignment, size_t size) {
   perfetto::profiling::Client* client = GetClient();
   void* addr = dispatch->memalign(alignment, size);
   if (client) {
-    client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
-                             dispatch->malloc, dispatch->free);
+    if (!client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
+                                  dispatch->malloc, dispatch->free))
+      MallocDispatchReset(GetDispatch());
   }
   return addr;
 }
@@ -315,11 +339,13 @@ void* HEAPPROFD_ADD_PREFIX(_realloc)(void* pointer, size_t size) {
   const MallocDispatch* dispatch = GetDispatch();
   perfetto::profiling::Client* client = GetClient();
   if (client && pointer)
-    client->RecordFree(reinterpret_cast<uint64_t>(pointer));
+    if (!client->RecordFree(reinterpret_cast<uint64_t>(pointer)))
+      MallocDispatchReset(GetDispatch());
   void* addr = dispatch->realloc(pointer, size);
   if (client && size > 0) {
-    client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
-                             dispatch->malloc, dispatch->free);
+    if (!client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
+                                  dispatch->malloc, dispatch->free))
+      MallocDispatchReset(GetDispatch());
   }
   return addr;
 }
@@ -329,8 +355,9 @@ void* HEAPPROFD_ADD_PREFIX(_calloc)(size_t nmemb, size_t size) {
   perfetto::profiling::Client* client = GetClient();
   void* addr = dispatch->calloc(nmemb, size);
   if (client) {
-    client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
-                             dispatch->malloc, dispatch->free);
+    if (!client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(addr),
+                                  dispatch->malloc, dispatch->free))
+      MallocDispatchReset(GetDispatch());
   }
   return addr;
 }
@@ -352,8 +379,9 @@ int HEAPPROFD_ADD_PREFIX(_posix_memalign)(void** memptr,
   perfetto::profiling::Client* client = GetClient();
   int res = dispatch->posix_memalign(memptr, alignment, size);
   if (res == 0 && client) {
-    client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(*memptr),
-                             dispatch->malloc, dispatch->free);
+    if (!client->MaybeSampleAlloc(size, reinterpret_cast<uint64_t>(*memptr),
+                                  dispatch->malloc, dispatch->free))
+      MallocDispatchReset(GetDispatch());
   }
   return res;
 }

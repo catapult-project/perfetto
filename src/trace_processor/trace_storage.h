@@ -22,12 +22,14 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "perfetto/base/logging.h"
 #include "perfetto/base/optional.h"
 #include "perfetto/base/string_view.h"
 #include "perfetto/base/utils.h"
+#include "src/trace_processor/ftrace_utils.h"
 #include "src/trace_processor/stats.h"
 
 namespace perfetto {
@@ -52,6 +54,7 @@ enum TableId : uint8_t {
   kCounters = 1,
   kRawEvents = 2,
   kInstants = 3,
+  kSched = 4,
 };
 
 // The top 8 bits are set to the TableId and the bottom 32 to the row of the
@@ -146,6 +149,13 @@ class TraceStorage {
     size_t args_count() const { return ids_.size(); }
 
     void AddArg(RowId id, StringId flat_key, StringId key, Variadic value) {
+      // TODO(b/123252504): disable this code to stop blow-ups in ingestion time
+      // and memory.
+      perfetto::base::ignore_result(id);
+      perfetto::base::ignore_result(flat_key);
+      perfetto::base::ignore_result(key);
+      perfetto::base::ignore_result(value);
+      /*
       if (id == kInvalidRowId)
         return;
 
@@ -154,6 +164,7 @@ class TraceStorage {
       keys_.emplace_back(key);
       arg_values_.emplace_back(value);
       args_for_id_.emplace(id, static_cast<uint32_t>(args_count() - 1));
+      */
     }
 
    private:
@@ -169,16 +180,28 @@ class TraceStorage {
     inline size_t AddSlice(uint32_t cpu,
                            int64_t start_ns,
                            int64_t duration_ns,
-                           UniqueTid utid) {
+                           UniqueTid utid,
+                           ftrace_utils::TaskState end_state,
+                           int32_t priority) {
       cpus_.emplace_back(cpu);
       start_ns_.emplace_back(start_ns);
       durations_.emplace_back(duration_ns);
       utids_.emplace_back(utid);
+      end_states_.emplace_back(end_state);
+      priorities_.emplace_back(priority);
+
+      if (utid >= rows_for_utids_.size())
+        rows_for_utids_.resize(utid + 1);
+      rows_for_utids_[utid].emplace_back(slice_count() - 1);
       return slice_count() - 1;
     }
 
     void set_duration(size_t index, int64_t duration_ns) {
       durations_[index] = duration_ns;
+    }
+
+    void set_end_state(size_t index, ftrace_utils::TaskState end_state) {
+      end_states_[index] = end_state;
     }
 
     size_t slice_count() const { return start_ns_.size(); }
@@ -191,6 +214,16 @@ class TraceStorage {
 
     const std::deque<UniqueTid>& utids() const { return utids_; }
 
+    const std::deque<ftrace_utils::TaskState>& end_state() const {
+      return end_states_;
+    }
+
+    const std::deque<int32_t>& priorities() const { return priorities_; }
+
+    const std::deque<std::vector<uint32_t>>& rows_for_utids() const {
+      return rows_for_utids_;
+    }
+
    private:
     // Each deque below has the same number of entries (the number of slices
     // in the trace for the CPU).
@@ -198,6 +231,11 @@ class TraceStorage {
     std::deque<int64_t> start_ns_;
     std::deque<int64_t> durations_;
     std::deque<UniqueTid> utids_;
+    std::deque<ftrace_utils::TaskState> end_states_;
+    std::deque<int32_t> priorities_;
+
+    // One row per utid.
+    std::deque<std::vector<uint32_t>> rows_for_utids_;
   };
 
   class NestableSlices {
@@ -520,14 +558,18 @@ class TraceStorage {
 
   // |unique_processes_| always contains at least 1 element becuase the 0th ID
   // is reserved to indicate an invalid process.
-  size_t process_count() const { return unique_processes_.size() - 1; }
+  size_t process_count() const { return unique_processes_.size(); }
 
   // |unique_threads_| always contains at least 1 element becuase the 0th ID
   // is reserved to indicate an invalid thread.
-  size_t thread_count() const { return unique_threads_.size() - 1; }
+  size_t thread_count() const { return unique_threads_.size(); }
 
   // Number of interned strings in the pool. Includes the empty string w/ ID=0.
   size_t string_count() const { return string_pool_.size(); }
+
+  // Start / end ts (in nanoseconds) across the parsed trace events.
+  // Returns (0, 0) if the trace is empty.
+  std::pair<int64_t, int64_t> GetTraceTimestampBoundsNs() const;
 
  private:
   TraceStorage& operator=(const TraceStorage&) = default;

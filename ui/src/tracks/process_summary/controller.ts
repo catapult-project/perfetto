@@ -33,7 +33,6 @@ class ProcessSummaryTrackController extends TrackController<Config, Data> {
     this.update(start, end, resolution);
   }
 
-
   private async update(start: number, end: number, resolution: number):
       Promise<void> {
     // TODO: we should really call TraceProcessor.Interrupt() at this point.
@@ -46,9 +45,14 @@ class ProcessSummaryTrackController extends TrackController<Config, Data> {
     if (this.setup === false) {
       await this.query(
           `create virtual table ${this.tableName('window')} using window;`);
-      const threadQuery = await this.query(
-          `select utid from thread where upid=${this.config.upid}`);
-      const utids = threadQuery.columns[0].longValues! as number[];
+
+      let utids = [this.config.utid];
+      if (this.config.upid) {
+        const threadQuery = await this.query(
+            `select utid from thread where upid=${this.config.upid}`);
+        utids = threadQuery.columns[0].longValues! as number[];
+      }
+
       const processSliceView = this.tableName('process_slice_view');
       await this.query(
           `create view ${processSliceView} as ` +

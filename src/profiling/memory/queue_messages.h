@@ -43,9 +43,18 @@ struct FreeRecord {
   FreeMetadata* metadata;
 };
 
+// A wrapper of libunwindstack FrameData that also includes the build_id.
+struct FrameData {
+  FrameData(unwindstack::FrameData f, std::string b)
+      : frame(std::move(f)), build_id(std::move(b)) {}
+
+  unwindstack::FrameData frame;
+  std::string build_id;
+};
+
 struct AllocRecord {
   AllocMetadata alloc_metadata;
-  std::vector<unwindstack::FrameData> frames;
+  std::vector<FrameData> frames;
 };
 
 struct DumpRecord {
@@ -61,6 +70,7 @@ struct BookkeepingRecord {
     Free = 2,
   };
   pid_t pid;
+  uint64_t client_generation;
   // TODO(fmayer): Use a union.
   Type record_type;
   AllocRecord alloc_record;

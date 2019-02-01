@@ -83,6 +83,10 @@ class BorrowedSocket {
 // free separately, so we batch and send the whole buffer once it is full.
 class FreePage {
  public:
+  FreePage(uint64_t client_generation) {
+    free_page_.client_generation = client_generation;
+  }
+
   // Add address to buffer. Flush if necessary using a socket borrowed from
   // pool.
   // Can be called from any thread. Must not hold mutex_.`
@@ -130,11 +134,11 @@ class Client {
  public:
   Client(std::vector<base::UnixSocketRaw> sockets);
   Client(const std::string& sock_name, size_t conns);
-  void RecordMalloc(uint64_t alloc_size,
+  bool RecordMalloc(uint64_t alloc_size,
                     uint64_t total_size,
                     uint64_t alloc_address);
-  void RecordFree(uint64_t alloc_address);
-  void MaybeSampleAlloc(uint64_t alloc_size,
+  bool RecordFree(uint64_t alloc_address);
+  bool MaybeSampleAlloc(uint64_t alloc_size,
                         uint64_t alloc_address,
                         void* (*unhooked_malloc)(size_t),
                         void (*unhooked_free)(void*));
@@ -144,10 +148,13 @@ class Client {
   bool inited() { return inited_; }
 
  private:
-  size_t ShouldSampleAlloc(uint64_t alloc_size,
-                           void* (*unhooked_malloc)(size_t),
-                           void (*unhooked_free)(void*));
+  ssize_t ShouldSampleAlloc(uint64_t alloc_size,
+                            void* (*unhooked_malloc)(size_t),
+                            void (*unhooked_free)(void*));
   const char* GetStackBase();
+
+  static std::atomic<uint64_t> max_generation_;
+  const uint64_t generation_;
 
   std::atomic<bool> inited_{false};
   ClientConfiguration client_config_;

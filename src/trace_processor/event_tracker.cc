@@ -16,6 +16,7 @@
 
 #include "src/trace_processor/event_tracker.h"
 #include "perfetto/base/utils.h"
+#include "src/trace_processor/ftrace_utils.h"
 #include "src/trace_processor/process_tracker.h"
 #include "src/trace_processor/stats.h"
 #include "src/trace_processor/trace_processor_context.h"
@@ -38,9 +39,10 @@ StringId EventTracker::GetThreadNameId(uint32_t tid, base::StringView comm) {
 void EventTracker::PushSchedSwitch(uint32_t cpu,
                                    int64_t timestamp,
                                    uint32_t prev_pid,
-                                   uint32_t,
+                                   int64_t prev_state,
                                    uint32_t next_pid,
-                                   base::StringView next_comm) {
+                                   base::StringView next_comm,
+                                   int32_t next_priority) {
   // At this stage all events should be globally timestamp ordered.
   if (timestamp < prev_timestamp_) {
     PERFETTO_ELOG("sched_switch event out of order by %.4f ms, skipping",
@@ -54,15 +56,21 @@ void EventTracker::PushSchedSwitch(uint32_t cpu,
   auto* slices = context_->storage->mutable_slices();
   auto* pending_slice = &pending_sched_per_cpu_[cpu];
   if (pending_slice->storage_index < std::numeric_limits<size_t>::max()) {
-    // If the this events previous pid does not match the previous event's next
-    // pid, make a note of this.
-    if (prev_pid != pending_slice->pid) {
-      context_->storage->IncrementStats(stats::mismatched_sched_switch_tids);
-    }
-
     size_t idx = pending_slice->storage_index;
     int64_t duration = timestamp - slices->start_ns()[idx];
     slices->set_duration(idx, duration);
+
+    if (prev_pid == pending_slice->pid) {
+      // We store the state as a uint16 as we only consider values up to 2048
+      // when unpacking the information inside; this allows savings of 48 bits
+      // per slice.
+      slices->set_end_state(
+          idx, ftrace_utils::TaskState(static_cast<uint16_t>(prev_state)));
+    } else {
+      // If the this events previous pid does not match the previous event's
+      // next pid, make a note of this.
+      context_->storage->IncrementStats(stats::mismatched_sched_switch_tids);
+    }
   }
 
   StringId name_id = GetThreadNameId(next_pid, next_comm);
@@ -70,7 +78,8 @@ void EventTracker::PushSchedSwitch(uint32_t cpu,
       context_->process_tracker->UpdateThread(timestamp, next_pid, name_id);
 
   pending_slice->storage_index =
-      slices->AddSlice(cpu, timestamp, 0 /* duration */, utid);
+      slices->AddSlice(cpu, timestamp, 0 /* duration */, utid,
+                       ftrace_utils::TaskState(), next_priority);
   pending_slice->pid = next_pid;
 }
 

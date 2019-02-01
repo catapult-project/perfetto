@@ -41,11 +41,7 @@ class StorageColumn {
   virtual ~StorageColumn();
 
   // Implements StorageCursor::ColumnReporter.
-  virtual void ReportResult(sqlite3_context*, uint32_t) const = 0;
-
-  // Bounds a filter on this column between a minimum and maximum index.
-  // Generally this is only possible if the column is sorted.
-  virtual Bounds BoundFilter(int op, sqlite3_value* value) const = 0;
+  virtual void ReportResult(sqlite3_context*, uint32_t row) const = 0;
 
   // Given a SQLite operator and value for the comparision, returns a
   // predicate which takes in a row index and returns whether the row should
@@ -59,8 +55,12 @@ class StorageColumn {
   // Returns the type of this column.
   virtual Table::ColumnType GetType() const = 0;
 
+  // Bounds a filter on this column between a minimum and maximum index.
+  // Generally this is only possible if the column is sorted.
+  virtual Bounds BoundFilter(int, sqlite3_value*) const { return Bounds{}; }
+
   // Returns whether this column is sorted in the storage.
-  virtual bool IsNaturallyOrdered() const = 0;
+  virtual bool IsNaturallyOrdered() const { return false; }
 
   const std::string& name() const { return col_name_; }
   bool hidden() const { return hidden_; }
@@ -74,12 +74,16 @@ class StorageColumn {
 template <typename T>
 class NumericColumn : public StorageColumn {
  public:
+  // |index| is an optional multimap which maps the values in deque
+  // to the rows they are located at.
   NumericColumn(std::string col_name,
                 const std::deque<T>* deque,
+                const std::deque<std::vector<uint32_t>>* index,
                 bool hidden,
                 bool is_naturally_ordered)
       : StorageColumn(col_name, hidden),
         deque_(deque),
+        index_(index),
         is_naturally_ordered_(is_naturally_ordered) {}
 
   void ReportResult(sqlite3_context* ctx, uint32_t row) const override {
@@ -127,6 +131,14 @@ class NumericColumn : public StorageColumn {
               sqlite3_value* value,
               FilteredRowIndex* index) const override {
     auto type = sqlite3_value_type(value);
+
+    // If we are doing equality filtering on integers, try and use the index.
+    bool is_int_compare = std::is_integral<T>::value && type == SQLITE_INTEGER;
+    if (sqlite_utils::IsOpEq(op) && is_int_compare && index_ != nullptr) {
+      FilterIntegerIndexEq(value, index);
+      return;
+    }
+
     bool is_null = type == SQLITE_NULL;
     if (std::is_integral<T>::value && (type == SQLITE_INTEGER || is_null)) {
       FilterWithCast<int64_t>(op, value, index);
@@ -166,16 +178,27 @@ class NumericColumn : public StorageColumn {
 
  protected:
   const std::deque<T>* deque_ = nullptr;
+  const std::deque<std::vector<uint32_t>>* index_ = nullptr;
 
  private:
   T kTMin = std::numeric_limits<T>::lowest();
   T kTMax = std::numeric_limits<T>::max();
 
+  void FilterIntegerIndexEq(sqlite3_value* value,
+                            FilteredRowIndex* index) const {
+    auto raw = sqlite_utils::ExtractSqliteValue<int64_t>(value);
+    if (raw < 0 || raw >= static_cast<int64_t>(index_->size())) {
+      index->IntersectRows({});
+      return;
+    }
+    index->IntersectRows((*index_)[static_cast<size_t>(raw)]);
+  }
+
   template <typename C>
   void FilterWithCast(int op,
                       sqlite3_value* value,
                       FilteredRowIndex* index) const {
-    auto predicate = sqlite_utils::CreatePredicate<C>(op, value);
+    auto predicate = sqlite_utils::CreateNumericPredicate<C>(op, value);
     index->FilterRows([this, &predicate](uint32_t row) {
       return predicate(static_cast<C>((*deque_)[row]));
     });
@@ -284,7 +307,7 @@ class IdColumn final : public StorageColumn {
   void Filter(int op,
               sqlite3_value* value,
               FilteredRowIndex* index) const override {
-    auto predicate = sqlite_utils::CreatePredicate<RowId>(op, value);
+    auto predicate = sqlite_utils::CreateNumericPredicate<RowId>(op, value);
     index->FilterRows([this, &predicate](uint32_t row) {
       return predicate(TraceStorage::CreateRowId(table_id_, row));
     });
@@ -314,39 +337,6 @@ class IdColumn final : public StorageColumn {
  private:
   TableId table_id_;
 };
-
-template <typename T>
-inline std::unique_ptr<TsEndColumn> TsEndPtr(std::string column_name,
-                                             const std::deque<T>* ts_start,
-                                             const std::deque<T>* ts_end) {
-  return std::unique_ptr<TsEndColumn>(
-      new TsEndColumn(column_name, ts_start, ts_end));
-}
-
-template <typename T>
-inline std::unique_ptr<NumericColumn<T>> NumericColumnPtr(
-    std::string column_name,
-    const std::deque<T>* deque,
-    bool hidden = false,
-    bool is_naturally_ordered = false) {
-  return std::unique_ptr<NumericColumn<T>>(
-      new NumericColumn<T>(column_name, deque, hidden, is_naturally_ordered));
-}
-
-template <typename Id>
-inline std::unique_ptr<StringColumn<Id>> StringColumnPtr(
-    std::string column_name,
-    const std::deque<Id>* deque,
-    const std::deque<std::string>* lookup_map,
-    bool hidden = false) {
-  return std::unique_ptr<StringColumn<Id>>(
-      new StringColumn<Id>(column_name, deque, lookup_map, hidden));
-}
-
-inline std::unique_ptr<IdColumn> IdColumnPtr(std::string column_name,
-                                             TableId table_id) {
-  return std::unique_ptr<IdColumn>(new IdColumn(column_name, table_id));
-}
 
 }  // namespace trace_processor
 }  // namespace perfetto

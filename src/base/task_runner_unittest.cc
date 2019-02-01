@@ -21,7 +21,7 @@
 #include "perfetto/base/scoped_file.h"
 
 #if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID) && \
-    !PERFETTO_BUILDFLAG(PERFETTO_CHROMIUM_BUILD)
+    !PERFETTO_BUILDFLAG(PERFETTO_EMBEDDER_BUILD)
 #include "perfetto/base/android_task_runner.h"
 #endif
 
@@ -41,7 +41,7 @@ class TaskRunnerTest : public ::testing::Test {
 };
 
 #if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID) && \
-    !PERFETTO_BUILDFLAG(PERFETTO_CHROMIUM_BUILD)
+    !PERFETTO_BUILDFLAG(PERFETTO_EMBEDDER_BUILD)
 using TaskRunnerTypes = ::testing::Types<AndroidTaskRunner, UnixTaskRunner>;
 #else
 using TaskRunnerTypes = ::testing::Types<UnixTaskRunner>;
@@ -356,6 +356,22 @@ TYPED_TEST(TaskRunnerTest, IsIdleForTesting) {
     task_runner.Quit();
   });
   task_runner.Run();
+}
+
+TYPED_TEST(TaskRunnerTest, RunsTasksOnCurrentThread) {
+  auto& main_tr = this->task_runner;
+
+  EXPECT_TRUE(main_tr.RunsTasksOnCurrentThread());
+  std::thread thread([&main_tr] {
+    typename std::remove_reference<decltype(main_tr)>::type second_tr;
+    second_tr.PostTask([&main_tr, &second_tr] {
+      EXPECT_FALSE(main_tr.RunsTasksOnCurrentThread());
+      EXPECT_TRUE(second_tr.RunsTasksOnCurrentThread());
+      second_tr.Quit();
+    });
+    second_tr.Run();
+  });
+  thread.join();
 }
 
 }  // namespace
