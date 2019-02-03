@@ -26,6 +26,7 @@ import {NUM, NUM_NULL, rawQueryToRows, STR_NULL} from '../common/protos';
 import {SCROLLING_TRACK_GROUP} from '../common/state';
 import {TimeSpan} from '../common/time';
 import {QuantizedLoad, ThreadDesc} from '../frontend/globals';
+import {ANDROID_LOGS_TRACK_KIND} from '../tracks/android_log/common';
 import {SLICE_TRACK_KIND} from '../tracks/chrome_slices/common';
 import {CPU_FREQ_TRACK_KIND} from '../tracks/cpu_freq/common';
 import {CPU_SLICE_TRACK_KIND} from '../tracks/cpu_slices/common';
@@ -444,6 +445,18 @@ export class TraceController extends Controller<States> {
         }));
       }
     }
+
+    const logCount = await engine.query(`select count(1) from android_logs`);
+    if (logCount.columns[0].longValues![0] > 0) {
+      addToTrackActions.push(Actions.addTrack({
+        engineId: this.engineId,
+        kind: ANDROID_LOGS_TRACK_KIND,
+        name: 'Android logs',
+        trackGroup: SCROLLING_TRACK_GROUP,
+        config: {}
+      }));
+    }
+
     const allActions =
         addSummaryTrackActions.concat(addTrackGroupActions, addToTrackActions);
     globals.dispatchMultiple(allActions);
@@ -452,7 +465,9 @@ export class TraceController extends Controller<States> {
   private async listThreads() {
     this.updateStatus('Reading thread list');
     const sqlQuery = `select utid, tid, pid, thread.name,
-        ifnull(process.name, thread.name)
+        ifnull(
+          case when length(process.name) > 0 then process.name else null end,
+          thread.name)
         from thread left join process using(upid)`;
     const threadRows = await assertExists(this.engine).query(sqlQuery);
     const threads: ThreadDesc[] = [];
