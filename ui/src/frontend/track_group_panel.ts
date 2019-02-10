@@ -22,6 +22,7 @@ import {globals} from './globals';
 import {drawGridLines} from './gridline_helper';
 import {Panel, PanelSize} from './panel';
 import {Track} from './track';
+import {TrackContent} from './track_panel';
 import {trackRegistry} from './track_registry';
 
 
@@ -65,14 +66,16 @@ export class TrackGroupPanel extends Panel<Attrs> {
             m.trust('&#x200E;')),
           m('.fold-button',
             {
-              onclick: () =>
-                  globals.dispatch(Actions.toggleTrackGroupCollapsed({
-                    trackGroupId: attrs.trackGroupId,
-                  })),
+              onclick: (e:MouseEvent) => {
+                globals.dispatch(Actions.toggleTrackGroupCollapsed({
+                  trackGroupId: attrs.trackGroupId,
+                })),
+                e.stopPropagation();
+              }
             },
             m('i.material-icons',
-              this.trackGroupState.collapsed ? 'expand_more' :
-                                               'expand_less'))));
+              this.trackGroupState.collapsed ? 'expand_more' : 'expand_less'))),
+        m(TrackContent, {track: this.summaryTrack}), );
   }
 
   oncreate(vnode: m.CVnodeDOM<Attrs>) {

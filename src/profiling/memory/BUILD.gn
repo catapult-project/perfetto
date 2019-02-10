@@ -48,6 +48,30 @@ source_set("proc_utils") {
   ]
 }
 
+source_set("ring_buffer") {
+  deps = [
+    "../../../gn:default_deps",
+    "../../base",
+  ]
+  sources = [
+    "shared_ring_buffer.cc",
+    "shared_ring_buffer.ch",
+  ]
+}
+
+source_set("ring_buffer_unittests") {
+  testonly = true
+  deps = [
+    ":ring_buffer",
+    "../../../gn:default_deps",
+    "../../../gn:gtest_deps",
+    "../../base",
+  ]
+  sources = [
+    "shared_ring_buffer_unittest.cc",
+  ]
+}
+
 source_set("daemon") {
   public_configs = [ "../../../buildtools:libunwindstack_config" ]
   deps = [
@@ -179,6 +203,17 @@ perfetto_fuzzer_test("unwinding_fuzzer") {
   deps = [
     ":daemon",
     ":wire_protocol",
+    "../../../gn:default_deps",
+    "../../../src/base",
+  ]
+}
+
+perfetto_fuzzer_test("shared_ring_buffer_fuzzer") {
+  sources = [
+    "shared_ring_buffer_fuzzer.cc",
+  ]
+  deps = [
+    ":ring_buffer",
     "../../../gn:default_deps",
     "../../../src/base",
   ]

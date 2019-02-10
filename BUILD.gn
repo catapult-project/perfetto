@@ -63,6 +63,7 @@ group("all") {
       deps += [
         ":perfetto_benchmarks",
         ":trace_processor",
+        "src/profiling/memory:ring_buffer",
         "src/tracing:consumer_api_test",
         "test/configs",
         "tools/ftrace_proto_gen:ftrace_proto_gen",
@@ -119,6 +120,7 @@ test("perfetto_unittests") {
     deps += [
       "src/ipc:unittests",
       "src/perfetto_cmd:unittests",
+      "src/profiling/memory:ring_buffer_unittests",
       "src/traced/probes:unittests",
       "src/traced/probes/filesystem:unittests",
       "src/traced/probes/ftrace:unittests",
@@ -272,6 +274,7 @@ if (perfetto_build_standalone) {
     testonly = true
     deps = [
       "src/ipc:buffered_frame_deserializer_fuzzer",
+      "src/profiling/memory:shared_ring_buffer_fuzzer",
       "src/profiling/memory:unwinding_fuzzer",
       "src/traced/probes/ftrace:cpu_reader_fuzzer",
       "test:end_to_end_shared_memory_fuzzer",

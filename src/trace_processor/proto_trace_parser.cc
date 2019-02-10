@@ -230,7 +230,7 @@ ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
     ftrace_strings.message_name_id =
         context->storage->InternString(descriptor->name);
 
-    for (size_t fid = 0; fid < descriptor->max_field_id; fid++) {
+    for (size_t fid = 0; fid <= descriptor->max_field_id; fid++) {
       const auto& field = descriptor->fields[fid];
       if (!field.name)
         continue;
@@ -785,8 +785,8 @@ void ProtoTraceParser::ParseLowmemoryKill(int64_t timestamp,
   // Storing the pid of the event that is lmk-ed.
   auto* instants = context_->storage->mutable_instants();
   UniquePid upid = context_->process_tracker->UpdateProcess(pid);
-  uint32_t row =
-      instants->AddInstantEvent(timestamp, lmk_id_, 0, upid, RefType::kRefUpid);
+  uint32_t row = instants->AddInstantEvent(timestamp, lmk_id_, 0, upid,
+                                           RefType::kRefUtidLookupUpid);
 
   // Store the comm as an arg.
   RowId row_id = TraceStorage::CreateRowId(TableId::kInstants, row);
@@ -1473,6 +1473,12 @@ void ProtoTraceParser::ParseTraceStats(TraceBlobView packet) {
         break;
       case protos::TraceStats::kTotalBuffersFieldNumber:
         storage->SetStats(stats::traced_total_buffers, fld.as_int64());
+        break;
+      case protos::TraceStats::kChunksDiscardedFieldNumber:
+        storage->SetStats(stats::traced_chunks_discarded, fld.as_int64());
+        break;
+      case protos::TraceStats::kPatchesDiscardedFieldNumber:
+        storage->SetStats(stats::traced_patches_discarded, fld.as_int64());
         break;
       case protos::TraceStats::kBufferStatsFieldNumber: {
         const size_t fld_off = packet.offset_of(fld.data());

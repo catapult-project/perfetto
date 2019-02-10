@@ -118,10 +118,8 @@ class TrackShell implements m.ClassComponent<TrackShellAttrs> {
   }
 }
 
-interface TrackContentAttrs {
-  track: Track;
-}
-class TrackContent implements m.ClassComponent<TrackContentAttrs> {
+export interface TrackContentAttrs { track: Track; }
+export class TrackContent implements m.ClassComponent<TrackContentAttrs> {
   view({attrs}: m.CVnode<TrackContentAttrs>) {
     return m('.track-content', {
       onmousemove: (e: MouseEvent) => {
@@ -133,7 +131,9 @@ class TrackContent implements m.ClassComponent<TrackContentAttrs> {
         globals.rafScheduler.scheduleRedraw();
       },
       onclick: (e:MouseEvent) => {
-        attrs.track.onMouseClick({x: e.layerX, y: e.layerY});
+        if (attrs.track.onMouseClick({x: e.layerX, y: e.layerY})) {
+          e.stopPropagation();
+        }
         globals.rafScheduler.scheduleRedraw();
       }
     });

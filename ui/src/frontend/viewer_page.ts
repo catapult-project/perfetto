@@ -33,8 +33,10 @@ import {computeZoom} from './time_scale';
 import {TRACK_SHELL_WIDTH} from './track_constants';
 import {TrackGroupPanel} from './track_group_panel';
 import {TrackPanel} from './track_panel';
+import {Actions} from '../common/actions';
 
 const DRAG_HANDLE_HEIGHT_PX = 12;
+const DEFAULT_DETAILS_HEIGHT_PX = 250 + DRAG_HANDLE_HEIGHT_PX;
 
 class QueryTable extends Panel {
   view() {
@@ -148,6 +150,10 @@ class TraceViewer implements m.ClassComponent {
   private onResize: () => void = () => {};
   private zoomContent?: PanAndZoomHandler;
   private detailsHeight = DRAG_HANDLE_HEIGHT_PX;
+  // Used to set details panel to default height on selection.
+  private showDetailsPanel = false;
+  // Used to prevent global deselection if a pan occurred.
+  private panOccurred = false;
 
   oncreate(vnode: m.CVnodeDOM) {
     const frontendLocalState = globals.frontendLocalState;
@@ -175,6 +181,7 @@ class TraceViewer implements m.ClassComponent {
       element: panZoomEl,
       contentOffsetX: TRACK_SHELL_WIDTH,
       onPanned: (pannedPx: number) => {
+        this.panOccurred = true;
         const traceTime = globals.state.traceTime;
         const vizTime = globals.frontendLocalState.visibleWindowTime;
         const origDelta = vizTime.duration;
@@ -236,6 +243,10 @@ class TraceViewer implements m.ClassComponent {
 
     const detailsPanels: AnyAttrsVnode[] = [];
     if (globals.state.currentSelection) {
+      if (!this.showDetailsPanel) {
+        this.detailsHeight = DEFAULT_DETAILS_HEIGHT_PX;
+        this.showDetailsPanel = true;
+      }
       switch (globals.state.currentSelection.kind) {
         case 'NOTE':
           detailsPanels.push(m(NotesEditorPanel, {
@@ -252,11 +263,26 @@ class TraceViewer implements m.ClassComponent {
         default:
           break;
       }
+    } else {
+      // No current selection so hide the details panel.
+      if (this.showDetailsPanel) {
+        this.showDetailsPanel = false;
+        this.detailsHeight = DRAG_HANDLE_HEIGHT_PX;
+      }
     }
 
     return m(
         '.page',
-        m('.pan-and-zoom-content',
+        m('.pan-and-zoom-content', {
+          onclick: () =>
+          {
+            // We don't want to deselect when panning.
+            if (this.panOccurred) {
+              this.panOccurred = false;
+              return;
+            }
+            globals.dispatch(Actions.deselect({}));
+          }},
           m('.pinned-panel-container', m(PanelContainer, {
               doesScroll: false,
               panels: [
@@ -279,7 +305,8 @@ class TraceViewer implements m.ClassComponent {
             },
             height: this.detailsHeight,
           }),
-          m(PanelContainer, {doesScroll: true, panels: detailsPanels}), ));
+          m('.details-panel-container', m(PanelContainer,
+            {doesScroll: true, panels: detailsPanels}))));
   }
 }
 
