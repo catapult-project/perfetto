@@ -26,6 +26,7 @@
 #include "perfetto/base/utils.h"
 #include "perfetto/protozero/proto_decoder.h"
 #include "perfetto/traced/sys_stats_counters.h"
+#include "src/trace_processor/args_tracker.h"
 #include "src/trace_processor/clock_tracker.h"
 #include "src/trace_processor/event_tracker.h"
 #include "src/trace_processor/ftrace_descriptors.h"
@@ -215,6 +216,29 @@ ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
       context->storage->InternString("mem.mm.kern_alloc.count"),
       context->storage->InternString("mem.mm.kern_alloc.max_lat"),
       context->storage->InternString("mem.mm.kern_alloc.avg_lat"));
+
+  // Build the lookup table for the strings inside ftrace events (e.g. the
+  // name of ftrace event fields and the names of their args).
+  for (size_t i = 0; i < GetDescriptorsSize(); i++) {
+    auto* descriptor = GetMessageDescriptorForId(i);
+    if (!descriptor->name) {
+      ftrace_message_strings_.emplace_back();
+      continue;
+    }
+
+    FtraceMessageStrings ftrace_strings;
+    ftrace_strings.message_name_id =
+        context->storage->InternString(descriptor->name);
+
+    for (size_t fid = 0; fid <= descriptor->max_field_id; fid++) {
+      const auto& field = descriptor->fields[fid];
+      if (!field.name)
+        continue;
+      ftrace_strings.field_name_ids[fid] =
+          context->storage->InternString(field.name);
+    }
+    ftrace_message_strings_.emplace_back(ftrace_strings);
+  }
 }
 
 ProtoTraceParser::~ProtoTraceParser() = default;
@@ -273,6 +297,11 @@ void ProtoTraceParser::ParseTracePacket(int64_t ts, TraceBlobView packet) {
         break;
     }
   }
+  // TODO(lalitm): maybe move this to the flush method in the trace processor
+  // once we have it. This may reduce performance in the ArgsTracker though so
+  // needs to be handled carefully.
+  context_->args_tracker->Flush();
+
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
 
@@ -622,16 +651,13 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
       continue;
 
     const size_t fld_off = ftrace.offset_of(fld.data());
-    // TODO(b/123252504): don't parse raw events for now.
-    /*
     if (fld.id == protos::FtraceEvent::kGenericFieldNumber) {
       ParseGenericFtrace(timestamp, cpu, pid,
                          ftrace.slice(fld_off, fld.size()));
-    } else {
+    } else if (fld.id != protos::FtraceEvent::kSchedSwitchFieldNumber) {
       ParseTypedFtraceToRaw(fld.id, timestamp, cpu, pid,
                             ftrace.slice(fld_off, fld.size()));
     }
-    */
 
     switch (fld.id) {
       case protos::FtraceEvent::kSchedSwitchFieldNumber: {
@@ -689,6 +715,11 @@ void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
         break;
     }
   }
+  // TODO(lalitm): maybe move this to the flush method in the trace processor
+  // once we have it. This may reduce performance in the ArgsTracker though so
+  // needs to be handled carefully.
+  context_->args_tracker->Flush();
+
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
 
@@ -754,14 +785,14 @@ void ProtoTraceParser::ParseLowmemoryKill(int64_t timestamp,
   // Storing the pid of the event that is lmk-ed.
   auto* instants = context_->storage->mutable_instants();
   UniquePid upid = context_->process_tracker->UpdateProcess(pid);
-  uint32_t row =
-      instants->AddInstantEvent(timestamp, lmk_id_, 0, upid, RefType::kRefUpid);
+  uint32_t row = instants->AddInstantEvent(timestamp, lmk_id_, 0, upid,
+                                           RefType::kRefUtidLookupUpid);
 
   // Store the comm as an arg.
   RowId row_id = TraceStorage::CreateRowId(TableId::kInstants, row);
   auto comm_id = context_->storage->InternString(comm);
-  context_->storage->mutable_args()->AddArg(
-      row_id, comm_name_id_, comm_name_id_, Variadic::String(comm_id));
+  context_->args_tracker->AddArg(row_id, comm_name_id_, comm_name_id_,
+                                 Variadic::String(comm_id));
 }
 
 void ProtoTraceParser::ParseRssStat(int64_t timestamp,
@@ -895,7 +926,9 @@ void ProtoTraceParser::ParseSchedSwitch(uint32_t cpu,
                                         TraceBlobView sswitch) {
   ProtoDecoder decoder(sswitch.data(), sswitch.length());
 
+  base::StringView prev_comm;
   uint32_t prev_pid = 0;
+  int32_t prev_prio = 0;
   int64_t prev_state = 0;
   base::StringView next_comm;
   uint32_t next_pid = 0;
@@ -907,6 +940,12 @@ void ProtoTraceParser::ParseSchedSwitch(uint32_t cpu,
         break;
       case protos::SchedSwitchFtraceEvent::kPrevStateFieldNumber:
         prev_state = fld.as_int64();
+        break;
+      case protos::SchedSwitchFtraceEvent::kPrevCommFieldNumber:
+        prev_comm = fld.as_string();
+        break;
+      case protos::SchedSwitchFtraceEvent::kPrevPrioFieldNumber:
+        prev_prio = fld.as_int32();
         break;
       case protos::SchedSwitchFtraceEvent::kNextPidFieldNumber:
         next_pid = fld.as_uint32();
@@ -921,8 +960,9 @@ void ProtoTraceParser::ParseSchedSwitch(uint32_t cpu,
         break;
     }
   }
-  context_->event_tracker->PushSchedSwitch(cpu, timestamp, prev_pid, prev_state,
-                                           next_pid, next_comm, next_prio);
+  context_->event_tracker->PushSchedSwitch(cpu, timestamp, prev_pid, prev_comm,
+                                           prev_prio, prev_state, next_pid,
+                                           next_comm, next_prio);
   PERFETTO_DCHECK(decoder.IsEndOfBuffer());
 }
 
@@ -1132,16 +1172,15 @@ void ProtoTraceParser::ParseGenericFtraceField(RowId generic_row_id,
     switch (fld.id) {
       case protos::GenericFtraceEvent::Field::kIntValue:
       case protos::GenericFtraceEvent::Field::kUintValue: {
-        context_->storage->mutable_args()->AddArg(
-            generic_row_id, field_name_id, field_name_id,
-            Variadic::Integer(fld.as_integer()));
+        context_->args_tracker->AddArg(generic_row_id, field_name_id,
+                                       field_name_id,
+                                       Variadic::Integer(fld.as_integer()));
         break;
       }
       case protos::GenericFtraceEvent::Field::kStrValue: {
         StringId value = context_->storage->InternString(fld.as_string());
-        context_->storage->mutable_args()->AddArg(generic_row_id, field_name_id,
-                                                  field_name_id,
-                                                  Variadic::String(value));
+        context_->args_tracker->AddArg(generic_row_id, field_name_id,
+                                       field_name_id, Variadic::String(value));
       }
     }
   }
@@ -1158,13 +1197,15 @@ void ProtoTraceParser::ParseTypedFtraceToRaw(uint32_t ftrace_id,
                   ftrace_id);
     return;
   }
+
   MessageDescriptor* m = GetMessageDescriptorForId(ftrace_id);
+  const auto& message_strings = ftrace_message_strings_[ftrace_id];
   UniqueTid utid = context_->process_tracker->UpdateThread(timestamp, tid, 0);
   RowId raw_event_id = context_->storage->mutable_raw_events()->AddRawEvent(
-      timestamp, context_->storage->InternString(m->name), cpu, utid);
+      timestamp, message_strings.message_name_id, cpu, utid);
   for (auto fld = decoder.ReadField(); fld.id != 0; fld = decoder.ReadField()) {
     ProtoSchemaType type = m->fields[fld.id].type;
-    StringId name_id = context_->storage->InternString(m->fields[fld.id].name);
+    StringId name_id = message_strings.field_name_ids[fld.id];
     switch (type) {
       case ProtoSchemaType::kUint32:
       case ProtoSchemaType::kInt32:
@@ -1178,22 +1219,21 @@ void ProtoTraceParser::ParseTypedFtraceToRaw(uint32_t ftrace_id,
       case ProtoSchemaType::kSint64:
       case ProtoSchemaType::kBool:
       case ProtoSchemaType::kEnum: {
-        context_->storage->mutable_args()->AddArg(
-            raw_event_id, name_id, name_id,
-            Variadic::Integer(fld.as_integer()));
+        context_->args_tracker->AddArg(raw_event_id, name_id, name_id,
+                                       Variadic::Integer(fld.as_integer()));
         break;
       }
       case ProtoSchemaType::kString:
       case ProtoSchemaType::kBytes: {
         StringId value = context_->storage->InternString(fld.as_string());
-        context_->storage->mutable_args()->AddArg(
-            raw_event_id, name_id, name_id, Variadic::String(value));
+        context_->args_tracker->AddArg(raw_event_id, name_id, name_id,
+                                       Variadic::String(value));
         break;
       }
       case ProtoSchemaType::kDouble:
       case ProtoSchemaType::kFloat: {
-        context_->storage->mutable_args()->AddArg(
-            raw_event_id, name_id, name_id, Variadic::Real(fld.as_real()));
+        context_->args_tracker->AddArg(raw_event_id, name_id, name_id,
+                                       Variadic::Real(fld.as_real()));
         break;
       }
       case ProtoSchemaType::kUnknown:
@@ -1442,6 +1482,12 @@ void ProtoTraceParser::ParseTraceStats(TraceBlobView packet) {
         break;
       case protos::TraceStats::kTotalBuffersFieldNumber:
         storage->SetStats(stats::traced_total_buffers, fld.as_int64());
+        break;
+      case protos::TraceStats::kChunksDiscardedFieldNumber:
+        storage->SetStats(stats::traced_chunks_discarded, fld.as_int64());
+        break;
+      case protos::TraceStats::kPatchesDiscardedFieldNumber:
+        storage->SetStats(stats::traced_patches_discarded, fld.as_int64());
         break;
       case protos::TraceStats::kBufferStatsFieldNumber: {
         const size_t fld_off = packet.offset_of(fld.data());

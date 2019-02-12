@@ -15,31 +15,46 @@
 import * as m from 'mithril';
 import {globals} from './globals';
 import {Panel, PanelSize} from './panel';
-import { SliceSelection } from '../common/state';
 
 interface SliceDetailsPanelAttrs {
-  selection: SliceSelection;
+  utid: number;
 }
 
 export class SliceDetailsPanel extends Panel<SliceDetailsPanelAttrs> {
   view({attrs}: m.CVnode<SliceDetailsPanelAttrs>) {
-    const threadInfo = globals.threads.get(attrs.selection.utid);
+    const threadInfo = globals.threads.get(attrs.utid);
     const sliceInfo = globals.sliceDetails;
     if (threadInfo && sliceInfo.ts && sliceInfo.dur) {
       return m(
           '.slice-details-panel',
           m('.slice-details-panel-heading',
-            `Details for slice:`),
-          m('.slice-details-ul', [
-            m('ul', [
-              m('li', `PID: ${threadInfo.pid}`),
-              m('li', `Process name: ${threadInfo.procName}`),
-              m('li', `TID: ${threadInfo.tid}`),
-              m('li', `Thread name: ${threadInfo.threadName}`),
-              m('li', `Start time: ${sliceInfo.ts} s`),
-              m('li', `Duration: ${sliceInfo.dur} s`),
-              m('li', `Prio: ${sliceInfo.priority}`),
-              m('li', `End State: ${sliceInfo.endState}`),
+            `Slice Details:`),
+          m('.slice-details-table', [
+            m('table', [
+              m('tr',
+                m('td',`PID`),
+                m('td',`${threadInfo.pid}`)),
+              m('tr',
+                m('td',`Process name`),
+                m('td',`${threadInfo.procName}`)),
+              m('tr',
+                m('td',`TID`),
+                m('td',`${threadInfo.tid}`)),
+              m('tr',
+                m('td',`Thread name`),
+                m('td',`${threadInfo.threadName}`)),
+              m('tr',
+                m('td',`Start time`),
+                m('td',`${sliceInfo.ts} s`)),
+              m('tr',
+                m('td',`Duration`),
+                m('td',`${sliceInfo.dur} s`)),
+              m('tr',
+                m('td',`Prio`),
+                m('td',`${sliceInfo.priority}`)),
+              m('tr',
+                m('td',`End State`),
+                m('td',`${sliceInfo.endState}`))
             ])],
           ));
     }
@@ -47,7 +62,7 @@ export class SliceDetailsPanel extends Panel<SliceDetailsPanelAttrs> {
     return m(
       '.slice-details-panel',
       m('.slice-details-panel-heading',
-        `Details for slice: Unavailable`,
+        `Slice Details:`,
       ));
   }
 }

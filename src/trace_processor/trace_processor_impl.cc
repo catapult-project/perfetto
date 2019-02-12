@@ -24,11 +24,11 @@
 #include "perfetto/base/time.h"
 #include "src/trace_processor/android_logs_table.h"
 #include "src/trace_processor/args_table.h"
+#include "src/trace_processor/args_tracker.h"
 #include "src/trace_processor/clock_tracker.h"
 #include "src/trace_processor/counters_table.h"
 #include "src/trace_processor/event_tracker.h"
 #include "src/trace_processor/instants_table.h"
-#include "src/trace_processor/json_trace_parser.h"
 #include "src/trace_processor/process_table.h"
 #include "src/trace_processor/process_tracker.h"
 #include "src/trace_processor/proto_trace_parser.h"
@@ -48,19 +48,32 @@
 
 #include "perfetto/trace_processor/raw_query.pb.h"
 
+// JSON parsing is only supported in the standalone build.
+#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
+#include "src/trace_processor/json_trace_parser.h"
+#endif
+
+// In Android tree builds, we don't have the percentile module.
+// Just don't include it.
+#if !PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
 // defined in sqlite_src/ext/misc/percentile.c
 extern "C" int sqlite3_percentile_init(sqlite3* db,
                                        char** error,
                                        const sqlite3_api_routines* api);
+#endif
 
 namespace {
 void InitializeSqliteModules(sqlite3* db) {
+// In Android tree builds, we don't have the percentile module.
+// Just don't include it.
+#if !PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
   char* error = nullptr;
   sqlite3_percentile_init(db, &error, nullptr);
   if (error) {
     PERFETTO_ELOG("Error initializing: %s", error);
     sqlite3_free(error);
   }
+#endif
 }
 
 void CreateBuiltinTables(sqlite3* db) {
@@ -130,6 +143,7 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg) {
   db_.reset(std::move(db));
 
   context_.storage.reset(new TraceStorage());
+  context_.args_tracker.reset(new ArgsTracker(&context_));
   context_.slice_tracker.reset(new SliceTracker(&context_));
   context_.event_tracker.reset(new EventTracker(&context_));
   context_.proto_parser.reset(new ProtoTraceParser(&context_));
@@ -170,7 +184,11 @@ bool TraceProcessorImpl::Parse(std::unique_ptr<uint8_t[]> data, size_t size) {
     switch (trace_type) {
       case kJsonTraceType:
         PERFETTO_DLOG("Legacy JSON trace detected");
+#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
         context_.chunk_reader.reset(new JsonTraceParser(&context_));
+#else
+        PERFETTO_FATAL("JSON traces only supported in standalone mode.");
+#endif
         break;
       case kProtoTraceType:
         context_.chunk_reader.reset(new ProtoTraceTokenizer(&context_));

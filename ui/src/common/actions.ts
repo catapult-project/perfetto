@@ -279,8 +279,13 @@ export const StateActions = {
     state.displayConfigAsPbtxt = !state.displayConfigAsPbtxt;
   },
 
-  selectNote(state: StateDraft, args: {id: string | null}): void {
-    state.selectedNote = args.id;
+  selectNote(state: StateDraft, args: {id: string}): void {
+    if (args.id) {
+      state.currentSelection = {
+        kind: 'NOTE',
+        id: args.id
+      };
+    }
   },
 
   addNote(state: StateDraft, args: {timestamp: number}): void {
@@ -291,6 +296,7 @@ export const StateActions = {
       color: '#000000',
       text: '',
     };
+    this.selectNote(state, {id});
   },
 
   changeNoteColor(state: StateDraft, args: {id: string, newColor: string}):
@@ -308,15 +314,25 @@ export const StateActions = {
 
   removeNote(state: StateDraft, args: {id: string}): void {
     delete state.notes[args.id];
-    if (args.id === state.selectedNote) {
-      state.selectedNote = null;
+    if (state.currentSelection === null) return;
+    if (state.currentSelection.kind === 'NOTE' &&
+        state.currentSelection.id === args.id) {
+      state.currentSelection = null;
     }
   },
 
   selectSlice(state: StateDraft,
               args: {utid: number, id: number}): void {
-    state.selectedSlice = args;
+    state.currentSelection = {
+      kind: 'SLICE',
+      utid: args.utid,
+      id: args.id,
+    };
   },
+
+  deselect(state: StateDraft, _: {}): void {
+    state.currentSelection = null;
+  }
 
 };
 

@@ -43,6 +43,7 @@ export class NotesPanel extends Panel {
     });
     dom.addEventListener('mouseout', () => {
       this.hoveredX = null;
+      globals.frontendLocalState.setHoveredTimestamp(-1);
       globals.rafScheduler.scheduleRedraw();
     }, {passive: true});
   }
@@ -53,6 +54,7 @@ export class NotesPanel extends Panel {
         {
           onclick: (e: MouseEvent) => {
             this.onClick(e.layerX - TRACK_SHELL_WIDTH, e.layerY);
+            e.stopPropagation();
           },
         },
         m('.title', 'Notes'));
@@ -61,7 +63,7 @@ export class NotesPanel extends Panel {
   renderCanvas(ctx: CanvasRenderingContext2D, size: PanelSize) {
     const timeScale = globals.frontendLocalState.timeScale;
     const range = globals.frontendLocalState.visibleWindowTime;
-    let noteHovered = false;
+    let aNoteIsHovered = false;
 
     ctx.fillStyle = '#999';
     for (const xAndTime of gridlines(size.width, range, timeScale)) {
@@ -76,14 +78,16 @@ export class NotesPanel extends Panel {
       if (!timeScale.timeInBounds(timestamp)) continue;
       const x = timeScale.timeToPx(timestamp);
 
-      const isHovered =
+      const currentIsHovered =
           this.hoveredX && x <= this.hoveredX && this.hoveredX < x + FLAG_WIDTH;
-      const isSelected = globals.state.selectedNote === note.id;
+      const selection = globals.state.currentSelection;
+      const isSelected = selection !== null && selection.kind === 'NOTE' &&
+                         selection.id === note.id;
       const left = Math.floor(x + TRACK_SHELL_WIDTH);
 
       // Draw flag.
-      if (!noteHovered && isHovered) {
-        noteHovered = true;
+      if (!aNoteIsHovered && currentIsHovered) {
+        aNoteIsHovered = true;
         this.drawFlag(ctx, left, size.height, note.color, isSelected);
       } else if (isSelected) {
         this.drawFlag(ctx, left, size.height, note.color, /* fill */ true);
@@ -95,9 +99,14 @@ export class NotesPanel extends Panel {
       ctx.fillText(toSummary(note.text), left + 2, size.height - 1);
     }
 
-    if (this.hoveredX !== null && !noteHovered) {
+    // A real note is hovered so we don't need to see the preview line.
+    if (aNoteIsHovered) globals.frontendLocalState.setHoveredTimestamp(-1);
+
+    // View preview note flag when hovering on notes panel.
+    if (!aNoteIsHovered && this.hoveredX !== null) {
       const timestamp = timeScale.pxToTime(this.hoveredX);
       if (timeScale.timeInBounds(timestamp)) {
+        globals.frontendLocalState.setHoveredTimestamp(timestamp);
         const x = timeScale.timeToPx(timestamp);
         const left = Math.floor(x + TRACK_SHELL_WIDTH);
         this.drawFlag(ctx, left, size.height, '#aaa');
@@ -164,7 +173,7 @@ export class NotesEditorPanel extends Panel<NotesEditorPanelAttrs> {
             },
             'Remove'), ),
         m('textarea', {
-          rows: 20,
+          rows: 12,
           onkeydown: (e: Event) => {
             e.stopImmediatePropagation();
           },

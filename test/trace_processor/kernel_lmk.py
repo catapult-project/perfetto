@@ -1,3 +1,4 @@
+#!/usr/bin/python
 # Copyright (C) 2018 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,26 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-LOCAL_PATH:= $(call my-dir)
+from os import sys, path
 
-include $(CLEAR_VARS)
+sys.path.append(path.dirname(path.abspath(__file__)))
+import synth_common
 
-# tag this module as a cts test artifact
-LOCAL_COMPATIBILITY_SUITE := cts vts general-tests
+trace = synth_common.create_trace()
+trace.add_process_tree_packet()
+trace.add_process(pid=1, ppid=0, cmdline="init")
+trace.add_process(pid=2, ppid=1, cmdline="two_thread_process")
+trace.add_process(pid=4, ppid=1, cmdline="single_thread_process")
+trace.add_thread(tid=3, tgid=2, cmdline="two_thread_process")
 
-# Don't include this package in any target
-LOCAL_MODULE_TAGS := tests
+trace.add_ftrace_packet(0)
+trace.add_kernel_lmk(ts=100, tid=3)
+trace.add_kernel_lmk(ts=101, tid=4)
 
-LOCAL_MULTILIB := both
-
-LOCAL_SRC_FILES := $(call all-java-files-under, src)
-
-LOCAL_PACKAGE_NAME := CtsPerfettoProducerApp
-
-LOCAL_SDK_VERSION := current
-
-LOCAL_JNI_SHARED_LIBRARIES := \
-    libperfettocts_jni \
-    libnativehelper_compat_libc++
-
-include $(BUILD_PACKAGE)
+print(trace.trace.SerializeToString())

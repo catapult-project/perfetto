@@ -19,6 +19,7 @@ import {TrackState} from '../common/state';
 
 import {globals} from './globals';
 import {drawGridLines} from './gridline_helper';
+import {drawVerticalLine} from './vertical_line_helper';
 import {Panel, PanelSize} from './panel';
 import {Track} from './track';
 import {TRACK_SHELL_WIDTH} from './track_constants';
@@ -118,10 +119,8 @@ class TrackShell implements m.ClassComponent<TrackShellAttrs> {
   }
 }
 
-interface TrackContentAttrs {
-  track: Track;
-}
-class TrackContent implements m.ClassComponent<TrackContentAttrs> {
+export interface TrackContentAttrs { track: Track; }
+export class TrackContent implements m.ClassComponent<TrackContentAttrs> {
   view({attrs}: m.CVnode<TrackContentAttrs>) {
     return m('.track-content', {
       onmousemove: (e: MouseEvent) => {
@@ -133,7 +132,9 @@ class TrackContent implements m.ClassComponent<TrackContentAttrs> {
         globals.rafScheduler.scheduleRedraw();
       },
       onclick: (e:MouseEvent) => {
-        attrs.track.onMouseClick({x: e.layerX, y: e.layerY});
+        if (attrs.track.onMouseClick({x: e.layerX, y: e.layerY})) {
+          e.stopPropagation();
+        }
         globals.rafScheduler.scheduleRedraw();
       }
     });
@@ -210,5 +211,26 @@ export class TrackPanel extends Panel<TrackPanelAttrs> {
 
     this.track.renderCanvas(ctx);
     ctx.restore();
+
+    const localState = globals.frontendLocalState;
+    // Draw vertical line when hovering on the the notes panel.
+    if (localState.hoveredTimestamp !== -1) {
+      drawVerticalLine(ctx,
+                       localState.timeScale,
+                       localState.hoveredTimestamp,
+                       size.height,
+                       `#aaa`);
+    }
+
+    // Draw vertical line when a note is selected.
+    if (globals.state.currentSelection !== null &&
+        globals.state.currentSelection.kind === 'NOTE') {
+      const note = globals.state.notes[globals.state.currentSelection.id];
+      drawVerticalLine(ctx,
+                       localState.timeScale,
+                       note.timestamp,
+                       size.height,
+                       note.color);
+    }
   }
 }
