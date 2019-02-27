@@ -51,6 +51,8 @@ class StringWriter {
     pos_ += n;
   }
 
+  void AppendStringView(StringView sv) { AppendString(sv.data(), sv.size()); }
+
   // Appends a null-terminated string literal to the buffer.
   template <size_t N>
   inline void AppendLiteral(const char (&in)[N]) {
@@ -97,35 +99,43 @@ class StringWriter {
     AppendString(&data[idx + 1], kSizeNeeded - idx - 1);
   }
 
+  // Appends a hex integer to the buffer.
+  void AppendHexInt(uint32_t value) {
+    // TODO(lalitm): trying to optimize this is premature given we almost never
+    // print hex ints. Reevaluate this in the future if we do print them more.
+    size_t res = static_cast<size_t>(
+        snprintf(buffer_ + pos_, size_ - pos_, "%x", value));
+    PERFETTO_DCHECK(pos_ + res <= size_);
+    pos_ += res;
+  }
+
   // Appends a double to the buffer.
   void AppendDouble(double value) {
     // TODO(lalitm): trying to optimize this is premature given we almost never
     // print doubles. Reevaluate this in the future if we do print them more.
     size_t res = static_cast<size_t>(
         snprintf(buffer_ + pos_, size_ - pos_, "%lf", value));
-    PERFETTO_DCHECK(pos_ + res < size_);
+    PERFETTO_DCHECK(pos_ + res <= size_);
     pos_ += res;
   }
 
-  char* GetCString() {
-    // TODO(lalitm): this may need to be changed in the future to return a
-    // StringView if we find that we will want embedded nulls in our strings.
-    PERFETTO_DCHECK(pos_ < size_);
-    buffer_[pos_] = '\0';
-    return buffer_;
+  StringView GetStringView() {
+    PERFETTO_DCHECK(pos_ <= size_);
+    return StringView(buffer_, pos_);
   }
 
-  // Creates a copy of the internal buffer.
-  base::ScopedString CreateStringCopy() {
+  char* CreateStringCopy() {
     char* dup = reinterpret_cast<char*>(malloc(pos_ + 1));
     if (dup) {
       strncpy(dup, buffer_, pos_);
       dup[pos_] = '\0';
     }
-    return base::ScopedString(dup);
+    return dup;
   }
 
-  size_t pos() { return pos_; }
+  size_t pos() const { return pos_; }
+  size_t size() const { return size_; }
+  void reset() { pos_ = 0; }
 
  private:
   char* buffer_ = nullptr;

@@ -254,6 +254,8 @@ if (perfetto_build_with_embedder) {
       "include/perfetto/tracing/core",
       "protos/perfetto/trace:zero",
       "protos/perfetto/trace/chrome:zero",
+      "protos/perfetto/trace/interned_data:zero",
+      "protos/perfetto/trace/track_event:zero",
     ]
   }
 }
@@ -276,6 +278,7 @@ if (perfetto_build_standalone) {
       "src/ipc:buffered_frame_deserializer_fuzzer",
       "src/profiling/memory:shared_ring_buffer_fuzzer",
       "src/profiling/memory:unwinding_fuzzer",
+      "src/trace_processor:trace_processor_fuzzer",
       "src/traced/probes/ftrace:cpu_reader_fuzzer",
       "test:end_to_end_shared_memory_fuzzer",
     ]
