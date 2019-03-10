@@ -193,7 +193,7 @@ class HeapprofdEndToEnd : public ::testing::Test {
     auto helper = GetHelper(&task_runner);
 
     helper->StartTracing(trace_config);
-    helper->WaitForTracingDisabled(10000);
+    helper->WaitForTracingDisabled(20000);
 
     helper->ReadData();
     helper->WaitForReadData();
