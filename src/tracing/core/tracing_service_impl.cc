@@ -1456,11 +1456,10 @@ void TracingServiceImpl::UnregisterDataSource(ProducerID producer_id,
         if (it->second.state != DataSourceInstance::STOPPED) {
           if (it->second.state != DataSourceInstance::STOPPING)
             producer->StopDataSource(ds_inst_id);
-          it->second.state = DataSourceInstance::STOPPED;
-          if (kv.second.consumer_maybe_null) {
-            kv.second.consumer_maybe_null->OnDataSourceInstanceStateChange(
-                *producer, it->second);
-          }
+          // Mark the instance as stopped immediately, since we are
+          // unregistering it below.
+          if (it->second.state == DataSourceInstance::STOPPING)
+            NotifyDataSourceStopped(producer_id, ds_inst_id);
         }
         it = ds_instances.erase(it);
       } else {
@@ -2074,10 +2073,78 @@ void TracingServiceImpl::ConsumerEndpointImpl::GetTraceStats() {
   });
 }
 
+void TracingServiceImpl::ConsumerEndpointImpl::ObserveEvents(
+    uint32_t enabled_event_types) {
+  PERFETTO_DCHECK_THREAD(thread_checker_);
+  enabled_observable_event_types_ = enabled_event_types;
+
+  if (enabled_observable_event_types_ == ObservableEventType::kNone)
+    return;
+
+  PERFETTO_DCHECK(enabled_observable_event_types_ ==
+                  ObservableEventType::kDataSourceInstances);
+
+  TracingSession* session = service_->GetTracingSession(tracing_session_id_);
+  if (!session)
+    return;
+
+  // Issue initial states
+  for (const auto& kv : session->data_source_instances) {
+    ProducerEndpointImpl* producer = service_->GetProducer(kv.first);
+    PERFETTO_DCHECK(producer);
+    OnDataSourceInstanceStateChange(*producer, kv.second);
+  }
+}
+
+void TracingServiceImpl::ConsumerEndpointImpl::OnDataSourceInstanceStateChange(
+    const ProducerEndpointImpl& producer,
+    const DataSourceInstance& instance) {
+  if (!(enabled_observable_event_types_ &
+        ObservableEventType::kDataSourceInstances)) {
+    return;
+  }
+
+  if (instance.state != DataSourceInstance::CONFIGURED &&
+      instance.state != DataSourceInstance::STARTED &&
+      instance.state != DataSourceInstance::STOPPED) {
+    return;
+  }
+
+  auto* observable_events = AddObservableEvents();
+  auto* change = observable_events->add_instance_state_changes();
+  change->set_producer_name(producer.name_);
+  change->set_data_source_name(instance.data_source_name);
+  if (instance.state == DataSourceInstance::STARTED) {
+    change->set_state(ObservableEvents::DataSourceInstanceStateChange::
+                          DATA_SOURCE_INSTANCE_STATE_STARTED);
+  } else {
+    change->set_state(ObservableEvents::DataSourceInstanceStateChange::
+                          DATA_SOURCE_INSTANCE_STATE_STOPPED);
+  }
+}
+
 base::WeakPtr<TracingServiceImpl::ConsumerEndpointImpl>
 TracingServiceImpl::ConsumerEndpointImpl::GetWeakPtr() {
   PERFETTO_DCHECK_THREAD(thread_checker_);
   return weak_ptr_factory_.GetWeakPtr();
+}
+
+ObservableEvents*
+TracingServiceImpl::ConsumerEndpointImpl::AddObservableEvents() {
+  PERFETTO_DCHECK_THREAD(thread_checker_);
+  if (!observable_events_) {
+    observable_events_.reset(new ObservableEvents());
+    auto weak_this = GetWeakPtr();
+    task_runner_->PostTask([weak_this] {
+      if (!weak_this)
+        return;
+
+      // Move into a temporary to allow reentrancy in OnObservableEvents.
+      auto observable_events = std::move(weak_this->observable_events_);
+      weak_this->consumer_->OnObservableEvents(*observable_events);
+    });
+  }
+  return observable_events_.get();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
