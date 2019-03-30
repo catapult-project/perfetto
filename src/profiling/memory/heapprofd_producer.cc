@@ -42,8 +42,8 @@ constexpr int kHeapprofdSignal = 36;
 constexpr uint32_t kInitialConnectionBackoffMs = 100;
 constexpr uint32_t kMaxConnectionBackoffMs = 30 * 1000;
 
-// TODO(fmayer): Add to HeapprofdConfig.
-constexpr uint64_t kShmemSize = 8 * 1048576;  // ~8 MB
+constexpr uint64_t kDefaultShmemSize = 8 * 1048576;  // ~8 MB
+constexpr uint64_t kMaxShmemSize = 500 * 1048576;    // ~500 MB
 
 ClientConfiguration MakeClientConfiguration(const DataSourceConfig& cfg) {
   ClientConfiguration client_config;
@@ -147,6 +147,11 @@ void HeapprofdProducer::OnDisconnect() {
 void HeapprofdProducer::SetupDataSource(DataSourceInstanceID id,
                                         const DataSourceConfig& cfg) {
   PERFETTO_DLOG("Setting up data source.");
+  if (mode_ == HeapprofdMode::kChild && cfg.enable_extra_guardrails()) {
+    PERFETTO_ELOG("enable_extra_guardrails is not supported on user.");
+    return;
+  }
+
   const HeapprofdConfig& heapprofd_config = cfg.heapprofd_config();
   if (heapprofd_config.all() && !heapprofd_config.pid().empty())
     PERFETTO_ELOG("No point setting all and pid");
@@ -358,6 +363,7 @@ bool HeapprofdProducer::Dump(DataSourceInstanceID id,
                                ProfilePacket::ProcessHeapSamples* proto) {
       proto->set_pid(static_cast<uint64_t>(pid));
       proto->set_from_startup(from_startup);
+      proto->set_disconnected(process_state.disconnected);
       auto* stats = proto->set_stats();
       stats->set_unwinding_errors(process_state.unwinding_errors);
       stats->set_heap_samples(process_state.heap_samples);
@@ -629,7 +635,13 @@ void HeapprofdProducer::HandleClientConnection(
   }
   RecordOtherSourcesAsRejected(data_source, process);
 
-  auto shmem = SharedRingBuffer::Create(kShmemSize);
+  uint64_t shmem_size = data_source->config.shmem_size_bytes();
+  if (!shmem_size)
+    shmem_size = kDefaultShmemSize;
+  if (shmem_size > kMaxShmemSize)
+    shmem_size = kMaxShmemSize;
+
+  auto shmem = SharedRingBuffer::Create(shmem_size);
   if (!shmem || !shmem->is_valid()) {
     PERFETTO_LOG("Failed to create shared memory.");
     return;
@@ -751,10 +763,18 @@ void HeapprofdProducer::HandleFreeRecord(FreeRecord free_rec) {
   }
 }
 
-void HeapprofdProducer::HandleSocketDisconnected(DataSourceInstanceID, pid_t) {
-  // TODO(fmayer): Dump on process disconnect rather than data source
-  // destruction. This prevents us needing to hold onto the bookkeeping data
-  // after the process disconnected.
+void HeapprofdProducer::HandleSocketDisconnected(DataSourceInstanceID id,
+                                                 pid_t pid) {
+  auto it = data_sources_.find(id);
+  if (it == data_sources_.end())
+    return;
+  DataSource& ds = it->second;
+
+  auto process_state_it = ds.process_states.find(pid);
+  if (process_state_it == ds.process_states.end())
+    return;
+  ProcessState& process_state = process_state_it->second;
+  process_state.disconnected = true;
 }
 
 }  // namespace profiling

@@ -144,6 +144,7 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
 
   struct ProcessState {
     ProcessState(GlobalCallstackTrie* callsites) : heap_tracker(callsites) {}
+    bool disconnected = false;
     uint64_t heap_samples = 0;
     uint64_t map_reparses = 0;
     uint64_t unwinding_errors = 0;
@@ -197,7 +198,7 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
 
   SocketDelegate socket_delegate_;
 
-  base::WeakPtrFactory<HeapprofdProducer> weak_factory_;
+  base::WeakPtrFactory<HeapprofdProducer> weak_factory_;  // Keep last.
 };
 
 }  // namespace profiling
