@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import("../../gn/fuzzer.gni")
 import("../../gn/perfetto.gni")
 import("../../gn/wasm.gni")
-import("../../gn/fuzzer.gni")
 
 wasm_lib("trace_processor_wasm") {
   name = "trace_processor"
@@ -66,6 +66,7 @@ source_set("lib") {
     "ftrace_utils.h",
     "instants_table.cc",
     "instants_table.h",
+    "null_term_string_view.h",
     "process_table.cc",
     "process_table.h",
     "process_tracker.cc",
@@ -107,6 +108,8 @@ source_set("lib") {
     "string_pool.h",
     "string_table.cc",
     "string_table.h",
+    "syscall_tracker.cc",
+    "syscall_tracker.h",
     "table.cc",
     "table.h",
     "thread_table.cc",
@@ -208,6 +211,7 @@ source_set("unittests") {
     "span_join_operator_table_unittest.cc",
     "sqlite3_str_split_unittest.cc",
     "string_pool_unittest.cc",
+    "syscall_tracker_unittest.cc",
     "thread_table_unittest.cc",
     "trace_processor_impl_unittest.cc",
     "trace_sorter_unittest.cc",
