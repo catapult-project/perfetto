@@ -270,6 +270,7 @@ cc_library_shared {
     "src/traced/probes/ftrace/ftrace_stats.cc",
     "src/traced/probes/ftrace/page_pool.cc",
     "src/traced/probes/ftrace/proto_translation_table.cc",
+    "src/traced/probes/packages_list/packages_list_data_source.cc",
     "src/traced/probes/power/android_power_data_source.cc",
     "src/traced/probes/probes.cc",
     "src/traced/probes/probes_data_source.cc",
@@ -636,6 +637,7 @@ cc_test {
     "src/traced/probes/ftrace/page_pool.cc",
     "src/traced/probes/ftrace/proto_translation_table.cc",
     "src/traced/probes/ftrace/test/cpu_reader_support.cc",
+    "src/traced/probes/packages_list/packages_list_data_source.cc",
     "src/traced/probes/power/android_power_data_source.cc",
     "src/traced/probes/probes_data_source.cc",
     "src/traced/probes/probes_producer.cc",
@@ -1038,6 +1040,7 @@ genrule {
   name: "perfetto_protos_perfetto_trace_android_lite_gen",
   srcs: [
     "protos/perfetto/trace/android/android_log.proto",
+    "protos/perfetto/trace/android/packages_list.proto",
   ],
   tools: [
     "aprotoc",
@@ -1045,6 +1048,7 @@ genrule {
   cmd: "mkdir -p $(genDir)/external/perfetto/protos && $(location aprotoc) --cpp_out=$(genDir)/external/perfetto/protos --proto_path=external/perfetto/protos $(in)",
   out: [
     "external/perfetto/protos/perfetto/trace/android/android_log.pb.cc",
+    "external/perfetto/protos/perfetto/trace/android/packages_list.pb.cc",
   ],
 }
 
@@ -1053,6 +1057,7 @@ genrule {
   name: "perfetto_protos_perfetto_trace_android_lite_gen_headers",
   srcs: [
     "protos/perfetto/trace/android/android_log.proto",
+    "protos/perfetto/trace/android/packages_list.proto",
   ],
   tools: [
     "aprotoc",
@@ -1060,6 +1065,7 @@ genrule {
   cmd: "mkdir -p $(genDir)/external/perfetto/protos && $(location aprotoc) --cpp_out=$(genDir)/external/perfetto/protos --proto_path=external/perfetto/protos $(in)",
   out: [
     "external/perfetto/protos/perfetto/trace/android/android_log.pb.h",
+    "external/perfetto/protos/perfetto/trace/android/packages_list.pb.h",
   ],
   export_include_dirs: [
     "protos",
@@ -1071,6 +1077,7 @@ genrule {
   name: "perfetto_protos_perfetto_trace_android_zero_gen",
   srcs: [
     "protos/perfetto/trace/android/android_log.proto",
+    "protos/perfetto/trace/android/packages_list.proto",
   ],
   tools: [
     "aprotoc",
@@ -1079,6 +1086,7 @@ genrule {
   cmd: "mkdir -p $(genDir)/external/perfetto/protos && $(location aprotoc) --cpp_out=$(genDir)/external/perfetto/protos --proto_path=external/perfetto/protos --plugin=protoc-gen-plugin=$(location perfetto_src_protozero_protoc_plugin_protoc_plugin___gn_standalone_toolchain_gcc_like_host_) --plugin_out=wrapper_namespace=pbzero:$(genDir)/external/perfetto/protos $(in)",
   out: [
     "external/perfetto/protos/perfetto/trace/android/android_log.pbzero.cc",
+    "external/perfetto/protos/perfetto/trace/android/packages_list.pbzero.cc",
   ],
 }
 
@@ -1087,6 +1095,7 @@ genrule {
   name: "perfetto_protos_perfetto_trace_android_zero_gen_headers",
   srcs: [
     "protos/perfetto/trace/android/android_log.proto",
+    "protos/perfetto/trace/android/packages_list.proto",
   ],
   tools: [
     "aprotoc",
@@ -1095,6 +1104,7 @@ genrule {
   cmd: "mkdir -p $(genDir)/external/perfetto/protos && $(location aprotoc) --cpp_out=$(genDir)/external/perfetto/protos --proto_path=external/perfetto/protos --plugin=protoc-gen-plugin=$(location perfetto_src_protozero_protoc_plugin_protoc_plugin___gn_standalone_toolchain_gcc_like_host_) --plugin_out=wrapper_namespace=pbzero:$(genDir)/external/perfetto/protos $(in)",
   out: [
     "external/perfetto/protos/perfetto/trace/android/android_log.pbzero.h",
+    "external/perfetto/protos/perfetto/trace/android/packages_list.pbzero.h",
   ],
   export_include_dirs: [
     "protos",
@@ -1668,6 +1678,7 @@ genrule {
   srcs: [
     "protos/perfetto/trace/clock_snapshot.proto",
     "protos/perfetto/trace/system_info.proto",
+    "protos/perfetto/trace/trigger.proto",
   ],
   tools: [
     "aprotoc",
@@ -1676,6 +1687,7 @@ genrule {
   out: [
     "external/perfetto/protos/perfetto/trace/clock_snapshot.pb.cc",
     "external/perfetto/protos/perfetto/trace/system_info.pb.cc",
+    "external/perfetto/protos/perfetto/trace/trigger.pb.cc",
   ],
 }
 
@@ -1685,6 +1697,7 @@ genrule {
   srcs: [
     "protos/perfetto/trace/clock_snapshot.proto",
     "protos/perfetto/trace/system_info.proto",
+    "protos/perfetto/trace/trigger.proto",
   ],
   tools: [
     "aprotoc",
@@ -1693,6 +1706,7 @@ genrule {
   out: [
     "external/perfetto/protos/perfetto/trace/clock_snapshot.pb.h",
     "external/perfetto/protos/perfetto/trace/system_info.pb.h",
+    "external/perfetto/protos/perfetto/trace/trigger.pb.h",
   ],
   export_include_dirs: [
     "protos",
@@ -2170,6 +2184,7 @@ genrule {
     "protos/perfetto/trace/test_event.proto",
     "protos/perfetto/trace/trace.proto",
     "protos/perfetto/trace/trace_packet.proto",
+    "protos/perfetto/trace/trigger.proto",
   ],
   tools: [
     "aprotoc",
@@ -2182,6 +2197,7 @@ genrule {
     "external/perfetto/protos/perfetto/trace/test_event.pbzero.cc",
     "external/perfetto/protos/perfetto/trace/trace.pbzero.cc",
     "external/perfetto/protos/perfetto/trace/trace_packet.pbzero.cc",
+    "external/perfetto/protos/perfetto/trace/trigger.pbzero.cc",
   ],
 }
 
@@ -2194,6 +2210,7 @@ genrule {
     "protos/perfetto/trace/test_event.proto",
     "protos/perfetto/trace/trace.proto",
     "protos/perfetto/trace/trace_packet.proto",
+    "protos/perfetto/trace/trigger.proto",
   ],
   tools: [
     "aprotoc",
@@ -2206,6 +2223,7 @@ genrule {
     "external/perfetto/protos/perfetto/trace/test_event.pbzero.h",
     "external/perfetto/protos/perfetto/trace/trace.pbzero.h",
     "external/perfetto/protos/perfetto/trace/trace_packet.pbzero.h",
+    "external/perfetto/protos/perfetto/trace/trigger.pbzero.h",
   ],
   export_include_dirs: [
     "protos",
@@ -2946,6 +2964,8 @@ cc_test {
     "src/traced/probes/ftrace/proto_translation_table.cc",
     "src/traced/probes/ftrace/proto_translation_table_unittest.cc",
     "src/traced/probes/ftrace/test/cpu_reader_support.cc",
+    "src/traced/probes/packages_list/packages_list_data_source.cc",
+    "src/traced/probes/packages_list/packages_list_data_source_unittest.cc",
     "src/traced/probes/power/android_power_data_source.cc",
     "src/traced/probes/probes_data_source.cc",
     "src/traced/probes/probes_producer.cc",
