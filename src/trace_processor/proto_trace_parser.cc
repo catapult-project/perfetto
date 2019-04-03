@@ -274,7 +274,12 @@ ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
 
 ProtoTraceParser::~ProtoTraceParser() = default;
 
-void ProtoTraceParser::ParseTracePacket(int64_t ts, TraceBlobView blob) {
+void ProtoTraceParser::ParseTracePacket(
+    int64_t ts,
+    TraceSorter::TimestampedTracePiece ttp) {
+  PERFETTO_DCHECK(ttp.json_value == nullptr);
+  const TraceBlobView& blob = ttp.blob_view;
+
   protos::pbzero::TracePacket::Decoder packet(blob.data(), blob.length());
 
   if (packet.has_process_tree())
@@ -475,9 +480,13 @@ void ProtoTraceParser::ParseProcessStats(int64_t ts, ConstBytes blob) {
   }
 }
 
-void ProtoTraceParser::ParseFtracePacket(uint32_t cpu,
-                                         int64_t ts,
-                                         TraceBlobView ftrace) {
+void ProtoTraceParser::ParseFtracePacket(
+    uint32_t cpu,
+    int64_t ts,
+    TraceSorter::TimestampedTracePiece ttp) {
+  PERFETTO_DCHECK(ttp.json_value == nullptr);
+  const TraceBlobView& ftrace = ttp.blob_view;
+
   ProtoDecoder decoder(ftrace.data(), ftrace.length());
   uint64_t raw_pid = 0;
   if (auto pid_field =
@@ -774,8 +783,10 @@ void ProtoTraceParser::ParsePrint(uint32_t,
                                   ConstBytes blob) {
   protos::pbzero::PrintFtraceEvent::Decoder evt(blob.data, blob.size);
   SystraceTracePoint point{};
-  if (!ParseSystraceTracePoint(evt.buf(), &point))
+  if (!ParseSystraceTracePoint(evt.buf(), &point)) {
+    context_->storage->IncrementStats(stats::systrace_parse_failure);
     return;
+  }
 
   switch (point.phase) {
     case 'B': {
@@ -1241,9 +1252,19 @@ void ProtoTraceParser::ParseFtraceStats(ConstBytes blob) {
                              static_cast<int64_t>(cpu_stats.commit_overrun()));
     storage->SetIndexedStats(stats::ftrace_cpu_bytes_read_begin + phase, cpu,
                              static_cast<int64_t>(cpu_stats.bytes_read()));
-    storage->SetIndexedStats(
-        stats::ftrace_cpu_oldest_event_ts_begin + phase, cpu,
-        static_cast<int64_t>(cpu_stats.oldest_event_ts() * 1e9));
+
+    // oldest_event_ts can often be set to very high values, possibly because
+    // of wrapping. Ensure that we are not overflowing to avoid ubsan
+    // complaining.
+    double oldest_event_ts = cpu_stats.oldest_event_ts() * 1e9;
+    if (oldest_event_ts >= std::numeric_limits<int64_t>::max()) {
+      storage->SetIndexedStats(stats::ftrace_cpu_oldest_event_ts_begin + phase,
+                               cpu, std::numeric_limits<int64_t>::max());
+    } else {
+      storage->SetIndexedStats(stats::ftrace_cpu_oldest_event_ts_begin + phase,
+                               cpu, static_cast<int64_t>(oldest_event_ts));
+    }
+
     storage->SetIndexedStats(stats::ftrace_cpu_now_ts_begin + phase, cpu,
                              static_cast<int64_t>(cpu_stats.now_ts() * 1e9));
     storage->SetIndexedStats(stats::ftrace_cpu_dropped_events_begin + phase,

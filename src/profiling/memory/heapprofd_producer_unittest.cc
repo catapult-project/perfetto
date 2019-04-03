@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 The Android Open Source Project
+ * Copyright (C) 2019 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,30 @@
  * limitations under the License.
  */
 
-#include "src/trace_processor/chunked_trace_reader.h"
-#include "src/trace_processor/trace_parser.h"
+#include "src/profiling/memory/heapprofd_producer.h"
+
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 
 namespace perfetto {
-namespace trace_processor {
+namespace profiling {
 
-ChunkedTraceReader::~ChunkedTraceReader() {}
-TraceParser::~TraceParser() {}
+using ::testing::Contains;
+using ::testing::Pair;
 
-}  // namespace trace_processor
+TEST(LogHistogramTest, Simple) {
+  LogHistogram h;
+  h.Add(1);
+  h.Add(0);
+  EXPECT_THAT(h.GetData(), Contains(Pair(2, 1)));
+  EXPECT_THAT(h.GetData(), Contains(Pair(1, 1)));
+}
+
+TEST(LogHistogramTest, Overflow) {
+  LogHistogram h;
+  h.Add(std::numeric_limits<uint64_t>::max());
+  EXPECT_THAT(h.GetData(), Contains(Pair(LogHistogram::kMaxBucket, 1)));
+}
+
+}  // namespace profiling
 }  // namespace perfetto
