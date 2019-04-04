@@ -20,7 +20,9 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
+#include <vector>
 
 #include "perfetto/base/gtest_prod_util.h"
 #include "perfetto/base/logging.h"
@@ -30,6 +32,7 @@
 #include "perfetto/tracing/core/basic_types.h"
 #include "perfetto/tracing/core/commit_data_request.h"
 #include "perfetto/tracing/core/data_source_descriptor.h"
+#include "perfetto/tracing/core/observable_events.h"
 #include "perfetto/tracing/core/shared_memory_abi.h"
 #include "perfetto/tracing/core/trace_config.h"
 #include "perfetto/tracing/core/trace_stats.h"
@@ -53,6 +56,9 @@ class TracePacket;
 
 // The tracing service business logic.
 class TracingServiceImpl : public TracingService {
+ private:
+  struct DataSourceInstance;
+
  public:
   static constexpr size_t kDefaultShmSize = 256 * 1024ul;
   static constexpr size_t kMaxShmSize = 32 * 1024 * 1024ul;
@@ -82,9 +88,11 @@ class TracingServiceImpl : public TracingService {
     void SetSharedMemory(std::unique_ptr<SharedMemory>);
     std::unique_ptr<TraceWriter> CreateTraceWriter(BufferID) override;
     void NotifyFlushComplete(FlushRequestID) override;
+    void NotifyDataSourceStarted(DataSourceInstanceID) override;
     void NotifyDataSourceStopped(DataSourceInstanceID) override;
     SharedMemory* shared_memory() const override;
     size_t shared_buffer_page_size_kb() const override;
+    void ActivateTriggers(const std::vector<std::string>&) override;
 
     void OnTracingSetup();
     void SetupDataSource(DataSourceInstanceID, const DataSourceConfig&);
@@ -136,8 +144,12 @@ class TracingServiceImpl : public TracingService {
     // before use.
     std::map<WriterID, BufferID> writers_;
 
-    // This is used only in in-process configurations (mostly tests).
+    // This is used only in in-process configurations. The mutex protects
+    // concurrent construction of |inproc_shmem_arbiter_|.
+    // SharedMemoryArbiterImpl methods themselves are thread-safe.
+    std::mutex inproc_shmem_arbiter_mutex_;
     std::unique_ptr<SharedMemoryArbiterImpl> inproc_shmem_arbiter_;
+
     PERFETTO_THREAD_CHECKER(thread_checker_)
     base::WeakPtrFactory<ProducerEndpointImpl> weak_ptr_factory_;  // Keep last.
   };
@@ -156,6 +168,7 @@ class TracingServiceImpl : public TracingService {
 
     // TracingService::ConsumerEndpoint implementation.
     void EnableTracing(const TraceConfig&, base::ScopedFile) override;
+    void ChangeTraceConfig(const TraceConfig& cfg) override;
     void StartTracing() override;
     void DisableTracing() override;
     void ReadBuffers() override;
@@ -164,17 +177,35 @@ class TracingServiceImpl : public TracingService {
     void Detach(const std::string& key) override;
     void Attach(const std::string& key) override;
     void GetTraceStats() override;
+    void ObserveEvents(uint32_t enabled_event_types) override;
+
+    // If |observe_data_source_instances == true|, will queue a task to notify
+    // the consumer about the state change.
+    void OnDataSourceInstanceStateChange(const ProducerEndpointImpl&,
+                                         const DataSourceInstance&);
 
    private:
     friend class TracingServiceImpl;
     ConsumerEndpointImpl(const ConsumerEndpointImpl&) = delete;
     ConsumerEndpointImpl& operator=(const ConsumerEndpointImpl&) = delete;
 
+    // Returns a pointer to an ObservableEvents object that the caller can fill
+    // and schedules a task to send the ObservableEvents to the consumer.
+    ObservableEvents* AddObservableEvents();
+
     base::TaskRunner* const task_runner_;
     TracingServiceImpl* const service_;
     Consumer* const consumer_;
     uid_t const uid_;
     TracingSessionID tracing_session_id_ = 0;
+
+    // Whether the consumer is interested in DataSourceInstance state change
+    // events.
+    uint32_t enabled_observable_event_types_ = ObservableEventType::kNone;
+    // ObservableEvents that will be sent to the consumer. If set, a task to
+    // flush the events to the consumer has been queued.
+    std::unique_ptr<ObservableEvents> observable_events_;
+
     PERFETTO_THREAD_CHECKER(thread_checker_)
     base::WeakPtrFactory<ConsumerEndpointImpl> weak_ptr_factory_;  // Keep last.
   };
@@ -200,7 +231,9 @@ class TracingServiceImpl : public TracingService {
   void ApplyChunkPatches(ProducerID,
                          const std::vector<CommitDataRequest::ChunkToPatch>&);
   void NotifyFlushDoneForProducer(ProducerID, FlushRequestID);
+  void NotifyDataSourceStarted(ProducerID, const DataSourceInstanceID);
   void NotifyDataSourceStopped(ProducerID, const DataSourceInstanceID);
+  void ActivateTriggers(ProducerID, const std::vector<std::string>& triggers);
 
   // Called by ConsumerEndpointImpl.
   bool DetachConsumer(ConsumerEndpointImpl*, const std::string& key);
@@ -209,6 +242,8 @@ class TracingServiceImpl : public TracingService {
   bool EnableTracing(ConsumerEndpointImpl*,
                      const TraceConfig&,
                      base::ScopedFile);
+  void ChangeTraceConfig(ConsumerEndpointImpl*, const TraceConfig&);
+
   bool StartTracing(TracingSessionID);
   void DisableTracing(TracingSessionID, bool disable_immediately = false);
   void Flush(TracingSessionID tsid,
@@ -252,18 +287,30 @@ class TracingServiceImpl : public TracingService {
     DataSourceInstance(DataSourceInstanceID id,
                        const DataSourceConfig& cfg,
                        const std::string& ds_name,
-                       bool notify)
+                       bool notify_on_start,
+                       bool notify_on_stop)
         : instance_id(id),
           config(cfg),
           data_source_name(ds_name),
-          will_notify_on_stop(notify) {}
+          will_notify_on_start(notify_on_start),
+          will_notify_on_stop(notify_on_stop) {}
     DataSourceInstance(const DataSourceInstance&) = delete;
     DataSourceInstance& operator=(const DataSourceInstance&) = delete;
 
     DataSourceInstanceID instance_id;
     DataSourceConfig config;
     std::string data_source_name;
+    bool will_notify_on_start;
     bool will_notify_on_stop;
+
+    enum DataSourceInstanceState {
+      CONFIGURED,
+      STARTING,
+      STARTED,
+      STOPPING,
+      STOPPED
+    };
+    DataSourceInstanceState state = CONFIGURED;
   };
 
   struct PendingFlush {
@@ -297,6 +344,44 @@ class TracingServiceImpl : public TracingService {
       return timeout_ms ? timeout_ms : kDefaultFlushTimeoutMs;
     }
 
+    PacketSequenceID GetPacketSequenceID(ProducerID producer_id,
+                                         WriterID writer_id) {
+      auto key = std::make_pair(producer_id, writer_id);
+      auto it = packet_sequence_ids.find(key);
+      if (it != packet_sequence_ids.end())
+        return it->second;
+      // We shouldn't run out of sequence IDs (producer ID is 16 bit, writer IDs
+      // are limited to 1024).
+      static_assert(kMaxPacketSequenceID > kMaxProducerID * kMaxWriterID,
+                    "PacketSequenceID value space doesn't cover service "
+                    "sequence ID and all producer/writer ID combinations!");
+      PERFETTO_DCHECK(last_packet_sequence_id < kMaxPacketSequenceID);
+      PacketSequenceID sequence_id = ++last_packet_sequence_id;
+      packet_sequence_ids[key] = sequence_id;
+      return sequence_id;
+    }
+
+    DataSourceInstance* GetDataSourceInstance(
+        ProducerID producer_id,
+        DataSourceInstanceID instance_id) {
+      for (auto& inst_kv : data_source_instances) {
+        if (inst_kv.first != producer_id ||
+            inst_kv.second.instance_id != instance_id) {
+          continue;
+        }
+        return &inst_kv.second;
+      }
+      return nullptr;
+    }
+
+    bool AllDataSourceInstancesStopped() {
+      for (const auto& inst_kv : data_source_instances) {
+        if (inst_kv.second.state != DataSourceInstance::STOPPED)
+          return false;
+      }
+      return true;
+    }
+
     const TracingSessionID id;
 
     // The consumer that started the session.
@@ -308,9 +393,16 @@ class TracingServiceImpl : public TracingService {
     // prevent that a consumer re-attaches to a session from a different uid.
     uid_t const consumer_uid;
 
-    // The original trace config provided by the Consumer when calling
-    // EnableTracing().
-    const TraceConfig config;
+    // The list of triggers this session received while alive and the time they
+    // were received at. This is used to insert 'fake' packets back to the
+    // consumer so they can tell when some event happened. The order matches the
+    // order they were received.
+    std::vector<std::pair<uint64_t, TraceConfig::TriggerConfig::Trigger>>
+        received_triggers;
+
+    // The trace config provided by the Consumer when calling
+    // EnableTracing(), plus any updates performed by ChangeTraceConfig.
+    TraceConfig config;
 
     // List of data source instances that have been enabled on the various
     // producers for this tracing session.
@@ -320,15 +412,14 @@ class TracingServiceImpl : public TracingService {
     // we are still awaiting a NotifyFlushComplete(N) ack.
     std::map<FlushRequestID, PendingFlush> pending_flushes;
 
-    // After DisableTracing() is called, this contains the subset of data
-    // sources that did set the |will_notify_on_stop| flag upon registration and
-    // that have the haven't replied yet to the stop request.
-    std::set<std::pair<ProducerID, DataSourceInstanceID>> pending_stop_acks;
-
     // Maps a per-trace-session buffer index into the corresponding global
     // BufferID (shared namespace amongst all consumers). This vector has as
     // many entries as |config.buffers_size()|.
     std::vector<BufferID> buffers_index;
+
+    std::map<std::pair<ProducerID, WriterID>, PacketSequenceID>
+        packet_sequence_ids;
+    PacketSequenceID last_packet_sequence_id = kServicePacketSequenceID;
 
     // When the last snapshots (clock, stats, sync marker) were emitted into
     // the output stream.
@@ -336,6 +427,9 @@ class TracingServiceImpl : public TracingService {
 
     // Whether we mirrored the trace config back to the trace output yet.
     bool did_emit_config = false;
+
+    // Whether we put the system info into the trace output yet.
+    bool did_emit_system_info = false;
 
     State state = DISABLED;
 
@@ -376,11 +470,15 @@ class TracingServiceImpl : public TracingService {
   // shared memory and trace buffers.
   void UpdateMemoryGuardrail();
 
+  void StartDataSourceInstance(ProducerEndpointImpl* producer,
+                               TracingSession* tracing_session,
+                               DataSourceInstance* instance);
   void SnapshotSyncMarker(std::vector<TracePacket>*);
   void SnapshotClocks(std::vector<TracePacket>*);
   void SnapshotStats(TracingSession*, std::vector<TracePacket>*);
   TraceStats GetTraceStats(TracingSession* tracing_session);
   void MaybeEmitTraceConfig(TracingSession*, std::vector<TracePacket>*);
+  void MaybeEmitSystemInfo(TracingSession*, std::vector<TracePacket>*);
   void OnFlushTimeout(TracingSessionID, FlushRequestID);
   void OnDisableTracingTimeout(TracingSessionID);
   void DisableTracingNotifyConsumerAndFlushFile(TracingSession*);
@@ -391,6 +489,7 @@ class TracingServiceImpl : public TracingService {
   void ScrapeSharedMemoryBuffers(TracingSession* tracing_session,
                                  ProducerEndpointImpl* producer);
   TraceBuffer* GetBufferByID(BufferID);
+  void OnStartTriggersTimeout(TracingSessionID tsid);
 
   base::TaskRunner* const task_runner_;
   std::unique_ptr<SharedMemory::Factory> shm_factory_;
@@ -416,6 +515,10 @@ class TracingServiceImpl : public TracingService {
 
   uint8_t sync_marker_packet_[32];  // Lazily initialized.
   size_t sync_marker_packet_size_ = 0;
+
+  // Stats.
+  uint64_t chunks_discarded_ = 0;
+  uint64_t patches_discarded_ = 0;
 
   PERFETTO_THREAD_CHECKER(thread_checker_)
 

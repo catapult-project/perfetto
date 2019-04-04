@@ -72,6 +72,7 @@ module_prefix = 'perfetto_'
 
 # Shared libraries which are directly translated to Android system equivalents.
 library_whitelist = [
+    "android.hardware.atrace@1.0",
     'android.hardware.health@2.0',
     "android.hardware.power.stats@1.0",
     'android',
@@ -151,6 +152,9 @@ def enable_libunwind(module):
     # libunwind is disabled on Darwin so we cannot depend on it.
     pass
 
+def enable_sqlite(module):
+    module.static_libs.append('libsqlite')
+
 # Android equivalents for third-party libraries that the upstream project
 # depends on.
 builtin_deps = {
@@ -163,6 +167,7 @@ builtin_deps = {
     '//buildtools:protobuf_lite': enable_protobuf_lite,
     '//buildtools:protoc_lib': enable_protoc_lib,
     '//buildtools:libunwindstack': enable_libunwindstack,
+    '//buildtools:sqlite': enable_sqlite,
 }
 
 # ----------------------------------------------------------------------------
@@ -601,7 +606,7 @@ def resolve_dependencies(desc, target_name):
     return resolved_deps
 
 
-def create_blueprint_for_targets(desc, force_debug, targets):
+def create_blueprint_for_targets(desc, targets):
     """Generate a blueprint for a list of GN targets."""
     blueprint = Blueprint()
 
@@ -616,8 +621,6 @@ def create_blueprint_for_targets(desc, force_debug, targets):
         '-fvisibility=hidden',
         '-Oz',
     ]
-    if force_debug:
-      defaults.cflags.extend(['-UNDEBUG'])
     defaults.user_debug_flag = True
 
     blueprint.add_module(defaults)
@@ -672,12 +675,6 @@ def main():
         default=os.path.join(repo_root(), 'Android.bp'),
     )
     parser.add_argument(
-        '-d',
-        '--force_debug',
-        action='store_true',
-        help='Add flags to enable DCHECK/DLOG/etc, even in release builds.'
-    )
-    parser.add_argument(
         'targets',
         nargs=argparse.REMAINDER,
         help='Targets to include in the blueprint (e.g., "//:perfetto_tests")')
@@ -689,8 +686,8 @@ def main():
     else:
         desc = create_build_description()
 
-    blueprint = create_blueprint_for_targets(desc, args.force_debug,
-                                             args.targets or default_targets)
+    blueprint = create_blueprint_for_targets(desc, args.targets or
+                                             default_targets)
     output = [
         """// Copyright (C) 2017 The Android Open Source Project
 //

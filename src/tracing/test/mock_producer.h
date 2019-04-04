@@ -47,7 +47,9 @@ class MockProducer : public Producer {
                const std::string& producer_name,
                uid_t uid = 42,
                size_t shared_memory_size_hint_bytes = 0);
-  void RegisterDataSource(const std::string& name, bool ack_stop = false);
+  void RegisterDataSource(const std::string& name,
+                          bool ack_stop = false,
+                          bool ack_start = false);
   void UnregisterDataSource(const std::string& name);
   void RegisterTraceWriter(uint32_t writer_id, uint32_t target_buffer);
   void UnregisterTraceWriter(uint32_t writer_id);
@@ -63,6 +65,9 @@ class MockProducer : public Producer {
   // Expect a flush. Flushes |writer_to_flush| if non-null. If |reply| is true,
   // replies to the flush request, otherwise ignores it and doesn't reply.
   void WaitForFlush(TraceWriter* writer_to_flush, bool reply = true);
+  // Same as above, but with a vector of writers.
+  void WaitForFlush(std::vector<TraceWriter*> writers_to_flush,
+                    bool reply = true);
 
   TracingService::ProducerEndpoint* endpoint() {
     return service_endpoint_.get();

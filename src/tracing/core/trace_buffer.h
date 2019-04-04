@@ -152,6 +152,13 @@ class TraceBuffer {
     std::array<uint8_t, kSize> data;
   };
 
+  // Identifiers that are constant for a packet sequence.
+  struct PacketSequenceProperties {
+    ProducerID producer_id_trusted;
+    uid_t producer_uid_trusted;
+    WriterID writer_id;
+  };
+
   // Can return nullptr if the memory allocation fails.
   static std::unique_ptr<TraceBuffer> Create(size_t size_in_bytes,
                                              OverwritePolicy = kOverwrite);
@@ -177,6 +184,8 @@ class TraceBuffer {
   // not have finished writing the latest packet. Reading from a sequence will
   // also not progress past any incomplete chunks until they were rewritten with
   // |chunk_complete = true|, e.g. after a producer's commit.
+  //
+  // TODO(eseckler): Pass in a PacketStreamProperties instead of individual IDs.
   void CopyChunkUntrusted(ProducerID producer_id_trusted,
                           uid_t producer_uid_trusted,
                           WriterID writer_id,
@@ -208,9 +217,15 @@ class TraceBuffer {
   // Reads in the TraceBuffer are NOT idempotent.
   void BeginRead();
 
-  // Returns the next packet in the buffer, if any, and the uid of the producer
-  // that wrote it (as passed in the CopyChunkUntrusted() call). Returns false
-  // if no packets can be read at this point.
+  // Returns the next packet in the buffer, if any, and the producer_id,
+  // producer_uid, and writer_id of the producer/writer that wrote it (as passed
+  // in the CopyChunkUntrusted() call). Returns false if no packets can be read
+  // at this point. If a packet was read successfully,
+  // |previous_packet_on_sequence_dropped| is set to |true| if the previous
+  // packet on the sequence was dropped from the buffer before it could be read
+  // (e.g. because its chunk was overridden due to the ring buffer wrapping or
+  // due to an ABI violation), and to |false| otherwise.
+  //
   // This function returns only complete packets. Specifically:
   // When there is at least one complete packet in the buffer, this function
   // returns true and populates the TracePacket argument with the boundaries of
@@ -230,7 +245,9 @@ class TraceBuffer {
   //   P1, P4, P7, P2, P3, P5, P8, P9, P6
   // But the following is guaranteed to NOT happen:
   //   P1, P5, P7, P4 (P4 cannot come after P5)
-  bool ReadNextTracePacket(TracePacket*, uid_t* producer_uid);
+  bool ReadNextTracePacket(TracePacket*,
+                           PacketSequenceProperties* sequence_properties,
+                           bool* previous_packet_on_sequence_dropped);
 
   const TraceStats::BufferStats& stats() const { return stats_; }
   size_t size() const { return size_; }
@@ -337,26 +354,58 @@ class TraceBuffer {
       ChunkID chunk_id;
     };
 
-    ChunkMeta(ChunkRecord* r, uint16_t p, bool c, uint8_t f, uid_t u)
-        : chunk_record{r},
-          trusted_uid{u},
-          is_complete{c},
-          flags{f},
-          num_fragments{p} {}
+    enum IndexFlags : uint8_t {
+      // If set, the chunk state was kChunkComplete at the time it was copied.
+      // If unset, the chunk was still kChunkBeingWritten while copied. When
+      // reading from the chunk's sequence, the sequence will not advance past
+      // this chunk until this flag is set.
+      kComplete = 1 << 0,
+
+      // If set, we skipped the last packet that we read from this chunk e.g.
+      // because we it was a continuation from a previous chunk that was dropped
+      // or due to an ABI violation.
+      kLastReadPacketSkipped = 1 << 1
+    };
+
+    ChunkMeta(ChunkRecord* r, uint16_t p, bool complete, uint8_t f, uid_t u)
+        : chunk_record{r}, trusted_uid{u}, flags{f}, num_fragments{p} {
+      if (complete)
+        index_flags = kComplete;
+    }
+
+    bool is_complete() const { return index_flags & kComplete; }
+
+    void set_complete(bool complete) {
+      if (complete) {
+        index_flags |= kComplete;
+      } else {
+        index_flags &= ~kComplete;
+      }
+    }
+
+    bool last_read_packet_skipped() const {
+      return index_flags & kLastReadPacketSkipped;
+    }
+
+    void set_last_read_packet_skipped(bool skipped) {
+      if (skipped) {
+        index_flags |= kLastReadPacketSkipped;
+      } else {
+        index_flags &= ~kLastReadPacketSkipped;
+      }
+    }
 
     ChunkRecord* const chunk_record;  // Addr of ChunkRecord within |data_|.
     const uid_t trusted_uid;          // uid of the producer.
 
-    // If true, the chunk state was kChunkComplete at the time it was copied. If
-    // false, the chunk was still kChunkBeingWritten while copied. |is_complete|
-    // == false prevents the sequence to read past this chunk.
-    bool is_complete = false;
+    // Flags set by TraceBuffer to track the state of the chunk in the index.
+    uint8_t index_flags = 0;
 
     // Correspond to |chunk_record->flags| and |chunk_record->num_fragments|.
     // Copied here for performance reasons (avoids having to dereference
     // |chunk_record| while iterating over ChunkMeta) and to aid debugging in
     // case the buffer gets corrupted.
-    uint8_t flags = 0;           // See SharedMemoryABI::flags.
+    uint8_t flags = 0;           // See SharedMemoryABI::ChunkHeader::flags.
     uint16_t num_fragments = 0;  // Total number of packet fragments.
 
     uint16_t num_fragments_read = 0;  // Number of fragments already read.
@@ -432,6 +481,12 @@ class TraceBuffer {
     kFailedStayOnSameSequence,
   };
 
+  enum class ReadPacketResult {
+    kSucceeded,
+    kFailedInvalidPacket,
+    kFailedEmptyPacket,
+  };
+
   explicit TraceBuffer(OverwritePolicy);
   TraceBuffer(const TraceBuffer&) = delete;
   TraceBuffer& operator=(const TraceBuffer&) = delete;
@@ -488,7 +543,7 @@ class TraceBuffer {
   // TracePacket can be nullptr, in which case the read state is still advanced.
   // When TracePacket is not nullptr, ProducerID must also be not null and will
   // be updated with the ProducerID that originally wrote the chunk.
-  bool ReadNextPacketInChunk(ChunkMeta*, TracePacket*);
+  ReadPacketResult ReadNextPacketInChunk(ChunkMeta*, TracePacket*);
 
   void DcheckIsAlignedAndWithinBounds(const uint8_t* ptr) const {
     PERFETTO_DCHECK(ptr >= begin() && ptr <= end() - sizeof(ChunkRecord));

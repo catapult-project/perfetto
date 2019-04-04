@@ -53,11 +53,13 @@ namespace stats {
   F(invalid_cpu_times,                          kSingle,  kError, kAnalysis), \
   F(meminfo_unknown_keys,                       kSingle,  kError, kAnalysis), \
   F(mismatched_sched_switch_tids,               kSingle,  kError, kAnalysis), \
-  F(mm_unknown_counter,                         kSingle,  kError, kAnalysis), \
   F(mm_unknown_type,                            kSingle,  kError, kAnalysis), \
+  F(power_rail_unknown_index,                   kSingle,  kError, kTrace), \
   F(proc_stat_unknown_counters,                 kSingle,  kError, kAnalysis), \
   F(rss_stat_unknown_keys,                      kSingle,  kError, kAnalysis), \
+  F(rss_stat_negative_size,                     kSingle,  kInfo,  kAnalysis), \
   F(sched_switch_out_of_order,                  kSingle,  kError, kAnalysis), \
+  F(sys_unknown_syscall,                        kSingle,  kError, kAnalysis), \
   F(traced_buf_buffer_size,                     kIndexed, kInfo,  kTrace),    \
   F(traced_buf_bytes_overwritten,               kIndexed, kInfo,  kTrace),    \
   F(traced_buf_bytes_read,                      kIndexed, kInfo,  kTrace),    \
@@ -75,14 +77,17 @@ namespace stats {
   F(traced_buf_readaheads_failed,               kIndexed, kInfo,  kTrace),    \
   F(traced_buf_readaheads_succeeded,            kIndexed, kInfo,  kTrace),    \
   F(traced_buf_write_wrap_count,                kIndexed, kInfo,  kTrace),    \
+  F(traced_chunks_discarded,                    kSingle,  kInfo,  kTrace),    \
   F(traced_data_sources_registered,             kSingle,  kInfo,  kTrace),    \
   F(traced_data_sources_seen,                   kSingle,  kInfo,  kTrace),    \
+  F(traced_patches_discarded,                   kSingle,  kInfo,  kTrace),    \
   F(traced_producers_connected,                 kSingle,  kInfo,  kTrace),    \
   F(traced_producers_seen,                      kSingle,  kInfo,  kTrace),    \
   F(traced_total_buffers,                       kSingle,  kInfo,  kTrace),    \
   F(traced_tracing_sessions,                    kSingle,  kInfo,  kTrace),    \
   F(vmstat_unknown_keys,                        kSingle,  kError, kAnalysis), \
-  F(clock_sync_failure,                         kSingle,  kError, kAnalysis)
+  F(clock_sync_failure,                         kSingle,  kError, kAnalysis), \
+  F(process_tracker_errors,                     kSingle,  kError, kAnalysis)
 // clang-format on
 
 enum Type {

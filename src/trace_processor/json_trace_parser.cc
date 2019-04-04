@@ -139,9 +139,9 @@ JsonTraceParser::~JsonTraceParser() = default;
 
 bool JsonTraceParser::Parse(std::unique_ptr<uint8_t[]> data, size_t size) {
   buffer_.insert(buffer_.end(), data.get(), data.get() + size);
-  char* buf = &buffer_[0];
+  const char* buf = buffer_.data();
   const char* next = buf;
-  const char* end = &buffer_[buffer_.size()];
+  const char* end = buf + buffer_.size();
 
   if (offset_ == 0) {
     // Trace could begin in any of these ways:
@@ -181,7 +181,7 @@ bool JsonTraceParser::Parse(std::unique_ptr<uint8_t[]> data, size_t size) {
     if (value.isMember("pid"))
       opt_pid = CoerceToUint32(value["pid"]);
     if (value.isMember("tid"))
-      opt_pid = CoerceToUint32(value["tid"]);
+      opt_tid = CoerceToUint32(value["tid"]);
 
     uint32_t pid = opt_pid.value_or(0);
     uint32_t tid = opt_tid.value_or(pid);
@@ -215,12 +215,13 @@ bool JsonTraceParser::Parse(std::unique_ptr<uint8_t[]> data, size_t size) {
       case 'M': {  // Metadata events (process and thread names).
         if (strcmp(value["name"].asCString(), "thread_name") == 0) {
           const char* thread_name = value["args"]["name"].asCString();
-          procs->UpdateThreadName(tid, pid, thread_name);
+          auto thrad_name_id = context_->storage->InternString(thread_name);
+          procs->UpdateThread(ts, tid, thrad_name_id);
           break;
         }
         if (strcmp(value["name"].asCString(), "process_name") == 0) {
           const char* proc_name = value["args"]["name"].asCString();
-          procs->UpdateProcess(pid, proc_name);
+          procs->UpdateProcess(pid, base::nullopt, proc_name);
           break;
         }
       }

@@ -18,6 +18,7 @@
 
 #include <ctype.h>
 #include <string.h>
+#include <algorithm>
 
 #include "perfetto/base/logging.h"
 
@@ -84,6 +85,7 @@ void Table::RegisterInternal(sqlite3* db,
                       const char* const* argv, sqlite3_vtab** tab, char**) {
     const TableDescriptor* xdesc = static_cast<const TableDescriptor*>(arg);
     auto table = xdesc->factory(xdb, xdesc->storage);
+    table->name_ = xdesc->name;
 
     auto opt_schema = table->Init(argc, argv);
     if (!opt_schema.has_value()) {
@@ -101,7 +103,6 @@ void Table::RegisterInternal(sqlite3* db,
 
     // Freed in xDisconnect().
     table->schema_ = std::move(schema);
-    table->name_ = xdesc->name;
     *tab = table.release();
 
     return SQLITE_OK;
@@ -302,11 +303,21 @@ Table::Schema& Table::Schema::operator=(const Schema&) = default;
 
 std::string Table::Schema::ToCreateTableStmt() const {
   std::string stmt = "CREATE TABLE x(";
-  for (const auto& col : columns_) {
-    stmt += " " + col.name() + " " + TypeToString(col.type());
-    if (col.hidden())
+  for (size_t i = 0; i < columns_.size(); ++i) {
+    const Column& col = columns_[i];
+    stmt += " " + col.name();
+
+    if (col.type() != ColumnType::kUnknown) {
+      stmt += " " + TypeToString(col.type());
+    } else if (std::find(primary_keys_.begin(), primary_keys_.end(), i) !=
+               primary_keys_.end()) {
+      PERFETTO_FATAL("Unknown type for primary key column %s",
+                     col.name().c_str());
+    }
+    if (col.hidden()) {
       stmt += " HIDDEN";
-     stmt += ",";
+    }
+    stmt += ",";
   }
   stmt += " PRIMARY KEY(";
   for (size_t i = 0; i < primary_keys_.size(); i++) {

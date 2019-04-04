@@ -16,8 +16,10 @@
 #define SRC_TRACE_PROCESSOR_STORAGE_COLUMNS_H_
 
 #include <deque>
+#include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "src/trace_processor/filtered_row_index.h"
 #include "src/trace_processor/sqlite_utils.h"
@@ -199,9 +201,11 @@ class NumericColumn : public StorageColumn {
                       sqlite3_value* value,
                       FilteredRowIndex* index) const {
     auto predicate = sqlite_utils::CreateNumericPredicate<C>(op, value);
-    index->FilterRows([this, &predicate](uint32_t row) {
+    auto cast_predicate = [this,
+                           predicate](uint32_t row) PERFETTO_ALWAYS_INLINE {
       return predicate(static_cast<C>((*deque_)[row]));
-    });
+    };
+    index->FilterRows(cast_predicate);
   }
 
   bool is_naturally_ordered_ = false;
@@ -212,7 +216,7 @@ class StringColumn final : public StorageColumn {
  public:
   StringColumn(std::string col_name,
                const std::deque<Id>* deque,
-               const std::deque<std::string>* string_map,
+               const std::vector<std::string>* string_map,
                bool hidden = false)
       : StorageColumn(col_name, hidden),
         deque_(deque),
@@ -258,7 +262,7 @@ class StringColumn final : public StorageColumn {
 
  private:
   const std::deque<Id>* deque_ = nullptr;
-  const std::deque<std::string>* string_map_ = nullptr;
+  const std::vector<std::string>* string_map_ = nullptr;
 };
 
 // Column which represents the "ts_end" column present in all time based
@@ -268,7 +272,7 @@ class TsEndColumn final : public StorageColumn {
   TsEndColumn(std::string col_name,
               const std::deque<int64_t>* ts_start,
               const std::deque<int64_t>* dur);
-  virtual ~TsEndColumn() override;
+  ~TsEndColumn() override;
 
   void ReportResult(sqlite3_context*, uint32_t) const override;
 
@@ -295,7 +299,7 @@ class TsEndColumn final : public StorageColumn {
 class IdColumn final : public StorageColumn {
  public:
   IdColumn(std::string column_name, TableId table_id);
-  virtual ~IdColumn() override;
+  ~IdColumn() override;
 
   void ReportResult(sqlite3_context* ctx, uint32_t row) const override {
     auto id = TraceStorage::CreateRowId(table_id_, row);
@@ -308,7 +312,7 @@ class IdColumn final : public StorageColumn {
               sqlite3_value* value,
               FilteredRowIndex* index) const override {
     auto predicate = sqlite_utils::CreateNumericPredicate<RowId>(op, value);
-    index->FilterRows([this, &predicate](uint32_t row) {
+    index->FilterRows([this, predicate](uint32_t row) PERFETTO_ALWAYS_INLINE {
       return predicate(TraceStorage::CreateRowId(table_id_, row));
     });
   }
@@ -336,6 +340,71 @@ class IdColumn final : public StorageColumn {
 
  private:
   TableId table_id_;
+};
+
+// Column which is used to simply return the row index itself.
+class RowColumn final : public StorageColumn {
+ public:
+  RowColumn(std::string column_name);
+  virtual ~RowColumn() override;
+
+  void ReportResult(sqlite3_context* ctx, uint32_t row) const override {
+    sqlite_utils::ReportSqliteResult(ctx, row);
+  }
+
+  Bounds BoundFilter(int op, sqlite3_value* sqlite_val) const override {
+    Bounds bounds;
+
+    // Makes the below code much more readable.
+    using namespace sqlite_utils;
+
+    constexpr uint32_t kTMin = std::numeric_limits<uint32_t>::min();
+    constexpr uint32_t kTMax = std::numeric_limits<uint32_t>::max();
+
+    uint32_t min = kTMin;
+    uint32_t max = kTMax;
+    if (IsOpGe(op) || IsOpGt(op)) {
+      min = FindGtBound<uint32_t>(IsOpGe(op), sqlite_val);
+    } else if (IsOpLe(op) || IsOpLt(op)) {
+      max = FindLtBound<uint32_t>(IsOpLe(op), sqlite_val);
+    } else if (IsOpEq(op)) {
+      auto val = FindEqBound<uint32_t>(sqlite_val);
+      min = val;
+      max = val;
+    }
+
+    if (min == kTMin && max == kTMax)
+      return bounds;
+
+    bounds.min_idx = min;
+    bounds.max_idx = max + 1;
+    bounds.consumed = true;
+
+    return bounds;
+  }
+
+  void Filter(int op,
+              sqlite3_value* val,
+              FilteredRowIndex* index) const override {
+    index->FilterRows(sqlite_utils::CreateNumericPredicate<uint32_t>(op, val));
+  }
+
+  Comparator Sort(const QueryConstraints::OrderBy& ob) const override {
+    if (ob.desc) {
+      return [](uint32_t f, uint32_t s) {
+        return sqlite_utils::CompareValuesDesc(f, s);
+      };
+    }
+    return [](uint32_t f, uint32_t s) {
+      return sqlite_utils::CompareValuesAsc(f, s);
+    };
+  }
+
+  Table::ColumnType GetType() const override {
+    return Table::ColumnType::kUint;
+  }
+
+  bool IsNaturallyOrdered() const override { return true; }
 };
 
 }  // namespace trace_processor

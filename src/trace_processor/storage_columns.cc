@@ -46,7 +46,7 @@ void TsEndColumn::Filter(int op,
                          sqlite3_value* value,
                          FilteredRowIndex* index) const {
   auto predicate = sqlite_utils::CreateNumericPredicate<int64_t>(op, value);
-  index->FilterRows([this, &predicate](uint32_t row) {
+  index->FilterRows([this, predicate](uint32_t row) PERFETTO_ALWAYS_INLINE {
     return predicate((*ts_start_)[row] + (*dur_)[row]);
   });
 }
@@ -70,6 +70,10 @@ TsEndColumn::Comparator TsEndColumn::Sort(
 IdColumn::IdColumn(std::string column_name, TableId table_id)
     : StorageColumn(std::move(column_name), false), table_id_(table_id) {}
 IdColumn::~IdColumn() = default;
+
+RowColumn::RowColumn(std::string column_name)
+    : StorageColumn(std::move(column_name), false) {}
+RowColumn::~RowColumn() = default;
 
 }  // namespace trace_processor
 }  // namespace perfetto

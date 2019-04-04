@@ -30,16 +30,20 @@ import {ANDROID_LOGS_TRACK_KIND} from '../tracks/android_log/common';
 import {SLICE_TRACK_KIND} from '../tracks/chrome_slices/common';
 import {CPU_FREQ_TRACK_KIND} from '../tracks/cpu_freq/common';
 import {CPU_SLICE_TRACK_KIND} from '../tracks/cpu_slices/common';
+import {
+  PROCESS_SCHEDULING_TRACK_KIND
+} from '../tracks/process_scheduling/common';
 import {PROCESS_SUMMARY_TRACK} from '../tracks/process_summary/common';
+import {THREAD_STATE_TRACK_KIND} from '../tracks/thread_state/common';
 
 import {Child, Children, Controller} from './controller';
 import {globals} from './globals';
 import {QueryController, QueryControllerArgs} from './query_controller';
-import {TrackControllerArgs, trackControllerRegistry} from './track_controller';
 import {
   SelectionController,
   SelectionControllerArgs
 } from './selection_controller';
+import {TrackControllerArgs, trackControllerRegistry} from './track_controller';
 
 type States = 'init'|'loading_trace'|'ready';
 
@@ -276,7 +280,7 @@ export class TraceController extends Controller<States> {
 
     const counters = await engine.query(`
       select name, ref, ref_type, count(ref_type)
-      from counters
+      from counter_definitions
       where ref is not null
       group by name, ref, ref_type
       order by ref_type desc
@@ -333,7 +337,7 @@ export class TraceController extends Controller<States> {
           pid,
           thread.name as threadName,
           process.name as processName,
-          total_dur
+          total_dur as totalDur
         from
           thread
           left join process using(upid)
@@ -355,6 +359,7 @@ export class TraceController extends Controller<States> {
            pid: NUM_NULL,
            threadName: STR_NULL,
            processName: STR_NULL,
+           totalDur: NUM_NULL,
          })) {
       const utid = row.utid;
       const tid = row.tid;
@@ -362,11 +367,15 @@ export class TraceController extends Controller<States> {
       const pid = row.pid;
       const threadName = row.threadName;
       const processName = row.processName;
+      const hasSchedEvents = !!row.totalDur;
+      const threadSched =
+          await engine.query(`select count(1) from sched where utid = ${utid}`);
+      const threadHasSched = threadSched.columns[0].longValues![0] > 0;
 
       const maxDepth = utid === null ? undefined : utidToMaxDepth.get(utid);
       if (maxDepth === undefined &&
           (upid === null || !counterUpids.has(upid)) &&
-          !counterUtids.has(utid)) {
+          !counterUtids.has(utid) && !threadHasSched) {
         continue;
       }
 
@@ -382,10 +391,12 @@ export class TraceController extends Controller<States> {
         }
 
         const pidForColor = pid || tid || upid || utid || 0;
+        const kind = hasSchedEvents ? PROCESS_SCHEDULING_TRACK_KIND :
+                                      PROCESS_SUMMARY_TRACK;
         addSummaryTrackActions.push(Actions.addTrack({
           id: summaryTrackId,
           engineId: this.engineId,
-          kind: PROCESS_SUMMARY_TRACK,
+          kind,
           name: `${upid === null ? tid : pid} summary`,
           config: {pidForColor, upid, utid},
         }));
@@ -432,6 +443,16 @@ export class TraceController extends Controller<States> {
             name,
             ref,
           }
+        }));
+      }
+
+      if (threadHasSched) {
+        addToTrackActions.push(Actions.addTrack({
+          engineId: this.engineId,
+          kind: THREAD_STATE_TRACK_KIND,
+          name: `${threadName} [${tid}]`,
+          trackGroup: pUuid,
+          config: {utid}
         }));
       }
 

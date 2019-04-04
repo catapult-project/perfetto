@@ -31,13 +31,13 @@ void ArgsTable::RegisterTable(sqlite3* db, const TraceStorage* storage) {
 StorageSchema ArgsTable::CreateStorageSchema() {
   const auto& args = storage_->args();
   return StorageSchema::Builder()
-      .AddNumericColumn("id", &args.ids())
+      .AddNumericColumn("arg_set_id", &args.set_ids())
       .AddStringColumn("flat_key", &args.flat_keys(), &storage_->string_pool())
       .AddStringColumn("key", &args.keys(), &storage_->string_pool())
       .AddColumn<ValueColumn>("int_value", VariadicType::kInt, storage_)
       .AddColumn<ValueColumn>("string_value", VariadicType::kString, storage_)
       .AddColumn<ValueColumn>("real_value", VariadicType::kReal, storage_)
-      .Build({"id", "key"});
+      .Build({"arg_set_id", "key"});
 }
 
 uint32_t ArgsTable::RowCount() {
@@ -47,7 +47,7 @@ uint32_t ArgsTable::RowCount() {
 int ArgsTable::BestIndex(const QueryConstraints& qc, BestIndexInfo* info) {
   // In the case of an id equality filter, we can do a very efficient lookup.
   if (qc.constraints().size() == 1) {
-    auto id = static_cast<int>(schema().ColumnIndexFromName("id"));
+    auto id = static_cast<int>(schema().ColumnIndexFromName("arg_set_id"));
     const auto& cs = qc.constraints().back();
     if (cs.iColumn == id && sqlite_utils::IsOpEq(cs.op)) {
       info->estimated_cost = 1;
@@ -103,24 +103,27 @@ void ArgsTable::ValueColumn::Filter(int op,
     case VariadicType::kInt: {
       bool op_is_null = sqlite_utils::IsOpIsNull(op);
       auto predicate = sqlite_utils::CreateNumericPredicate<int64_t>(op, value);
-      index->FilterRows([this, &predicate, op_is_null](uint32_t row) {
-        const auto& arg = storage_->args().arg_values()[row];
-        return arg.type == type_ ? predicate(arg.int_value) : op_is_null;
-      });
+      index->FilterRows(
+          [this, predicate, op_is_null](uint32_t row) PERFETTO_ALWAYS_INLINE {
+            const auto& arg = storage_->args().arg_values()[row];
+            return arg.type == type_ ? predicate(arg.int_value) : op_is_null;
+          });
       break;
     }
     case VariadicType::kReal: {
       bool op_is_null = sqlite_utils::IsOpIsNull(op);
       auto predicate = sqlite_utils::CreateNumericPredicate<double>(op, value);
-      index->FilterRows([this, &predicate, op_is_null](uint32_t row) {
-        const auto& arg = storage_->args().arg_values()[row];
-        return arg.type == type_ ? predicate(arg.real_value) : op_is_null;
-      });
+      index->FilterRows(
+          [this, predicate, op_is_null](uint32_t row) PERFETTO_ALWAYS_INLINE {
+            const auto& arg = storage_->args().arg_values()[row];
+            return arg.type == type_ ? predicate(arg.real_value) : op_is_null;
+          });
       break;
     }
     case VariadicType::kString: {
       auto predicate = sqlite_utils::CreateStringPredicate(op, value);
-      index->FilterRows([this, &predicate](uint32_t row) {
+      index->FilterRows([this,
+                         &predicate](uint32_t row) PERFETTO_ALWAYS_INLINE {
         const auto& arg = storage_->args().arg_values()[row];
         return arg.type == type_
                    ? predicate(storage_->GetString(arg.string_value).c_str())

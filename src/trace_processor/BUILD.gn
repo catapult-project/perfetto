@@ -14,6 +14,7 @@
 
 import("../../gn/perfetto.gni")
 import("../../gn/wasm.gni")
+import("../../gn/fuzzer.gni")
 
 wasm_lib("trace_processor_wasm") {
   name = "trace_processor"
@@ -46,11 +47,15 @@ source_set("lib") {
     "android_logs_table.h",
     "args_table.cc",
     "args_table.h",
+    "args_tracker.cc",
+    "args_tracker.h",
     "chunked_trace_reader.h",
     "clock_tracker.cc",
     "clock_tracker.h",
-    "counters_table.cc",
-    "counters_table.h",
+    "counter_definitions_table.cc",
+    "counter_definitions_table.h",
+    "counter_values_table.cc",
+    "counter_values_table.h",
     "event_tracker.cc",
     "event_tracker.h",
     "filtered_row_index.cc",
@@ -86,6 +91,8 @@ source_set("lib") {
     "span_join_operator_table.h",
     "sql_stats_table.cc",
     "sql_stats_table.h",
+    "sqlite3_str_split.cc",
+    "sqlite3_str_split.h",
     "sqlite_utils.h",
     "stats.h",
     "stats_table.cc",
@@ -96,6 +103,8 @@ source_set("lib") {
     "storage_schema.h",
     "storage_table.cc",
     "storage_table.h",
+    "string_pool.cc",
+    "string_pool.h",
     "string_table.cc",
     "string_table.h",
     "table.cc",
@@ -116,14 +125,25 @@ source_set("lib") {
     "window_operator_table.cc",
     "window_operator_table.h",
   ]
+
+  # TODO(primiano): remove :lite deps and depend only on protozero targets.
   deps = [
     "../../buildtools:sqlite",
     "../../gn:default_deps",
     "../../include/perfetto/traced:sys_stats_counters",
-    "../../protos/perfetto/trace:lite",
-    "../../protos/perfetto/trace_processor:lite",
+    "../../protos/perfetto/common:zero",
+    "../../protos/perfetto/trace:zero",
+    "../../protos/perfetto/trace/android:zero",
+    "../../protos/perfetto/trace/ftrace:zero",
+    "../../protos/perfetto/trace/power:zero",
+    "../../protos/perfetto/trace/profiling:zero",
+    "../../protos/perfetto/trace/ps:zero",
+    "../../protos/perfetto/trace/sys_stats:zero",
     "../base",
     "../protozero",
+
+    # TODO(primiano): remove this one dep and move to a ":zero" dep.
+    "../../protos/perfetto/trace_processor:lite",
   ]
   public_deps = [
     "../../include/perfetto/trace_processor",
@@ -146,7 +166,10 @@ if (current_toolchain == host_toolchain) {
       "../base",
     ]
     if (perfetto_build_standalone) {
-      deps += [ "../../buildtools:linenoise" ]
+      deps += [
+        "../../buildtools:linenoise",
+        "../../gn/standalone:gen_git_revision",
+      ]
     }
     sources = [
       "trace_processor_shell.cc",
@@ -172,10 +195,10 @@ source_set("unittests") {
   testonly = true
   sources = [
     "clock_tracker_unittest.cc",
-    "counters_table_unittest.cc",
     "event_tracker_unittest.cc",
     "filtered_row_index_unittest.cc",
     "ftrace_utils_unittest.cc",
+    "null_term_string_view_unittest.cc",
     "process_table_unittest.cc",
     "process_tracker_unittest.cc",
     "proto_trace_parser_unittest.cc",
@@ -183,6 +206,8 @@ source_set("unittests") {
     "sched_slice_table_unittest.cc",
     "slice_tracker_unittest.cc",
     "span_join_operator_table_unittest.cc",
+    "sqlite3_str_split_unittest.cc",
+    "string_pool_unittest.cc",
     "thread_table_unittest.cc",
     "trace_processor_impl_unittest.cc",
     "trace_sorter_unittest.cc",
@@ -192,8 +217,13 @@ source_set("unittests") {
     "../../buildtools:sqlite",
     "../../gn:default_deps",
     "../../gn:gtest_deps",
-    "../../protos/perfetto/trace:lite",
+    "../../protos/perfetto/common:zero",
+    "../../protos/perfetto/trace:zero",
+    "../../protos/perfetto/trace/ftrace:zero",
+    "../../protos/perfetto/trace/ps:zero",
+    "../../protos/perfetto/trace/sys_stats:zero",
     "../base",
+    "../protozero",
   ]
   if (perfetto_build_standalone) {
     sources += [ "json_trace_parser_unittest.cc" ]
@@ -208,6 +238,24 @@ source_set("integrationtests") {
   ]
   deps = [
     ":lib",
+    "../../buildtools:sqlite",
+    "../../gn:default_deps",
+    "../../gn:gtest_deps",
+    "../../protos/perfetto/trace:lite",
+    "../../protos/perfetto/trace_processor:lite",
+    "../base",
+    "../base:test_support",
+  ]
+}
+
+perfetto_fuzzer_test("trace_processor_fuzzer") {
+  testonly = true
+  sources = [
+    "trace_parsing_fuzzer.cc",
+  ]
+  deps = [
+    ":lib",
+    "../../../../gn:default_deps",
     "../../buildtools:sqlite",
     "../../gn:default_deps",
     "../../gn:gtest_deps",

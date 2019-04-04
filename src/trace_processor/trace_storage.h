@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "perfetto/base/hash.h"
 #include "perfetto/base/logging.h"
 #include "perfetto/base/optional.h"
 #include "perfetto/base/string_view.h"
@@ -51,7 +52,7 @@ using StringId = uint32_t;
 enum TableId : uint8_t {
   // Intentionally don't have TableId == 0 so that RowId == 0 can refer to an
   // invalid row id.
-  kCounters = 1,
+  kCounterValues = 1,
   kRawEvents = 2,
   kInstants = 3,
   kSched = 4,
@@ -60,8 +61,10 @@ enum TableId : uint8_t {
 // The top 8 bits are set to the TableId and the bottom 32 to the row of the
 // table.
 using RowId = int64_t;
-
 static const RowId kInvalidRowId = 0;
+
+using ArgSetId = uint32_t;
+static const ArgSetId kInvalidArgSetId = 0;
 
 enum RefType {
   kRefNoRef = 0,
@@ -88,16 +91,15 @@ class TraceStorage {
   struct Process {
     explicit Process(uint32_t p) : pid(p) {}
     int64_t start_ns = 0;
-    int64_t end_ns = 0;
     StringId name_id = 0;
     uint32_t pid = 0;
+    base::Optional<UniquePid> pupid;
   };
 
   // Information about a unique thread seen in a trace.
   struct Thread {
     explicit Thread(uint32_t t) : tid(t) {}
     int64_t start_ns = 0;
-    int64_t end_ns = 0;
     StringId name_id = 0;
     base::Optional<UniquePid> upid;
     uint32_t tid = 0;
@@ -139,40 +141,79 @@ class TraceStorage {
       };
     };
 
-    const std::deque<RowId>& ids() const { return ids_; }
+    struct Arg {
+      StringId flat_key = 0;
+      StringId key = 0;
+      Variadic value = Variadic::Integer(0);
+
+      // This is only used by the arg tracker and so is not part of the hash.
+      RowId row_id = 0;
+    };
+
+    struct ArgHasher {
+      uint64_t operator()(const Arg& arg) const noexcept {
+        base::Hash hash;
+        hash.Update(arg.key);
+        // We don't hash arg.flat_key because it's a subsequence of arg.key.
+        switch (arg.value.type) {
+          case Variadic::Type::kInt:
+            hash.Update(arg.value.int_value);
+            break;
+          case Variadic::Type::kString:
+            hash.Update(arg.value.string_value);
+            break;
+          case Variadic::Type::kReal:
+            hash.Update(arg.value.real_value);
+            break;
+        }
+        return hash.digest();
+      }
+    };
+
+    const std::deque<ArgSetId>& set_ids() const { return set_ids_; }
     const std::deque<StringId>& flat_keys() const { return flat_keys_; }
     const std::deque<StringId>& keys() const { return keys_; }
     const std::deque<Variadic>& arg_values() const { return arg_values_; }
-    const std::multimap<RowId, uint32_t>& args_for_id() const {
-      return args_for_id_;
+    uint32_t args_count() const {
+      return static_cast<uint32_t>(set_ids_.size());
     }
-    size_t args_count() const { return ids_.size(); }
 
-    void AddArg(RowId id, StringId flat_key, StringId key, Variadic value) {
-      // TODO(b/123252504): disable this code to stop blow-ups in ingestion time
-      // and memory.
-      perfetto::base::ignore_result(id);
-      perfetto::base::ignore_result(flat_key);
-      perfetto::base::ignore_result(key);
-      perfetto::base::ignore_result(value);
-      /*
-      if (id == kInvalidRowId)
-        return;
+    ArgSetId AddArgSet(const std::vector<Arg>& args,
+                       uint32_t begin,
+                       uint32_t end) {
+      base::Hash hash;
+      for (uint32_t i = begin; i < end; i++) {
+        hash.Update(ArgHasher()(args[i]));
+      }
 
-      ids_.emplace_back(id);
-      flat_keys_.emplace_back(flat_key);
-      keys_.emplace_back(key);
-      arg_values_.emplace_back(value);
-      args_for_id_.emplace(id, static_cast<uint32_t>(args_count() - 1));
-      */
+      ArgSetHash digest = hash.digest();
+      auto it = arg_row_for_hash_.find(digest);
+      if (it != arg_row_for_hash_.end()) {
+        return set_ids_[it->second];
+      }
+
+      // The +1 ensures that nothing has an id == kInvalidArgSetId == 0.
+      ArgSetId id = static_cast<uint32_t>(arg_row_for_hash_.size()) + 1;
+      arg_row_for_hash_.emplace(digest, args_count());
+      for (uint32_t i = begin; i < end; i++) {
+        const auto& arg = args[i];
+        set_ids_.emplace_back(id);
+        flat_keys_.emplace_back(arg.flat_key);
+        keys_.emplace_back(arg.key);
+        arg_values_.emplace_back(arg.value);
+      }
+      return id;
     }
 
    private:
-    std::deque<RowId> ids_;
+    using ArgSetHash = uint64_t;
+
+    std::deque<ArgSetId> set_ids_;
     std::deque<StringId> flat_keys_;
     std::deque<StringId> keys_;
     std::deque<Variadic> arg_values_;
-    std::multimap<RowId, uint32_t> args_for_id_;
+
+    std::unordered_map<ArgSetHash, uint32_t> arg_row_for_hash_;
   };
 
   class Slices {
@@ -290,48 +331,79 @@ class TraceStorage {
     std::deque<int64_t> parent_stack_ids_;
   };
 
-  class Counters {
+  class CounterDefinitions {
    public:
-    inline size_t AddCounter(int64_t timestamp,
-                             int64_t duration,
-                             StringId name_id,
-                             double value,
-                             int64_t ref,
-                             RefType type) {
-      timestamps_.emplace_back(timestamp);
-      durations_.emplace_back(duration);
+    using Id = uint32_t;
+
+    inline Id AddCounterDefinition(StringId name_id,
+                                   int64_t ref,
+                                   RefType type) {
+      base::Hash hash;
+      hash.Update(name_id);
+      hash.Update(ref);
+      hash.Update(type);
+
+      // TODO(lalitm): this is a perf bottleneck and likely we can do something
+      // quite a bit better here.
+      uint64_t digest = hash.digest();
+      auto it = hash_to_row_idx_.find(digest);
+      if (it != hash_to_row_idx_.end())
+        return it->second;
+
       name_ids_.emplace_back(name_id);
-      values_.emplace_back(value);
       refs_.emplace_back(ref);
       types_.emplace_back(type);
-      return counter_count() - 1;
+      hash_to_row_idx_.emplace(digest, size() - 1);
+      return size() - 1;
     }
 
-    void set_duration(size_t index, int64_t duration) {
-      durations_[index] = duration;
-    }
-
-    size_t counter_count() const { return timestamps_.size(); }
-
-    const std::deque<int64_t>& timestamps() const { return timestamps_; }
-
-    const std::deque<int64_t>& durations() const { return durations_; }
+    uint32_t size() const { return static_cast<uint32_t>(name_ids_.size()); }
 
     const std::deque<StringId>& name_ids() const { return name_ids_; }
-
-    const std::deque<double>& values() const { return values_; }
 
     const std::deque<int64_t>& refs() const { return refs_; }
 
     const std::deque<RefType>& types() const { return types_; }
 
    private:
-    std::deque<int64_t> timestamps_;
-    std::deque<int64_t> durations_;
     std::deque<StringId> name_ids_;
-    std::deque<double> values_;
     std::deque<int64_t> refs_;
     std::deque<RefType> types_;
+
+    std::unordered_map<uint64_t, uint32_t> hash_to_row_idx_;
+  };
+
+  class CounterValues {
+   public:
+    inline uint32_t AddCounterValue(CounterDefinitions::Id counter_id,
+                                    int64_t timestamp,
+                                    double value) {
+      counter_ids_.emplace_back(counter_id);
+      timestamps_.emplace_back(timestamp);
+      values_.emplace_back(value);
+      arg_set_ids_.emplace_back(kInvalidArgSetId);
+      return size() - 1;
+    }
+
+    void set_arg_set_id(uint32_t row, ArgSetId id) { arg_set_ids_[row] = id; }
+
+    uint32_t size() const { return static_cast<uint32_t>(counter_ids_.size()); }
+
+    const std::deque<CounterDefinitions::Id>& counter_ids() const {
+      return counter_ids_;
+    }
+
+    const std::deque<int64_t>& timestamps() const { return timestamps_; }
+
+    const std::deque<double>& values() const { return values_; }
+
+    const std::deque<ArgSetId>& arg_set_ids() const { return arg_set_ids_; }
+
+   private:
+    std::deque<CounterDefinitions::Id> counter_ids_;
+    std::deque<int64_t> timestamps_;
+    std::deque<double> values_;
+    std::deque<ArgSetId> arg_set_ids_;
   };
 
   class SqlStats {
@@ -366,8 +438,11 @@ class TraceStorage {
       values_.emplace_back(value);
       refs_.emplace_back(ref);
       types_.emplace_back(type);
+      arg_set_ids_.emplace_back(kInvalidArgSetId);
       return static_cast<uint32_t>(instant_count() - 1);
     }
+
+    void set_arg_set_id(uint32_t row, ArgSetId id) { arg_set_ids_[row] = id; }
 
     size_t instant_count() const { return timestamps_.size(); }
 
@@ -381,12 +456,15 @@ class TraceStorage {
 
     const std::deque<RefType>& types() const { return types_; }
 
+    const std::deque<ArgSetId>& arg_set_ids() const { return arg_set_ids_; }
+
    private:
     std::deque<int64_t> timestamps_;
     std::deque<StringId> name_ids_;
     std::deque<double> values_;
     std::deque<int64_t> refs_;
     std::deque<RefType> types_;
+    std::deque<ArgSetId> arg_set_ids_;
   };
 
   class RawEvents {
@@ -399,9 +477,12 @@ class TraceStorage {
       name_ids_.emplace_back(name_id);
       cpus_.emplace_back(cpu);
       utids_.emplace_back(utid);
+      arg_set_ids_.emplace_back(kInvalidArgSetId);
       return CreateRowId(TableId::kRawEvents,
                          static_cast<uint32_t>(raw_event_count() - 1));
     }
+
+    void set_arg_set_id(uint32_t row, ArgSetId id) { arg_set_ids_[row] = id; }
 
     size_t raw_event_count() const { return timestamps_.size(); }
 
@@ -413,11 +494,14 @@ class TraceStorage {
 
     const std::deque<UniqueTid>& utids() const { return utids_; }
 
+    const std::deque<ArgSetId>& arg_set_ids() const { return arg_set_ids_; }
+
    private:
     std::deque<int64_t> timestamps_;
     std::deque<StringId> name_ids_;
     std::deque<uint32_t> cpus_;
     std::deque<UniqueTid> utids_;
+    std::deque<ArgSetId> arg_set_ids_;
   };
 
   class AndroidLogs {
@@ -524,8 +608,14 @@ class TraceStorage {
   }
 
   static RowId CreateRowId(TableId table, uint32_t row) {
-    static constexpr uint8_t kRowIdTableShift = 32;
     return (static_cast<RowId>(table) << kRowIdTableShift) | row;
+  }
+
+  static std::pair<int8_t /*table*/, uint32_t /*row*/> ParseRowId(RowId rowid) {
+    auto id = static_cast<uint64_t>(rowid);
+    auto table_id = static_cast<uint8_t>(id >> kRowIdTableShift);
+    auto row = static_cast<uint32_t>(id & ((1ull << kRowIdTableShift) - 1));
+    return std::make_pair(table_id, row);
   }
 
   const Slices& slices() const { return slices_; }
@@ -534,8 +624,15 @@ class TraceStorage {
   const NestableSlices& nestable_slices() const { return nestable_slices_; }
   NestableSlices* mutable_nestable_slices() { return &nestable_slices_; }
 
-  const Counters& counters() const { return counters_; }
-  Counters* mutable_counters() { return &counters_; }
+  const CounterDefinitions& counter_definitions() const {
+    return counter_definitions_;
+  }
+  CounterDefinitions* mutable_counter_definitions() {
+    return &counter_definitions_;
+  }
+
+  const CounterValues& counter_values() const { return counter_values_; }
+  CounterValues* mutable_counter_values() { return &counter_values_; }
 
   const SqlStats& sql_stats() const { return sql_stats_; }
   SqlStats* mutable_sql_stats() { return &sql_stats_; }
@@ -554,7 +651,7 @@ class TraceStorage {
   const RawEvents& raw_events() const { return raw_events_; }
   RawEvents* mutable_raw_events() { return &raw_events_; }
 
-  const std::deque<std::string>& string_pool() const { return string_pool_; }
+  const std::vector<std::string>& string_pool() const { return string_pool_; }
 
   // |unique_processes_| always contains at least 1 element becuase the 0th ID
   // is reserved to indicate an invalid process.
@@ -572,9 +669,11 @@ class TraceStorage {
   std::pair<int64_t, int64_t> GetTraceTimestampBoundsNs() const;
 
  private:
-  TraceStorage& operator=(const TraceStorage&) = default;
+  static constexpr uint8_t kRowIdTableShift = 32;
 
   using StringHash = uint64_t;
+
+  TraceStorage& operator=(const TraceStorage&) = default;
 
   // Stats about parsing the trace.
   StatsMap stats_{};
@@ -586,13 +685,15 @@ class TraceStorage {
   Args args_;
 
   // One entry for each unique string in the trace.
-  std::deque<std::string> string_pool_;
+  std::vector<std::string> string_pool_;
 
   // One entry for each unique string in the trace.
   std::unordered_map<StringHash, StringId> string_index_;
 
   // One entry for each UniquePid, with UniquePid as the index.
-  std::deque<Process> unique_processes_;
+  // Never hold on to pointers to Process, as vector resize will
+  // invalidate them.
+  std::vector<Process> unique_processes_;
 
   // One entry for each UniqueTid, with UniqueTid as the index.
   std::deque<Thread> unique_threads_;
@@ -600,9 +701,12 @@ class TraceStorage {
   // Slices coming from userspace events (e.g. Chromium TRACE_EVENT macros).
   NestableSlices nestable_slices_;
 
-  // Counter events from the trace. This includes CPU frequency events as well
-  // systrace trace_marker counter events.
-  Counters counters_;
+  // The type of counters in the trace. Can be thought of the the "metadata".
+  CounterDefinitions counter_definitions_;
+
+  // The values from the Counter events from the trace. This includes CPU
+  // frequency events as well systrace trace_marker counter events.
+  CounterValues counter_values_;
 
   SqlStats sql_stats_;
 

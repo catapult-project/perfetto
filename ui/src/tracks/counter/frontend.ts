@@ -127,7 +127,8 @@ class CounterTrack extends Track<Config, Data> {
 
     if (this.hoveredValue !== undefined && this.hoveredTs !== undefined) {
       // TODO(hjd): Add units.
-      const text = `value: ${this.hoveredValue.toLocaleString()}`;
+      let text = (data.isQuantized) ? 'weighted avg: ' : 'value: ';
+      text += `${this.hoveredValue.toLocaleString()}`;
       const width = ctx.measureText(text).width;
 
       ctx.fillStyle = `hsl(${hue}, 45%, 75%)`;
@@ -167,6 +168,7 @@ class CounterTrack extends Track<Config, Data> {
     ctx.fillRect(0, 0, 40, 16);
     ctx.fillStyle = '#666';
     ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
     ctx.fillText(`${yLabel}`, 5, 14);
 
     // If the cached trace slices don't fully cover the visible time range,
