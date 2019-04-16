@@ -227,7 +227,20 @@ void StopApp(std::string app_name) {
   system(stop_cmd.c_str());
 }
 
+// TODO(b/118428762): unwinding is broken at least x86 emulators, blanket-skip
+// all x86-like primary ABIs until we've taken a closer look.
+bool IsX86() {
+  char buf[PROP_VALUE_MAX + 1] = {};
+  int ret = __system_property_get("ro.product.cpu.abi", buf);
+  PERFETTO_CHECK(ret >= 0);
+  std::string abi(buf);
+  return abi.find("x86") != std::string::npos;
+}
+
 TEST(HeapprofdCtsTest, DebuggableAppRuntime) {
+  if (IsX86())
+    return;
+
   std::string app_name = "android.perfetto.cts.app.debuggable";
   const auto& packets = ProfileRuntime(app_name);
   AssertExpectedAllocationsPresent(packets);
@@ -235,6 +248,9 @@ TEST(HeapprofdCtsTest, DebuggableAppRuntime) {
 }
 
 TEST(HeapprofdCtsTest, DebuggableAppStartup) {
+  if (IsX86())
+    return;
+
   std::string app_name = "android.perfetto.cts.app.debuggable";
   const auto& packets = ProfileStartup(app_name);
   AssertExpectedAllocationsPresent(packets);
@@ -242,6 +258,9 @@ TEST(HeapprofdCtsTest, DebuggableAppStartup) {
 }
 
 TEST(HeapprofdCtsTest, ReleaseAppRuntime) {
+  if (IsX86())
+    return;
+
   std::string app_name = "android.perfetto.cts.app.release";
   const auto& packets = ProfileRuntime(app_name);
 
@@ -254,6 +273,9 @@ TEST(HeapprofdCtsTest, ReleaseAppRuntime) {
 }
 
 TEST(HeapprofdCtsTest, ReleaseAppStartup) {
+  if (IsX86())
+    return;
+
   std::string app_name = "android.perfetto.cts.app.release";
   const auto& packets = ProfileStartup(app_name);
 

@@ -74,6 +74,10 @@ class PERFETTO_EXPORT DataSourceConfig {
   DataSourceConfig& operator=(DataSourceConfig&&);
   DataSourceConfig(const DataSourceConfig&);
   DataSourceConfig& operator=(const DataSourceConfig&);
+  bool operator==(const DataSourceConfig&) const;
+  bool operator!=(const DataSourceConfig& other) const {
+    return !(*this == other);
+  }
 
   // Conversion methods from/to the corresponding protobuf types.
   void FromProto(const perfetto::protos::DataSourceConfig&);
@@ -87,6 +91,11 @@ class PERFETTO_EXPORT DataSourceConfig {
 
   uint32_t trace_duration_ms() const { return trace_duration_ms_; }
   void set_trace_duration_ms(uint32_t value) { trace_duration_ms_ = value; }
+
+  bool enable_extra_guardrails() const { return enable_extra_guardrails_; }
+  void set_enable_extra_guardrails(bool value) {
+    enable_extra_guardrails_ = value;
+  }
 
   uint64_t tracing_session_id() const { return tracing_session_id_; }
   void set_tracing_session_id(uint64_t value) { tracing_session_id_ = value; }
@@ -139,6 +148,7 @@ class PERFETTO_EXPORT DataSourceConfig {
   std::string name_ = {};
   uint32_t target_buffer_ = {};
   uint32_t trace_duration_ms_ = {};
+  bool enable_extra_guardrails_ = {};
   uint64_t tracing_session_id_ = {};
   FtraceConfig ftrace_config_ = {};
   ChromeConfig chrome_config_ = {};

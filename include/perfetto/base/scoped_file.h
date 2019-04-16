@@ -22,7 +22,8 @@
 #include <fcntl.h>
 #include <stdio.h>
 
-#if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+#if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN) && \
+    !PERFETTO_BUILDFLAG(PERFETTO_COMPILER_GCC)
 #include <corecrt_io.h>
 typedef int mode_t;
 #else
@@ -99,12 +100,6 @@ using ScopedDir = ScopedResource<DIR*, closedir, nullptr>;
 #endif
 
 using ScopedFstream = ScopedResource<FILE*, fclose, nullptr>;
-
-inline int FreeString(char* ptr) {
-  free(ptr);
-  return 0;
-}
-using ScopedString = ScopedResource<char*, FreeString, nullptr>;
 
 }  // namespace base
 }  // namespace perfetto

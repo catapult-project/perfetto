@@ -28,9 +28,10 @@
 #endif
 
 #include "perfetto/base/scoped_file.h"
+#include "perfetto/base/thread_task_runner.h"
+#include "perfetto/tracing/core/basic_types.h"
 #include "src/profiling/memory/bookkeeping.h"
-#include "src/profiling/memory/bounded_queue.h"
-#include "src/profiling/memory/queue_messages.h"
+#include "src/profiling/memory/unwound_messages.h"
 #include "src/profiling/memory/wire_protocol.h"
 
 namespace perfetto {
@@ -41,6 +42,23 @@ namespace profiling {
 class FileDescriptorMaps : public unwindstack::Maps {
  public:
   FileDescriptorMaps(base::ScopedFile fd);
+
+  FileDescriptorMaps(const FileDescriptorMaps&) = delete;
+  FileDescriptorMaps& operator=(const FileDescriptorMaps&) = delete;
+
+  FileDescriptorMaps(FileDescriptorMaps&& m) : Maps(std::move(m)) {
+    fd_ = std::move(m.fd_);
+  }
+
+  FileDescriptorMaps& operator=(FileDescriptorMaps&& m) {
+    if (&m != this)
+      fd_ = std::move(m.fd_);
+    Maps::operator=(std::move(m));
+    return *this;
+  }
+
+  virtual ~FileDescriptorMaps() override = default;
+
   bool Parse() override;
   void Reset();
 
@@ -112,10 +130,68 @@ struct UnwindingMetadata {
 
 bool DoUnwind(WireMessage*, UnwindingMetadata* metadata, AllocRecord* out);
 
-bool HandleUnwindingRecord(UnwindingRecord* rec, BookkeepingRecord* out);
+class UnwindingWorker : public base::UnixSocket::EventListener {
+ public:
+  class Delegate {
+   public:
+    virtual void PostAllocRecord(AllocRecord) = 0;
+    virtual void PostFreeRecord(FreeRecord) = 0;
+    virtual void PostSocketDisconnected(DataSourceInstanceID,
+                                        pid_t pid,
+                                        SharedRingBuffer::Stats stats) = 0;
+    virtual ~Delegate();
+  };
 
-void UnwindingMainLoop(BoundedQueue<UnwindingRecord>* input_queue,
-                       BoundedQueue<BookkeepingRecord>* output_queue);
+  struct HandoffData {
+    DataSourceInstanceID data_source_instance_id;
+    base::UnixSocketRaw sock;
+    base::ScopedFile fds[kHandshakeSize];
+    SharedRingBuffer shmem;
+  };
+
+  UnwindingWorker(Delegate* delegate, base::ThreadTaskRunner thread_task_runner)
+      : delegate_(delegate),
+        thread_task_runner_(std::move(thread_task_runner)) {}
+
+  // Public API safe to call from other threads.
+  void PostDisconnectSocket(pid_t pid);
+  void PostHandoffSocket(HandoffData);
+
+  // Implementation of UnixSocket::EventListener.
+  // Do not call explicitly.
+  void OnDisconnect(base::UnixSocket* self) override;
+  void OnNewIncomingConnection(base::UnixSocket*,
+                               std::unique_ptr<base::UnixSocket>) override {
+    PERFETTO_DFATAL("This should not happen.");
+  }
+  void OnDataAvailable(base::UnixSocket* self) override;
+
+ public:
+  // static and public for testing/fuzzing
+  static void HandleBuffer(const SharedRingBuffer::Buffer& buf,
+                           UnwindingMetadata* unwinding_metadata,
+                           DataSourceInstanceID data_source_instance_id,
+                           pid_t peer_pid,
+                           Delegate* delegate);
+
+ private:
+  void HandleHandoffSocket(HandoffData data);
+  void HandleDisconnectSocket(pid_t pid);
+
+  void HandleUnwindBatch(pid_t);
+
+  struct ClientData {
+    DataSourceInstanceID data_source_instance_id;
+    std::unique_ptr<base::UnixSocket> sock;
+    UnwindingMetadata metadata;
+    SharedRingBuffer shmem;
+  };
+
+  std::map<pid_t, ClientData> client_data_;
+  Delegate* delegate_;
+  // Task runner with a dedicated thread.
+  base::ThreadTaskRunner thread_task_runner_;
+};
 
 }  // namespace profiling
 }  // namespace perfetto

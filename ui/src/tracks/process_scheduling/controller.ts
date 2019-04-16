@@ -58,14 +58,14 @@ class ProcessSchedulingTrackController extends TrackController<Config, Data> {
             where utid != 0 and upid = ${this.config.upid}) using(utid);`);
       await this.query(`create virtual table ${this.tableName('span')}
               using span_join(${this.tableName('process')} PARTITIONED cpu,
-                              ${this.tableName('window')} PARTITIONED cpu);`);
+                              ${this.tableName('window')});`);
       this.numCpus = await this.engine.getNumberOfCpus();
       this.setup = true;
     }
 
     const isQuantized = this.shouldSummarize(resolution);
-    // |resolution| is in s/px we want # ns for 10px window:
-    const bucketSizeNs = Math.round(resolution * 10 * 1e9);
+    // |resolution| is in s/px we want # ns for 20px window:
+    const bucketSizeNs = Math.round(resolution * 10 * 1e9 * 1.5);
     let windowStartNs = startNs;
     if (isQuantized) {
       windowStartNs = Math.floor(windowStartNs / bucketSizeNs) * bucketSizeNs;

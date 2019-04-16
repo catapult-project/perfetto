@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import("../../../gn/protozero_library.gni")
 import("../../../gn/perfetto.gni")
 import("../../../gn/proto_library.gni")
+import("../../../gn/protozero_library.gni")
 
 # Common protos used by both the ":minimal_lite" target (for the service) and
 # the generic ":lite" target
-proto_sources_minimal = [ "clock_snapshot.proto" ]
+proto_sources_minimal = [
+  "clock_snapshot.proto",
+  "trigger.proto",
+  "system_info.proto",
+]
 
 proto_sources_trusted = [ "trusted_packet.proto" ]
 
@@ -36,10 +40,12 @@ protozero_library("zero") {
     "chrome:zero",
     "filesystem:zero",
     "ftrace:zero",
+    "interned_data:zero",
     "power:zero",
     "profiling:zero",
     "ps:zero",
     "sys_stats:zero",
+    "track_event:zero",
   ]
   sources = proto_sources_minimal + proto_sources
   proto_in_dir = "$perfetto_root_path/protos"
@@ -57,10 +63,12 @@ proto_library("lite") {
     "chrome:lite",
     "filesystem:lite",
     "ftrace:lite",
+    "interned_data:lite",
     "power:lite",
     "profiling:lite",
     "ps:lite",
     "sys_stats:lite",
+    "track_event:lite",
   ]
   if (perfetto_build_standalone) {
     generate_descriptor = "$perfetto_root_path/protos/trace/trace.descriptor"
@@ -86,6 +94,7 @@ proto_library("trusted_lite") {
   generate_python = false
   deps = [
     ":minimal_lite",
+    "../common:lite",
     "../config:lite",
   ]
   sources = proto_sources_trusted

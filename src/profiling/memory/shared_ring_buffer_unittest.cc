@@ -145,6 +145,33 @@ void StructuredTest(SharedRingBuffer* wr, SharedRingBuffer* rd) {
   }
 }
 
+TEST(SharedRingBufferTest, ReadShutdown) {
+  constexpr auto kBufSize = base::kPageSize * 4;
+  base::Optional<SharedRingBuffer> wr = SharedRingBuffer::Create(kBufSize);
+  ASSERT_TRUE(wr);
+  SharedRingBuffer rd =
+      *SharedRingBuffer::Attach(base::ScopedFile(dup(wr->fd())));
+  auto buf = rd.BeginRead();
+  wr = base::nullopt;
+  rd.EndRead(std::move(buf));
+}
+
+TEST(SharedRingBufferTest, WriteShutdown) {
+  constexpr auto kBufSize = base::kPageSize * 4;
+  base::Optional<SharedRingBuffer> rd = SharedRingBuffer::Create(kBufSize);
+  ASSERT_TRUE(rd);
+  SharedRingBuffer wr =
+      *SharedRingBuffer::Attach(base::ScopedFile(dup(rd->fd())));
+  SharedRingBuffer::Buffer buf;
+  {
+    auto lock = wr.AcquireLock(ScopedSpinlock::Mode::Blocking);
+    buf = wr.BeginWrite(lock, 10);
+  }
+  rd = base::nullopt;
+  memset(buf.data, 0, buf.size);
+  wr.EndWrite(std::move(buf));
+}
+
 TEST(SharedRingBufferTest, SingleThreadSameInstance) {
   constexpr auto kBufSize = base::kPageSize * 4;
   base::Optional<SharedRingBuffer> buf = SharedRingBuffer::Create(kBufSize);
@@ -175,7 +202,7 @@ TEST(SharedRingBufferTest, MultiThreadingTest) {
     }
     std::minstd_rand0 rnd_engine(static_cast<uint32_t>(thread_id));
     std::uniform_int_distribution<size_t> dist(1, base::kPageSize * 8);
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 1000; i++) {
       size_t size = dist(rnd_engine);
       ASSERT_GT(size, 0);
       std::string data;

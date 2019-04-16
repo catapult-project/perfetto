@@ -15,20 +15,43 @@
 import {TimeScale} from './time_scale';
 import {TRACK_SHELL_WIDTH} from './track_constants';
 
-export function drawVerticalLine(ctx: CanvasRenderingContext2D,
-                                 timeScale: TimeScale,
-                                 time: number,
-                                 height: number,
-                                 color: string,
-                                 lineWidth = 2) {
+export function drawVerticalLineAtTime(ctx: CanvasRenderingContext2D,
+                                       timeScale: TimeScale,
+                                       time: number,
+                                       height: number,
+                                       color: string,
+                                       lineWidth = 2) {
     const xPos = TRACK_SHELL_WIDTH + Math.floor(timeScale.timeToPx(time));
+    drawVerticalLine(ctx, xPos, height, color, lineWidth);
+  }
+
+function drawVerticalLine(ctx: CanvasRenderingContext2D,
+                          xPos: number,
+                          height: number,
+                          color: string,
+                          lineWidth = 2) {
     ctx.beginPath();
     ctx.strokeStyle = color;
     const prevLineWidth = ctx.lineWidth;
     ctx.lineWidth = lineWidth;
-    ctx.moveTo(xPos + 1, 0);
-    ctx.lineTo(xPos + 1, height);
+    ctx.moveTo(xPos, 0);
+    ctx.lineTo(xPos, height);
     ctx.stroke();
     ctx.closePath();
     ctx.lineWidth = prevLineWidth;
 }
+
+export function drawVerticalSelection(ctx: CanvasRenderingContext2D,
+                                      timeScale: TimeScale,
+                                      timeStart: number,
+                                      timeEnd: number,
+                                      height: number,
+                                      color: string) {
+    const xStartPos = TRACK_SHELL_WIDTH +
+                      Math.floor(timeScale.timeToPx(timeStart));
+    const xEndPos = TRACK_SHELL_WIDTH + Math.floor(timeScale.timeToPx(timeEnd));
+    ctx.fillStyle = color;
+    ctx.fillRect(xStartPos, 0, xEndPos - xStartPos, height);
+    drawVerticalLine(ctx, xStartPos, height, `rgba(52,69,150)`);
+    drawVerticalLine(ctx, xEndPos, height, `rgba(52,69,150)`);
+  }

@@ -25,9 +25,9 @@
 #include "perfetto/base/string_splitter.h"
 #include "perfetto/trace/profiling/profile_packet.pbzero.h"
 #include "perfetto/trace/trace_packet.pbzero.h"
-#include "src/profiling/memory/bounded_queue.h"
+#include "perfetto/tracing/core/trace_writer.h"
 #include "src/profiling/memory/interner.h"
-#include "src/profiling/memory/queue_messages.h"
+#include "src/profiling/memory/unwound_messages.h"
 
 // Below is an illustration of the bookkeeping system state where
 // PID 1 does the following allocations:
@@ -246,7 +246,10 @@ class HeapTracker {
                     uint64_t address,
                     uint64_t size,
                     uint64_t sequence_number);
-  void Dump(pid_t pid, DumpState* dump_state);
+  void Dump(
+      std::function<void(protos::pbzero::ProfilePacket::ProcessHeapSamples*)>
+          fill_process_header,
+      DumpState* dump_state);
   void RecordFree(uint64_t address, uint64_t sequence_number) {
     RecordOperation(sequence_number, address);
   }
@@ -359,69 +362,6 @@ class HeapTracker {
   uint64_t committed_sequence_number_ = 0;
   GlobalCallstackTrie* callsites_;
 };
-
-struct BookkeepingData {
-  // Ownership of callsites remains with caller and has to outlive this
-  // object.
-  explicit BookkeepingData(GlobalCallstackTrie* callsites)
-      : heap_tracker(callsites) {}
-
-  // This is different to a shared_ptr to HeapTracker, because we want to keep
-  // it around until the first dump after the last socket for the PID has
-  // disconnected
-  uint64_t ref_count = 0;
-  uint64_t client_generation = 0;
-  HeapTracker heap_tracker;
-};
-
-// BookkeepingThread owns the BookkeepingData for all processes. The Run()
-// method receives messages on the input_queue and does the bookkeeping.
-class BookkeepingThread {
- public:
-  friend class ProcessHandle;
-  class ProcessHandle {
-   public:
-    friend class BookkeepingThread;
-    friend void swap(ProcessHandle&, ProcessHandle&);
-
-    ProcessHandle() = default;
-
-    ~ProcessHandle();
-    ProcessHandle(const ProcessHandle&) = delete;
-    ProcessHandle& operator=(const ProcessHandle&) = delete;
-    ProcessHandle(ProcessHandle&&) noexcept;
-    ProcessHandle& operator=(ProcessHandle&&) noexcept;
-
-   private:
-    ProcessHandle(BookkeepingThread* matcher, pid_t pid);
-
-    BookkeepingThread* bookkeeping_thread_ = nullptr;
-    pid_t pid_;
-  };
-  void Run(BoundedQueue<BookkeepingRecord>* input_queue);
-
-  // Inform the bookkeeping thread that a socket for this pid connected.
-  //
-  // This can be called from arbitrary threads.
-  ProcessHandle NotifyProcessConnected(pid_t pid);
-  void HandleBookkeepingRecord(BookkeepingRecord* rec);
-
- private:
-  // Inform the bookkeeping thread that a socket for this pid disconnected.
-  // After the last client for a PID disconnects, the BookkeepingData is
-  // retained until the next dump, upon which it gets garbage collected.
-  //
-  // This can be called from arbitrary threads.
-  void NotifyProcessDisconnected(pid_t pid);
-
-  GlobalCallstackTrie callsites_;
-
-  std::map<pid_t, BookkeepingData> bookkeeping_data_;
-  std::mutex bookkeeping_mutex_;
-  uint64_t next_index = 0;
-};
-
-void swap(BookkeepingThread::ProcessHandle&, BookkeepingThread::ProcessHandle&);
 
 }  // namespace profiling
 }  // namespace perfetto

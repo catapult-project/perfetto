@@ -26,14 +26,15 @@
 #include "src/trace_processor/stats.h"
 #include "src/trace_processor/trace_processor_context.h"
 
-#include "perfetto/trace/ftrace/ftrace_event.pb.h"
+#include "perfetto/trace/ftrace/ftrace_event.pbzero.h"
+#include "perfetto/trace/ftrace/sched.pbzero.h"
 
 namespace perfetto {
 namespace trace_processor {
 
 EventTracker::EventTracker(TraceProcessorContext* context) : context_(context) {
-  auto* descriptor =
-      GetMessageDescriptorForId(protos::FtraceEvent::kSchedSwitchFieldNumber);
+  auto* descriptor = GetMessageDescriptorForId(
+      protos::pbzero::FtraceEvent::kSchedSwitchFieldNumber);
   PERFETTO_CHECK(descriptor->max_field_id == kSchedSwitchMaxFieldId);
 
   for (size_t i = 1; i <= kSchedSwitchMaxFieldId; i++) {
@@ -75,11 +76,11 @@ void EventTracker::PushSchedSwitch(uint32_t cpu,
   auto* prev_slice = &pending_sched_per_cpu_[cpu];
   size_t slice_idx = prev_slice->storage_index;
   if (slice_idx < std::numeric_limits<size_t>::max()) {
-    int64_t duration = ts - slices->start_ns()[slice_idx];
-    slices->set_duration(slice_idx, duration);
-
     prev_pid_match_prev_next_pid = prev_pid == prev_slice->next_pid;
     if (PERFETTO_LIKELY(prev_pid_match_prev_next_pid)) {
+      int64_t duration = ts - slices->start_ns()[slice_idx];
+      slices->set_duration(slice_idx, duration);
+
       // We store the state as a uint16 as we only consider values up to 2048
       // when unpacking the information inside; this allows savings of 48 bits
       // per slice.
@@ -91,20 +92,12 @@ void EventTracker::PushSchedSwitch(uint32_t cpu,
     }
   }
 
-  // If the prev_pid matches the previous slice's next pid, we can just lookup
-  // the comm id and utid from the previous slice. This saves relatively
-  // expensive string interning/thread lookup.
-  UniqueTid prev_utid;
-  StringId prev_comm_id;
-  if (prev_pid_match_prev_next_pid) {
-    PERFETTO_DCHECK(slice_idx < std::numeric_limits<size_t>::max());
-    prev_comm_id = prev_slice->next_comm_id;
-    prev_utid = slices->utids()[slice_idx];
-  } else {
-    prev_comm_id = context_->storage->InternString(prev_comm);
-    prev_utid =
-        context_->process_tracker->UpdateThread(ts, prev_pid, prev_comm_id);
-  }
+  // We have to intern prev_comm again because our assumption that
+  // this event's |prev_comm| == previous event's |next_comm| does not hold
+  // if the thread changed its name while scheduled.
+  StringId prev_comm_id = context_->storage->InternString(prev_comm);
+  UniqueTid prev_utid =
+      context_->process_tracker->UpdateThread(ts, prev_pid, prev_comm_id);
 
   // Push the raw event - this is done as the raw ftrace event codepath does
   // not insert sched_switch.
@@ -115,7 +108,7 @@ void EventTracker::PushSchedSwitch(uint32_t cpu,
   // order as the order of fields in the proto; this is used by the raw table to
   // index these events using the field ids.
   using Variadic = TraceStorage::Args::Variadic;
-  using SS = protos::SchedSwitchFtraceEvent;
+  using SS = protos::pbzero::SchedSwitchFtraceEvent;
   auto add_raw_arg = [this](RowId row_id, int field_num,
                             TraceStorage::Args::Variadic var) {
     StringId key = sched_switch_field_ids_[static_cast<size_t>(field_num)];
@@ -136,7 +129,6 @@ void EventTracker::PushSchedSwitch(uint32_t cpu,
   // Finally, update the info for the next sched switch on this CPU.
   prev_slice->storage_index = next_idx;
   prev_slice->next_pid = next_pid;
-  prev_slice->next_comm_id = next_comm_id;
 }
 
 RowId EventTracker::PushCounter(int64_t timestamp,
@@ -145,16 +137,20 @@ RowId EventTracker::PushCounter(int64_t timestamp,
                                 int64_t ref,
                                 RefType ref_type) {
   if (timestamp < prev_timestamp_) {
-    PERFETTO_ELOG("counter event out of order by %.4f ms, skipping",
-                  (prev_timestamp_ - timestamp) / 1e6);
+    PERFETTO_DLOG("counter event (ts: %" PRId64
+                  ") out of order by %.4f ms, skipping",
+                  timestamp, (prev_timestamp_ - timestamp) / 1e6);
     context_->storage->IncrementStats(stats::counter_events_out_of_order);
     return kInvalidRowId;
   }
   prev_timestamp_ = timestamp;
 
-  auto* counters = context_->storage->mutable_counters();
-  size_t idx = counters->AddCounter(timestamp, name_id, value, ref, ref_type);
-  return TraceStorage::CreateRowId(TableId::kCounters,
+  auto* definitions = context_->storage->mutable_counter_definitions();
+  auto counter_row = definitions->AddCounterDefinition(name_id, ref, ref_type);
+
+  auto* counter_values = context_->storage->mutable_counter_values();
+  size_t idx = counter_values->AddCounterValue(counter_row, timestamp, value);
+  return TraceStorage::CreateRowId(TableId::kCounterValues,
                                    static_cast<uint32_t>(idx));
 }
 

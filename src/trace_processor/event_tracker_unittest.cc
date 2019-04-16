@@ -66,9 +66,9 @@ TEST_F(EventTrackerTest, InsertSecondSched) {
   ASSERT_EQ(timestamps.size(), 2ul);
   ASSERT_EQ(timestamps[0], timestamp);
   ASSERT_EQ(context.storage->GetThread(1).start_ns, timestamp);
-  ASSERT_EQ(std::string(context.storage->GetString(
-                context.storage->GetThread(1).name_id)),
-            kCommProc1);
+  ASSERT_STREQ(
+      context.storage->GetString(context.storage->GetThread(1).name_id).c_str(),
+      kCommProc1);
   ASSERT_EQ(context.storage->slices().utids().front(), 1);
   ASSERT_EQ(context.storage->slices().durations().front(), 1);
 }
@@ -93,9 +93,9 @@ TEST_F(EventTrackerTest, InsertThirdSched_SameThread) {
   context.event_tracker->PushSchedSwitch(cpu, timestamp + 11, /*tid=*/4,
                                          kCommProc2, prio, prev_state,
                                          /*tid=*/2, kCommProc1, prio);
-  context.event_tracker->PushSchedSwitch(cpu, timestamp + 31, /*tid=*/4,
+  context.event_tracker->PushSchedSwitch(cpu, timestamp + 31, /*tid=*/2,
                                          kCommProc1, prio, prev_state,
-                                         /*tid=*/2, kCommProc2, prio);
+                                         /*tid=*/4, kCommProc2, prio);
 
   ASSERT_EQ(timestamps.size(), 4ul);
   ASSERT_EQ(timestamps[0], timestamp);
@@ -120,15 +120,19 @@ TEST_F(EventTrackerTest, CounterDuration) {
   context.event_tracker->PushCounter(timestamp + 9, 1000, name_id, cpu,
                                      RefType::kRefCpuId);
 
-  ASSERT_EQ(context.storage->counters().counter_count(), 4ul);
-  ASSERT_EQ(context.storage->counters().timestamps().at(0), timestamp);
-  ASSERT_EQ(context.storage->counters().values().at(0), 1000);
+  ASSERT_EQ(context.storage->counter_definitions().size(), 1ul);
 
-  ASSERT_EQ(context.storage->counters().timestamps().at(1), timestamp + 1);
-  ASSERT_EQ(context.storage->counters().values().at(1), 4000);
+  ASSERT_EQ(context.storage->counter_values().size(), 4ul);
+  ASSERT_EQ(context.storage->counter_values().timestamps().at(0), timestamp);
+  ASSERT_EQ(context.storage->counter_values().values().at(0), 1000);
 
-  ASSERT_EQ(context.storage->counters().timestamps().at(2), timestamp + 3);
-  ASSERT_EQ(context.storage->counters().values().at(2), 5000);
+  ASSERT_EQ(context.storage->counter_values().timestamps().at(1),
+            timestamp + 1);
+  ASSERT_EQ(context.storage->counter_values().values().at(1), 4000);
+
+  ASSERT_EQ(context.storage->counter_values().timestamps().at(2),
+            timestamp + 3);
+  ASSERT_EQ(context.storage->counter_values().values().at(2), 5000);
 }
 
 }  // namespace

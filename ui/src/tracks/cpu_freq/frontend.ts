@@ -85,9 +85,13 @@ class CpuFreqTrack extends Track<Config, Data> {
     const yLabel = `${num} ${kUnits[unitGroup + 1]}Hz`;
 
     // Draw the CPU frequency graph.
-    const hue = hueForCpu(this.config.cpu); 
-    ctx.fillStyle = `hsl(${hue}, 45%, 70%)`;
-    ctx.strokeStyle = `hsl(${hue}, 45%, 55%)`;
+    const hue = hueForCpu(this.config.cpu);
+    let saturation = 45;
+    if (globals.frontendLocalState.hoveredUtid !== -1) {
+      saturation = 0;
+    }
+    ctx.fillStyle = `hsl(${hue}, ${saturation}%, 70%)`;
+    ctx.strokeStyle = `hsl(${hue}, ${saturation}%, 55%)`;
     ctx.beginPath();
     ctx.moveTo(lastX, lastY);
 
@@ -130,7 +134,10 @@ class CpuFreqTrack extends Track<Config, Data> {
     ctx.font = '10px Google Sans';
 
     if (this.hoveredValue !== undefined && this.hoveredTs !== undefined) {
-      const text = `freq: ${this.hoveredValue.toLocaleString()}kHz`;
+      let text = `Freq: ${this.hoveredValue.toLocaleString()}kHz`;
+      if (data.isQuantized) {
+        text = `Weighted avg freq: ${this.hoveredValue.toLocaleString()}kHz`;
+      }
 
       const width = ctx.measureText(text).width;
       ctx.fillStyle = `hsl(${hue}, 45%, 75%)`;
@@ -165,7 +172,7 @@ class CpuFreqTrack extends Track<Config, Data> {
       // Display idle value if current hover is idle.
       if (this.hoveredIdle !== undefined && this.hoveredIdle !== -1) {
         // Display the idle value +1 to be consistent with catapult.
-        const idle = `idle: ${(this.hoveredIdle + 1).toLocaleString()}`;
+        const idle = `Idle: ${(this.hoveredIdle + 1).toLocaleString()}`;
         ctx.fillText(idle, this.mouseXpos + 10, centerY + 11);
       }
     }
