@@ -20,6 +20,7 @@
 
 #include "src/trace_processor/ftrace_descriptors.h"
 #include "src/trace_processor/sqlite_utils.h"
+#include "src/trace_processor/variadic.h"
 
 #include "perfetto/trace/ftrace/binder.pbzero.h"
 #include "perfetto/trace/ftrace/clk.pbzero.h"
@@ -74,7 +75,7 @@ int RawTable::BestIndex(const QueryConstraints& qc, BestIndexInfo* info) {
   return SQLITE_OK;
 }
 
-void RawTable::FormatSystraceArgs(const std::string& event_name,
+void RawTable::FormatSystraceArgs(NullTermStringView event_name,
                                   ArgSetId arg_set_id,
                                   base::StringWriter* writer) {
   const auto& set_ids = storage_->args().set_ids();
@@ -83,17 +84,16 @@ void RawTable::FormatSystraceArgs(const std::string& event_name,
 
   auto start_row = static_cast<uint32_t>(std::distance(set_ids.begin(), lb));
 
-  using Variadic = TraceStorage::Args::Variadic;
   using ValueWriter = std::function<void(const Variadic&)>;
   auto write_value = [this, writer](const Variadic& value) {
     switch (value.type) {
-      case TraceStorage::Args::Variadic::kInt:
+      case Variadic::kInt:
         writer->AppendInt(value.int_value);
         break;
-      case TraceStorage::Args::Variadic::kReal:
+      case Variadic::kReal:
         writer->AppendDouble(value.real_value);
         break;
-      case TraceStorage::Args::Variadic::kString: {
+      case Variadic::kString: {
         const auto& str = storage_->GetString(value.string_value);
         writer->AppendString(str.c_str(), str.size());
       }
@@ -111,7 +111,7 @@ void RawTable::FormatSystraceArgs(const std::string& event_name,
     const auto& value = args.arg_values()[arg_row];
 
     writer->AppendChar(' ');
-    writer->AppendString(key.c_str(), key.length());
+    writer->AppendString(key.c_str(), key.size());
     writer->AppendChar('=');
     value_fn(value);
   };
@@ -199,7 +199,7 @@ void RawTable::FormatSystraceArgs(const std::string& event_name,
     const auto& value = args.arg_values()[arg_row];
     const auto& str = storage_->GetString(value.string_value);
     // If the last character is a newline in a print, just drop it.
-    auto chars_to_print = !str.empty() && str[str.size() - 1] == '\n'
+    auto chars_to_print = !str.empty() && str.c_str()[str.size() - 1] == '\n'
                               ? str.size() - 1
                               : str.size();
     writer->AppendChar(' ');

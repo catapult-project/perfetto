@@ -22,6 +22,11 @@
 #include <unwindstack/Maps.h>
 #include <unwindstack/Unwinder.h>
 
+#if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
+#include <unwindstack/DexFiles.h>
+#include <unwindstack/JitDebug.h>
+#endif
+
 #include "perfetto/base/scoped_file.h"
 #include "perfetto/base/thread_task_runner.h"
 #include "perfetto/tracing/core/basic_types.h"
@@ -79,30 +84,50 @@ class StackOverlayMemory : public unwindstack::Memory {
                      uint64_t sp,
                      uint8_t* stack,
                      size_t size);
-  StackOverlayMemory(std::shared_ptr<unwindstack::Memory> mem)
-      : StackOverlayMemory(std::move(mem), 0u, nullptr, 0u) {}
-
   size_t Read(uint64_t addr, void* dst, size_t size) override;
-
-  void SetStack(uint64_t sp, uint8_t* stack, size_t size);
 
  private:
   std::shared_ptr<unwindstack::Memory> mem_;
-  uint64_t sp_ = 0;
-  uint64_t stack_end_ = 0;
-  uint8_t* stack_ = nullptr;
+  uint64_t sp_;
+  uint64_t stack_end_;
+  uint8_t* stack_;
 };
 
 struct UnwindingMetadata {
-  UnwindingMetadata(pid_t p, base::ScopedFile maps_fd, base::ScopedFile mem);
-
-  void ReparseMaps();
-
+  UnwindingMetadata(pid_t p, base::ScopedFile maps_fd, base::ScopedFile mem)
+      : pid(p),
+        maps(std::move(maps_fd)),
+        fd_mem(std::make_shared<FDMemory>(std::move(mem)))
+#if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
+        ,
+        jit_debug(std::unique_ptr<unwindstack::JitDebug>(
+            new unwindstack::JitDebug(fd_mem))),
+        dex_files(std::unique_ptr<unwindstack::DexFiles>(
+            new unwindstack::DexFiles(fd_mem)))
+#endif
+  {
+    PERFETTO_DCHECK(maps.Parse());
+  }
+  void ReparseMaps() {
+    reparses++;
+    maps.Reset();
+    maps.Parse();
+#if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
+    jit_debug = std::unique_ptr<unwindstack::JitDebug>(
+        new unwindstack::JitDebug(fd_mem));
+    dex_files = std::unique_ptr<unwindstack::DexFiles>(
+        new unwindstack::DexFiles(fd_mem));
+#endif
+  }
   pid_t pid;
-  std::unique_ptr<FileDescriptorMaps> maps;
+  FileDescriptorMaps maps;
   // The API of libunwindstack expects shared_ptr for Memory.
-  std::shared_ptr<StackOverlayMemory> fd_mem;
-  unwindstack::Unwinder unwinder;
+  std::shared_ptr<unwindstack::Memory> fd_mem;
+  uint64_t reparses = 0;
+#if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
+  std::unique_ptr<unwindstack::JitDebug> jit_debug;
+  std::unique_ptr<unwindstack::DexFiles> dex_files;
+#endif
 };
 
 bool DoUnwind(WireMessage*, UnwindingMetadata* metadata, AllocRecord* out);
@@ -113,20 +138,24 @@ class UnwindingWorker : public base::UnixSocket::EventListener {
    public:
     virtual void PostAllocRecord(AllocRecord) = 0;
     virtual void PostFreeRecord(FreeRecord) = 0;
-    virtual void PostSocketDisconnected(DataSourceInstanceID, pid_t pid) = 0;
+    virtual void PostSocketDisconnected(DataSourceInstanceID,
+                                        pid_t pid,
+                                        SharedRingBuffer::Stats stats) = 0;
     virtual ~Delegate();
   };
 
   struct HandoffData {
     DataSourceInstanceID data_source_instance_id;
     base::UnixSocketRaw sock;
-    base::ScopedFile fds[kHandshakeSize];
+    base::ScopedFile maps_fd;
+    base::ScopedFile mem_fd;
     SharedRingBuffer shmem;
+    ClientConfiguration client_config;
   };
 
   UnwindingWorker(Delegate* delegate, base::ThreadTaskRunner thread_task_runner)
-      : delegate_(delegate),
-        thread_task_runner_(std::move(thread_task_runner)) {}
+      : thread_task_runner_(std::move(thread_task_runner)),
+        delegate_(delegate) {}
 
   // Public API safe to call from other threads.
   void PostDisconnectSocket(pid_t pid);
@@ -137,7 +166,7 @@ class UnwindingWorker : public base::UnixSocket::EventListener {
   void OnDisconnect(base::UnixSocket* self) override;
   void OnNewIncomingConnection(base::UnixSocket*,
                                std::unique_ptr<base::UnixSocket>) override {
-    PERFETTO_DFATAL("This should not happen.");
+    PERFETTO_DFATAL_OR_ELOG("This should not happen.");
   }
   void OnDataAvailable(base::UnixSocket* self) override;
 
@@ -153,17 +182,23 @@ class UnwindingWorker : public base::UnixSocket::EventListener {
   void HandleHandoffSocket(HandoffData data);
   void HandleDisconnectSocket(pid_t pid);
 
+  void HandleUnwindBatch(pid_t);
+
   struct ClientData {
     DataSourceInstanceID data_source_instance_id;
     std::unique_ptr<base::UnixSocket> sock;
     UnwindingMetadata metadata;
     SharedRingBuffer shmem;
+    ClientConfiguration client_config;
   };
+
+  // Task runner with a dedicated thread. Keep at the start of the data member
+  // declarations, such that it is valid during construction & destruction of
+  // the other members.
+  base::ThreadTaskRunner thread_task_runner_;
 
   std::map<pid_t, ClientData> client_data_;
   Delegate* delegate_;
-  // Task runner with a dedicated thread.
-  base::ThreadTaskRunner thread_task_runner_;
 };
 
 }  // namespace profiling

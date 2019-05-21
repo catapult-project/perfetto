@@ -19,12 +19,14 @@ import {TrackState} from '../common/state';
 
 import {globals} from './globals';
 import {drawGridLines} from './gridline_helper';
-import {drawVerticalSelection,
-        drawVerticalLineAtTime} from './vertical_line_helper';
 import {Panel, PanelSize} from './panel';
 import {Track} from './track';
 import {TRACK_SHELL_WIDTH} from './track_constants';
 import {trackRegistry} from './track_registry';
+import {
+  drawVerticalLineAtTime,
+  drawVerticalSelection
+} from './vertical_line_helper';
 
 function isPinned(id: string) {
   return globals.state.pinnedTracks.indexOf(id) !== -1;
@@ -258,6 +260,15 @@ export class TrackPanel extends Panel<TrackPanelAttrs> {
                               globals.state.currentSelection.endTs,
                               size.height,
                               `rgba(52,69,150,0.3)`);
+      }
+      if (globals.state.currentSelection.kind === 'SLICE' &&
+          globals.sliceDetails.wakeupTs !== undefined) {
+        drawVerticalLineAtTime(
+            ctx,
+            localState.timeScale,
+            globals.sliceDetails.wakeupTs,
+            size.height,
+            `black`);
       }
     }
   }

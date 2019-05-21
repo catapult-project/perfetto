@@ -76,7 +76,8 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
     std::string name;
     std::tie(group, name) = EventToStringGroupAndName(config_value);
     if (name == "*") {
-      events = ReadEventsInGroupFromFs(*ftrace_, group);
+      for (const auto& event : ReadEventsInGroupFromFs(*ftrace_, group))
+        events.insert(event);
     } else if (group.empty()) {
       // If there is no group specified, find an event with that name and
       // use it's group.
@@ -105,16 +106,27 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
       if (category == "gfx") {
         AddEventGroup(table, "mdss", &events);
         AddEventGroup(table, "sde", &events);
+        AddEventGroup(table, "mali_systrace", &events);
+        continue;
+      }
+
+      if (category == "ion") {
+        events.insert(GroupAndName("kmem", "ion_alloc_buffer_start"));
         continue;
       }
 
       if (category == "sched") {
-        events.insert(GroupAndName(category, "sched_switch"));
-        events.insert(GroupAndName(category, "sched_wakeup"));
-        events.insert(GroupAndName(category, "sched_waking"));
-        events.insert(GroupAndName(category, "sched_blocked_reason"));
-        events.insert(GroupAndName(category, "sched_cpu_hotplug"));
+        events.insert(GroupAndName("sched", "sched_switch"));
+        events.insert(GroupAndName("sched", "sched_wakeup"));
+        events.insert(GroupAndName("sched", "sched_waking"));
+        events.insert(GroupAndName("sched", "sched_blocked_reason"));
+        events.insert(GroupAndName("sched", "sched_cpu_hotplug"));
+        events.insert(GroupAndName("sched", "sched_pi_setprio"));
+        events.insert(GroupAndName("sched", "sched_process_exit"));
         AddEventGroup(table, "cgroup", &events);
+        events.insert(GroupAndName("oom", "oom_score_adj_update"));
+        events.insert(GroupAndName("task", "task_rename"));
+        events.insert(GroupAndName("task", "task_newtask"));
         continue;
       }
 
@@ -125,19 +137,27 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
       }
 
       if (category == "irqoff") {
-        events.insert(GroupAndName(category, "irq_enable"));
-        events.insert(GroupAndName(category, "irq_disable"));
+        events.insert(GroupAndName("preemptirq", "irq_enable"));
+        events.insert(GroupAndName("preemptirq", "irq_disable"));
         continue;
       }
 
       if (category == "preemptoff") {
-        events.insert(GroupAndName(category, "preempt_enable"));
-        events.insert(GroupAndName(category, "preempt_disable"));
+        events.insert(GroupAndName("preemptirq", "preempt_enable"));
+        events.insert(GroupAndName("preemptirq", "preempt_disable"));
         continue;
       }
 
       if (category == "i2c") {
         AddEventGroup(table, "i2c", &events);
+        events.insert(GroupAndName("i2c", "i2c_read"));
+        events.insert(GroupAndName("i2c", "i2c_write"));
+        events.insert(GroupAndName("i2c", "i2c_result"));
+        events.insert(GroupAndName("i2c", "i2c_reply"));
+        events.insert(GroupAndName("i2c", "smbus_read"));
+        events.insert(GroupAndName("i2c", "smbus_write"));
+        events.insert(GroupAndName("i2c", "smbus_result"));
+        events.insert(GroupAndName("i2c", "smbus_reply"));
         continue;
       }
 
@@ -188,7 +208,12 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
       }
 
       if (category == "sync") {
+        // linux kernel < 4.9
         AddEventGroup(table, "sync", &events);
+        // linux kernel == 4.9.x
+        AddEventGroup(table, "fence", &events);
+        // linux kernel > 4.9
+        AddEventGroup(table, "dma_fence", &events);
         continue;
       }
 
@@ -214,6 +239,7 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
       if (category == "binder_driver") {
         events.insert(GroupAndName("binder", "binder_transaction"));
         events.insert(GroupAndName("binder", "binder_transaction_received"));
+        events.insert(GroupAndName("binder", "binder_transaction_alloc_buf"));
         events.insert(GroupAndName("binder", "binder_set_priority"));
         continue;
       }
@@ -226,7 +252,7 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
       }
 
       if (category == "pagecache") {
-        AddEventGroup(table, "pagecache", &events);
+        AddEventGroup(table, "filemap", &events);
         continue;
       }
 
@@ -234,10 +260,6 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
         events.insert(GroupAndName("kmem", "rss_stat"));
         events.insert(GroupAndName("kmem", "ion_heap_grow"));
         events.insert(GroupAndName("kmem", "ion_heap_shrink"));
-        events.insert(GroupAndName("oom", "oom_score_adj_update"));
-        events.insert(GroupAndName("sched", "sched_process_exit"));
-        events.insert(GroupAndName("task", "task_rename"));
-        events.insert(GroupAndName("task", "task_newtask"));
         continue;
       }
     }

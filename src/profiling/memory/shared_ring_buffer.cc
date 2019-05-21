@@ -53,16 +53,14 @@ constexpr auto kFDSeals = F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL;
 
 SharedRingBuffer::SharedRingBuffer(CreateFlag, size_t size) {
   size_t size_with_meta = size + kMetaPageSize;
-  // TODO(primiano): this is copy/pasted from posix_shared_memory.cc . Refactor.
   base::ScopedFile fd;
 #if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID)
   bool is_memfd = false;
-  fd.reset(static_cast<int>(syscall(__NR_memfd_create, "heaprofd_ringbuf",
+  fd.reset(static_cast<int>(syscall(__NR_memfd_create, "heapprofd_ringbuf",
                                     MFD_CLOEXEC | MFD_ALLOW_SEALING)));
   is_memfd = !!fd;
 
   if (!fd) {
-    // TODO: if this fails on Android we should fall back on ashmem.
 #if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
     // In-tree builds should only allow mem_fd, so we can inspect the seals
     // to verify the fd is appropriately sealed.
@@ -83,10 +81,16 @@ SharedRingBuffer::SharedRingBuffer(CreateFlag, size_t size) {
 #if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID)
   if (is_memfd) {
     res = fcntl(*fd, F_ADD_SEALS, kFDSeals);
-    PERFETTO_DCHECK(res == 0);
+    if (res != 0) {
+      PERFETTO_PLOG("Failed to seal FD.");
+      return;
+    }
   }
 #endif
   Initialize(std::move(fd));
+  if (!is_valid())
+    return;
+
   new (meta_) MetadataPage();
 }
 
@@ -105,6 +109,10 @@ SharedRingBuffer::~SharedRingBuffer() {
 void SharedRingBuffer::Initialize(base::ScopedFile mem_fd) {
 #if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
   int seals = fcntl(*mem_fd, F_GET_SEALS);
+  if (seals == -1) {
+    PERFETTO_PLOG("Failed to get seals of FD.");
+    return;
+  }
   if ((seals & kFDSeals) != kFDSeals) {
     PERFETTO_ELOG("FD not properly sealed. Expected %x, got %x", kFDSeals,
                   seals);
@@ -166,7 +174,7 @@ SharedRingBuffer::Buffer SharedRingBuffer::BeginWrite(
   PERFETTO_DCHECK(spinlock.locked());
   Buffer result;
 
-  base::Optional<PointerPositions> opt_pos = GetPointerPositions(spinlock);
+  base::Optional<PointerPositions> opt_pos = GetPointerPositions();
   if (!opt_pos) {
     meta_->stats.num_writes_corrupt++;
     errno = EBADF;
@@ -176,6 +184,13 @@ SharedRingBuffer::Buffer SharedRingBuffer::BeginWrite(
 
   const uint64_t size_with_header =
       base::AlignUp<kAlignment>(size + kHeaderSize);
+
+  // size_with_header < size is for catching overflow of size_with_header.
+  if (PERFETTO_UNLIKELY(size_with_header < size)) {
+    errno = EINVAL;
+    return result;
+  }
+
   if (size_with_header > write_avail(pos)) {
     meta_->stats.num_writes_overflow++;
     errno = EAGAIN;
@@ -186,13 +201,18 @@ SharedRingBuffer::Buffer SharedRingBuffer::BeginWrite(
 
   result.size = size;
   result.data = wr_ptr + kHeaderSize;
-  meta_->write_pos += size_with_header;
   meta_->stats.bytes_written += size;
   meta_->stats.num_writes_succeeded++;
-  // By making this a release store, we can save grabbing the spinlock in
-  // EndWrite.
+
+  // We can make this a relaxed store, as this gets picked up by the acquire
+  // load in GetPointerPositions (and the release store below).
   reinterpret_cast<std::atomic<uint32_t>*>(wr_ptr)->store(
-      0, std::memory_order_release);
+      0, std::memory_order_relaxed);
+
+  // This needs to happen after the store above, so the reader never observes an
+  // incorrect byte count. This is matched by the acquire load in
+  // GetPointerPositions.
+  meta_->write_pos.fetch_add(size_with_header, std::memory_order_release);
   return result;
 }
 
@@ -201,14 +221,18 @@ void SharedRingBuffer::EndWrite(Buffer buf) {
     return;
   uint8_t* wr_ptr = buf.data - kHeaderSize;
   PERFETTO_DCHECK(reinterpret_cast<uintptr_t>(wr_ptr) % kAlignment == 0);
+
+  // This needs to release to make sure the reader sees the payload written
+  // between the BeginWrite and EndWrite calls.
+  //
+  // This is matched by the acquire load in BeginRead where it reads the
+  // record's size.
   reinterpret_cast<std::atomic<uint32_t>*>(wr_ptr)->store(
       static_cast<uint32_t>(buf.size), std::memory_order_release);
 }
 
 SharedRingBuffer::Buffer SharedRingBuffer::BeginRead() {
-  ScopedSpinlock spinlock(&meta_->spinlock, ScopedSpinlock::Mode::Blocking);
-
-  base::Optional<PointerPositions> opt_pos = GetPointerPositions(spinlock);
+  base::Optional<PointerPositions> opt_pos = GetPointerPositions();
   if (!opt_pos) {
     meta_->stats.num_reads_corrupt++;
     errno = EBADF;
@@ -253,9 +277,8 @@ SharedRingBuffer::Buffer SharedRingBuffer::BeginRead() {
 void SharedRingBuffer::EndRead(Buffer buf) {
   if (!buf)
     return;
-  ScopedSpinlock spinlock(&meta_->spinlock, ScopedSpinlock::Mode::Blocking);
   size_t size_with_header = base::AlignUp<kAlignment>(buf.size + kHeaderSize);
-  meta_->read_pos += size_with_header;
+  meta_->read_pos.fetch_add(size_with_header, std::memory_order_relaxed);
   meta_->stats.num_reads_succeeded++;
 }
 

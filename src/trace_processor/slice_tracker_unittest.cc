@@ -65,7 +65,8 @@ TEST(SliceTrackerTest, OneSliceDetailed) {
   EXPECT_EQ(slices.durations()[0], 8);
   EXPECT_EQ(slices.cats()[0], 0);
   EXPECT_EQ(slices.names()[0], 1);
-  EXPECT_EQ(slices.utids()[0], 42);
+  EXPECT_EQ(slices.refs()[0], 42);
+  EXPECT_EQ(slices.types()[0], kRefUtid);
   EXPECT_EQ(slices.depths()[0], 0);
 }
 
@@ -88,14 +89,16 @@ TEST(SliceTrackerTest, TwoSliceDetailed) {
   EXPECT_EQ(slices.durations()[idx], 8);
   EXPECT_EQ(slices.cats()[idx], 0);
   EXPECT_EQ(slices.names()[idx], 1);
-  EXPECT_EQ(slices.utids()[idx], 42);
+  EXPECT_EQ(slices.refs()[idx], 42);
+  EXPECT_EQ(slices.types()[idx], kRefUtid);
   EXPECT_EQ(slices.depths()[idx++], 0);
 
   EXPECT_EQ(slices.start_ns()[idx], 3);
   EXPECT_EQ(slices.durations()[idx], 2);
   EXPECT_EQ(slices.cats()[idx], 0);
   EXPECT_EQ(slices.names()[idx], 2);
-  EXPECT_EQ(slices.utids()[idx], 42);
+  EXPECT_EQ(slices.refs()[idx], 42);
+  EXPECT_EQ(slices.types()[idx], kRefUtid);
   EXPECT_EQ(slices.depths()[idx], 1);
 
   EXPECT_EQ(slices.parent_stack_ids()[0], 0);
@@ -131,6 +134,24 @@ TEST(SliceTrackerTest, IgnoreMismatchedEnds) {
 
   auto slices = ToSliceInfo(context.storage->nestable_slices());
   EXPECT_THAT(slices, ElementsAre(SliceInfo{2, 3}));
+}
+
+TEST(SliceTrackerTest, ZeroLengthScoped) {
+  TraceProcessorContext context;
+  context.storage.reset(new TraceStorage());
+  SliceTracker tracker(&context);
+
+  // Bug scenario: the second zero-length scoped slice prevents the first slice
+  // from being closed, leading to an inconsistency when we try to insert the
+  // final slice and it doesn't intersect with the still pending first slice.
+  tracker.Scoped(2 /*ts*/, 42 /*tid*/, 0 /*cat*/, 1 /*name*/, 10 /* dur */);
+  tracker.Scoped(2 /*ts*/, 42 /*tid*/, 0 /*cat*/, 1 /*name*/, 0 /* dur */);
+  tracker.Scoped(12 /*ts*/, 42 /*tid*/, 0 /*cat*/, 1 /*name*/, 1 /* dur */);
+  tracker.Scoped(13 /*ts*/, 42 /*tid*/, 0 /*cat*/, 1 /*name*/, 1 /* dur */);
+
+  auto slices = ToSliceInfo(context.storage->nestable_slices());
+  EXPECT_THAT(slices, ElementsAre(SliceInfo{2, 10}, SliceInfo{2, 0},
+                                  SliceInfo{12, 1}, SliceInfo{13, 1}));
 }
 
 }  // namespace

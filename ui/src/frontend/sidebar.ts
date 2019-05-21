@@ -43,11 +43,18 @@ order by cpu_sec desc limit 100;`;
 
 const CYCLES_PER_P_STATE_PER_CPU = `
 select
-  ref as cpu,
-  value as freq,
-  lead(ts) over (partition by ref order by ts) - ts as dur,
-  sum(dur * value)/1e6 as mcycles
-from counters where name = 'cpufreq' group by cpu, freq
+  cpu,
+  freq,
+  dur,
+  sum(dur * freq)/1e6 as mcycles
+from (
+  select
+    ref as cpu,
+    value as freq,
+    lead(ts) over (partition by ref order by ts) - ts as dur
+  from counters
+  where name = 'cpufreq'
+) group by cpu, freq
 order by mcycles desc limit 32;`;
 
 const CPU_TIME_BY_CLUSTER_BY_PROCESS = `
@@ -234,7 +241,10 @@ function navigateViewer(e: Event) {
 
 function dispatchCreatePermalink(e: Event) {
   e.preventDefault();
-  globals.dispatch(Actions.createPermalink({}));
+  const result = confirm(
+      `Upload the trace and generate a permalink. ` +
+      `The trace will be accessible by anybody with the permalink.`);
+  if (result) globals.dispatch(Actions.createPermalink({}));
 }
 
 function downloadTrace(e: Event) {

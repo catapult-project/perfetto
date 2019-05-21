@@ -18,6 +18,7 @@
 #define SRC_PROFILING_MEMORY_CLIENT_H_
 
 #include <stddef.h>
+#include <sys/types.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -27,6 +28,7 @@
 #include "perfetto/base/unix_socket.h"
 #include "src/profiling/memory/sampler.h"
 #include "src/profiling/memory/shared_ring_buffer.h"
+#include "src/profiling/memory/unhooked_allocator.h"
 #include "src/profiling/memory/wire_protocol.h"
 
 namespace perfetto {
@@ -43,15 +45,23 @@ constexpr uint32_t kClientSockTimeoutMs = 1000;
 //
 // Methods of this class are thread-safe unless otherwise stated, in which case
 // the caller needs to synchronize calls behind a mutex or similar.
+//
+// Implementation warning: this class should not use any heap, as otherwise its
+// destruction would enter the possibly-hooked |free|, which can reference the
+// Client itself. If avoiding the heap is not possible, then look at using
+// UnhookedAllocator.
 class Client {
  public:
   // Returns a client that is ready for sampling allocations, using the given
   // socket (which should already be connected to heapprofd).
   //
   // Returns a shared_ptr since that is how the client will ultimately be used,
-  // and to take advantage of std::make_shared putting the object & the control
-  // block in one block of memory.
-  static std::shared_ptr<Client> CreateAndHandshake(base::UnixSocketRaw sock);
+  // and to take advantage of std::allocate_shared putting the object & the
+  // control block in one block of memory.
+  static std::shared_ptr<Client> CreateAndHandshake(
+      base::UnixSocketRaw sock,
+      UnhookedAllocator<Client> unhooked_allocator);
+
   static base::Optional<base::UnixSocketRaw> ConnectToHeapprofd(
       const std::string& sock_name);
 
@@ -72,12 +82,13 @@ class Client {
     return sampler_.SampleSize(alloc_size);
   }
 
-  // Public for std::make_shared. Use CreateAndHandshake() to create instances
-  // instead.
+  // Public for std::allocate_shared. Use CreateAndHandshake() to create
+  // instances instead.
   Client(base::UnixSocketRaw sock,
          ClientConfiguration client_config,
          SharedRingBuffer shmem,
          Sampler sampler,
+         pid_t pid_at_creation,
          const char* main_thread_stack_base);
 
   ClientConfiguration client_config_for_testing() { return client_config_; }
@@ -86,6 +97,12 @@ class Client {
   const char* GetStackBase();
   // Flush the contents of free_batch_. Must hold free_batch_lock_.
   bool FlushFreesLocked();
+  bool SendControlSocketByte();
+  bool SendWireMessageWithRetriesIfBlocking(const WireMessage&);
+
+  // This is only valid for non-blocking sockets. This is when
+  // client_config_.block_client is true.
+  bool IsConnected();
 
   ClientConfiguration client_config_;
   // sampler_ operations are not thread-safe.
@@ -99,6 +116,13 @@ class Client {
   const char* main_thread_stack_base_{nullptr};
   std::atomic<uint64_t> sequence_number_{0};
   SharedRingBuffer shmem_;
+
+  // Used to detect (during the slow path) the situation where the process has
+  // forked during profiling, and is performing malloc operations in the child.
+  // In this scenario, we want to stop profiling in the child, as otherwise
+  // it'll proceed to write to the same shared buffer & control socket (with
+  // duplicate sequence ids).
+  const pid_t pid_at_creation_;
 };
 
 }  // namespace profiling

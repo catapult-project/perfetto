@@ -27,6 +27,8 @@
 #include <sys/system_properties.h>
 
 #include <fcntl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 // This test only works when run on Android using an Android Q version of
 // Bionic.
@@ -46,8 +48,8 @@ constexpr const char* kTestProducerSockName "/data/local/tmp/traced_producer";
 
 constexpr useconds_t kMsToUs = 1000;
 
-using ::testing::Eq;
 using ::testing::AnyOf;
+using ::testing::Eq;
 
 class HeapprofdDelegate : public ThreadDelegate {
  public:
@@ -481,6 +483,240 @@ class HeapprofdEndToEnd : public ::testing::Test {
     EXPECT_GT(total_freed, 0);
   }
 
+  void NativeStartupDenormalizedCmdline() {
+    auto helper = GetHelper(&task_runner);
+
+    TraceConfig trace_config;
+    trace_config.add_buffers()->set_size_kb(10 * 1024);
+    trace_config.set_duration_ms(5000);
+    trace_config.set_flush_timeout_ms(10000);
+
+    auto* ds_config = trace_config.add_data_sources()->mutable_config();
+    ds_config->set_name("android.heapprofd");
+
+    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    heapprofd_config->set_sampling_interval_bytes(1);
+    *heapprofd_config->add_process_cmdline() =
+        "heapprofd_continuous_malloc@something";
+    heapprofd_config->set_all(false);
+
+    helper->StartTracing(trace_config);
+
+    // Wait to guarantee that the process forked below is hooked by the profiler
+    // by virtue of the startup check, and not by virtue of being seen as a
+    // running process. This sleep is here to prevent that, accidentally, the
+    // test gets to the fork()+exec() too soon, before the heap profiling daemon
+    // has received the trace config.
+    sleep(1);
+
+    // Make sure the forked process does not get reparented to init.
+    setsid();
+    pid_t pid = fork();
+    switch (pid) {
+      case -1:
+        PERFETTO_FATAL("Failed to fork.");
+      case 0: {
+        const char* envp[] = {"HEAPPROFD_TESTING_RUN_MALLOC=1", nullptr};
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, STDIN_FILENO);
+        dup2(null, STDOUT_FILENO);
+        dup2(null, STDERR_FILENO);
+        PERFETTO_CHECK(execle("/proc/self/exe", "heapprofd_continuous_malloc",
+                              nullptr, envp) == 0);
+        break;
+      }
+      default:
+        break;
+    }
+
+    helper->WaitForTracingDisabled(20000);
+
+    helper->ReadData();
+    helper->WaitForReadData();
+
+    PERFETTO_CHECK(kill(pid, SIGKILL) == 0);
+    PERFETTO_CHECK(PERFETTO_EINTR(waitpid(pid, nullptr, 0)) == pid);
+
+    const auto& packets = helper->trace();
+    ASSERT_GT(packets.size(), 0u);
+    size_t profile_packets = 0;
+    size_t samples = 0;
+    uint64_t total_allocated = 0;
+    uint64_t total_freed = 0;
+    for (const protos::TracePacket& packet : packets) {
+      if (packet.has_profile_packet() &&
+          packet.profile_packet().process_dumps().size() > 0) {
+        const auto& dumps = packet.profile_packet().process_dumps();
+        ASSERT_EQ(dumps.size(), 1);
+        const protos::ProfilePacket_ProcessHeapSamples& dump = dumps.Get(0);
+        EXPECT_EQ(dump.pid(), pid);
+        profile_packets++;
+        for (const auto& sample : dump.samples()) {
+          samples++;
+          total_allocated += sample.self_allocated();
+          total_freed += sample.self_freed();
+        }
+      }
+    }
+    EXPECT_EQ(profile_packets, 1);
+    EXPECT_GT(samples, 0);
+    EXPECT_GT(total_allocated, 0);
+    EXPECT_GT(total_freed, 0);
+  }
+
+  void DiscoverByName() {
+    auto helper = GetHelper(&task_runner);
+
+    TraceConfig trace_config;
+    trace_config.add_buffers()->set_size_kb(10 * 1024);
+    trace_config.set_duration_ms(5000);
+    trace_config.set_flush_timeout_ms(10000);
+
+    auto* ds_config = trace_config.add_data_sources()->mutable_config();
+    ds_config->set_name("android.heapprofd");
+
+    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    heapprofd_config->set_sampling_interval_bytes(1);
+    *heapprofd_config->add_process_cmdline() = "heapprofd_continuous_malloc";
+    heapprofd_config->set_all(false);
+
+    // Make sure the forked process does not get reparented to init.
+    setsid();
+    pid_t pid = fork();
+    switch (pid) {
+      case -1:
+        PERFETTO_FATAL("Failed to fork.");
+      case 0: {
+        const char* envp[] = {"HEAPPROFD_TESTING_RUN_MALLOC=1", nullptr};
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, STDIN_FILENO);
+        dup2(null, STDOUT_FILENO);
+        dup2(null, STDERR_FILENO);
+        PERFETTO_CHECK(execle("/proc/self/exe", "heapprofd_continuous_malloc",
+                              nullptr, envp) == 0);
+        break;
+      }
+      default:
+        break;
+    }
+
+    // Wait to make sure process is fully initialized, so we do not accidentally
+    // match it by the startup logic.
+    sleep(1);
+
+    helper->StartTracing(trace_config);
+    helper->WaitForTracingDisabled(20000);
+
+    helper->ReadData();
+    helper->WaitForReadData();
+
+    PERFETTO_CHECK(kill(pid, SIGKILL) == 0);
+    PERFETTO_CHECK(PERFETTO_EINTR(waitpid(pid, nullptr, 0)) == pid);
+
+    const auto& packets = helper->trace();
+    ASSERT_GT(packets.size(), 0u);
+    size_t profile_packets = 0;
+    size_t samples = 0;
+    uint64_t total_allocated = 0;
+    uint64_t total_freed = 0;
+    for (const protos::TracePacket& packet : packets) {
+      if (packet.has_profile_packet() &&
+          packet.profile_packet().process_dumps().size() > 0) {
+        const auto& dumps = packet.profile_packet().process_dumps();
+        ASSERT_EQ(dumps.size(), 1);
+        const protos::ProfilePacket_ProcessHeapSamples& dump = dumps.Get(0);
+        EXPECT_EQ(dump.pid(), pid);
+        profile_packets++;
+        for (const auto& sample : dump.samples()) {
+          samples++;
+          total_allocated += sample.self_allocated();
+          total_freed += sample.self_freed();
+        }
+      }
+    }
+    EXPECT_EQ(profile_packets, 1);
+    EXPECT_GT(samples, 0);
+    EXPECT_GT(total_allocated, 0);
+    EXPECT_GT(total_freed, 0);
+  }
+
+  void DiscoverByNameDenormalizedCmdline() {
+    auto helper = GetHelper(&task_runner);
+
+    TraceConfig trace_config;
+    trace_config.add_buffers()->set_size_kb(10 * 1024);
+    trace_config.set_duration_ms(5000);
+    trace_config.set_flush_timeout_ms(10000);
+
+    auto* ds_config = trace_config.add_data_sources()->mutable_config();
+    ds_config->set_name("android.heapprofd");
+
+    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    heapprofd_config->set_sampling_interval_bytes(1);
+    *heapprofd_config->add_process_cmdline() =
+        "heapprofd_continuous_malloc@something";
+    heapprofd_config->set_all(false);
+
+    // Make sure the forked process does not get reparented to init.
+    setsid();
+    pid_t pid = fork();
+    switch (pid) {
+      case -1:
+        PERFETTO_FATAL("Failed to fork.");
+      case 0: {
+        const char* envp[] = {"HEAPPROFD_TESTING_RUN_MALLOC=1", nullptr};
+        int null = open("/dev/null", O_RDWR);
+        dup2(null, STDIN_FILENO);
+        dup2(null, STDOUT_FILENO);
+        dup2(null, STDERR_FILENO);
+        PERFETTO_CHECK(execle("/proc/self/exe", "heapprofd_continuous_malloc",
+                              nullptr, envp) == 0);
+        break;
+      }
+      default:
+        break;
+    }
+
+    // Wait to make sure process is fully initialized, so we do not accidentally
+    // match it by the startup logic.
+    sleep(1);
+
+    helper->StartTracing(trace_config);
+    helper->WaitForTracingDisabled(20000);
+
+    helper->ReadData();
+    helper->WaitForReadData();
+
+    PERFETTO_CHECK(kill(pid, SIGKILL) == 0);
+    PERFETTO_CHECK(PERFETTO_EINTR(waitpid(pid, nullptr, 0)) == pid);
+
+    const auto& packets = helper->trace();
+    ASSERT_GT(packets.size(), 0u);
+    size_t profile_packets = 0;
+    size_t samples = 0;
+    uint64_t total_allocated = 0;
+    uint64_t total_freed = 0;
+    for (const protos::TracePacket& packet : packets) {
+      if (packet.has_profile_packet() &&
+          packet.profile_packet().process_dumps().size() > 0) {
+        const auto& dumps = packet.profile_packet().process_dumps();
+        ASSERT_EQ(dumps.size(), 1);
+        const protos::ProfilePacket_ProcessHeapSamples& dump = dumps.Get(0);
+        EXPECT_EQ(dump.pid(), pid);
+        profile_packets++;
+        for (const auto& sample : dump.samples()) {
+          samples++;
+          total_allocated += sample.self_allocated();
+          total_freed += sample.self_freed();
+        }
+      }
+    }
+    EXPECT_EQ(profile_packets, 1);
+    EXPECT_GT(samples, 0);
+    EXPECT_GT(total_allocated, 0);
+    EXPECT_GT(total_freed, 0);
+  }
+
   void ReInit() {
     constexpr uint64_t kFirstIterationBytes = 5;
     constexpr uint64_t kSecondIterationBytes = 7;
@@ -545,10 +781,9 @@ class HeapprofdEndToEnd : public ::testing::Test {
     ASSERT_EQ(read(*ack_pipe.rd, buf, sizeof(buf)), 0);
     ack_pipe.rd.reset();
 
-    // TODO(rsavitski): this sleep is to compensate for the heapprofd delaying
-    // in closing the sockets (and therefore the client noticing that the
-    // session is over). Clarify where the delays are coming from.
-    usleep(100 * kMsToUs);
+    // A brief sleep to allow the client to notice that the profiling session is
+    // to be torn down (as it rejects concurrent sessions).
+    usleep(500 * kMsToUs);
 
     PERFETTO_LOG("HeapprofdEndToEnd::Reinit: Starting second");
     helper = Trace(trace_config);
@@ -611,127 +846,232 @@ class HeapprofdEndToEnd : public ::testing::Test {
     PERFETTO_CHECK(kill(pid, SIGKILL) == 0);
     PERFETTO_CHECK(PERFETTO_EINTR(waitpid(pid, nullptr, 0)) == pid);
   }
+
+  // TODO(rsavitski): fold exit status assertions into existing tests where
+  // possible.
+  void NativeProfilingActiveAtProcessExit() {
+    constexpr uint64_t kTestAllocSize = 128;
+    base::Pipe start_pipe = base::Pipe::Create(base::Pipe::kBothBlock);
+
+    pid_t pid = fork();
+    if (pid == 0) {  // child
+      start_pipe.rd.reset();
+      start_pipe.wr.reset();
+      for (int i = 0; i < 200; i++) {
+        // malloc and leak, otherwise the free batching will cause us to filter
+        // out the allocations (as we don't see the interleaved frees).
+        volatile char* x = static_cast<char*>(malloc(kTestAllocSize));
+        if (x) {
+          x[0] = 'x';
+        }
+        usleep(10 * kMsToUs);
+      }
+      exit(0);
+    }
+
+    ASSERT_NE(pid, -1) << "Failed to fork.";
+    start_pipe.wr.reset();
+
+    // Construct tracing config (without starting profiling).
+    auto helper = GetHelper(&task_runner);
+    TraceConfig trace_config;
+    trace_config.add_buffers()->set_size_kb(10 * 1024);
+    trace_config.set_duration_ms(5000);
+    trace_config.set_flush_timeout_ms(10000);
+
+    auto* ds_config = trace_config.add_data_sources()->mutable_config();
+    ds_config->set_name("android.heapprofd");
+
+    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    heapprofd_config->set_sampling_interval_bytes(1);
+    *heapprofd_config->add_pid() = static_cast<uint64_t>(pid);
+
+    // Wait for child to have been scheduled at least once.
+    char buf[1] = {};
+    ASSERT_EQ(PERFETTO_EINTR(read(*start_pipe.rd, buf, sizeof(buf))), 0);
+    start_pipe.rd.reset();
+
+    // Trace until child exits.
+    helper->StartTracing(trace_config);
+
+    siginfo_t siginfo = {};
+    int wait_ret = PERFETTO_EINTR(
+        waitid(P_PID, static_cast<id_t>(pid), &siginfo, WEXITED));
+    ASSERT_FALSE(wait_ret) << "Failed to waitid.";
+
+    // Assert that the child exited successfully.
+    EXPECT_EQ(siginfo.si_code, CLD_EXITED) << "Child did not exit by itself.";
+    EXPECT_EQ(siginfo.si_status, 0) << "Child's exit status not successful.";
+
+    // Assert that we did profile the process.
+    helper->FlushAndWait(2000);
+    helper->DisableTracing();
+    helper->WaitForTracingDisabled(10000);
+    helper->ReadData();
+    helper->WaitForReadData();
+
+    const auto& packets = helper->trace();
+    ASSERT_GT(packets.size(), 0u);
+    size_t profile_packets = 0;
+    size_t samples = 0;
+    uint64_t total_allocated = 0;
+    for (const protos::TracePacket& packet : packets) {
+      if (packet.has_profile_packet() &&
+          packet.profile_packet().process_dumps().size() > 0) {
+        const auto& dumps = packet.profile_packet().process_dumps();
+        ASSERT_EQ(dumps.size(), 1);
+        const protos::ProfilePacket_ProcessHeapSamples& dump = dumps.Get(0);
+        EXPECT_EQ(dump.pid(), pid);
+        profile_packets++;
+        for (const auto& sample : dump.samples()) {
+          samples++;
+          total_allocated += sample.self_allocated();
+        }
+      }
+    }
+    EXPECT_EQ(profile_packets, 1);
+    EXPECT_GT(samples, 0);
+    EXPECT_GT(total_allocated, 0);
+  }
 };
 
-// TODO(b/118428762): unwinding is broken at least x86 emulators, blanket-skip
-// all x86-like primary ABIs until we've taken a closer look.
-bool IsX86() {
-  std::string abi = ReadProperty("ro.product.cpu.abi", "");
-  return abi.find("x86") != std::string::npos;
-}
+// TODO(b/118428762): look into unwinding issues on x86.
+#if defined(__i386__) || defined(__x86_64__)
+#define MAYBE_SKIP(x) DISABLED_##x
+#else
+#define MAYBE_SKIP(x) x
+#endif
 
-TEST_F(HeapprofdEndToEnd, Smoke_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(Smoke_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   Smoke();
 }
 
-TEST_F(HeapprofdEndToEnd, TwoProcesses_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(TwoProcesses_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   TwoProcesses();
 }
 
-TEST_F(HeapprofdEndToEnd, TwoProcesses_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(TwoProcesses_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   TwoProcesses();
 }
 
-TEST_F(HeapprofdEndToEnd, Smoke_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(Smoke_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   Smoke();
 }
 
-TEST_F(HeapprofdEndToEnd, FinalFlush_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(FinalFlush_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   FinalFlush();
 }
 
-TEST_F(HeapprofdEndToEnd, FinalFlush_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(FinalFlush_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   FinalFlush();
 }
 
-TEST_F(HeapprofdEndToEnd, NativeStartup_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(NativeStartup_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   NativeStartup();
 }
 
-TEST_F(HeapprofdEndToEnd, NativeStartup_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(NativeStartup_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   NativeStartup();
 }
 
-TEST_F(HeapprofdEndToEnd, ReInit_Central) {
-  if (IsX86())
-    return;
+TEST_F(HeapprofdEndToEnd,
+       MAYBE_SKIP(NativeStartupDenormalizedCmdline_Central)) {
+  auto prop = DisableFork();
+  ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
+  NativeStartupDenormalizedCmdline();
+}
 
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(NativeStartupDenormalizedCmdline_Fork)) {
+  // RAII handle that resets to central mode when out of scope.
+  auto prop = EnableFork();
+  ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
+  NativeStartupDenormalizedCmdline();
+}
+
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(DiscoverByName_Central)) {
+  auto prop = DisableFork();
+  ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
+  DiscoverByName();
+}
+
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(DiscoverByName_Fork)) {
+  // RAII handle that resets to central mode when out of scope.
+  auto prop = EnableFork();
+  ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
+  DiscoverByName();
+}
+
+TEST_F(HeapprofdEndToEnd,
+       MAYBE_SKIP(DiscoverByNameDenormalizedCmdline_Central)) {
+  auto prop = DisableFork();
+  ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
+  DiscoverByNameDenormalizedCmdline();
+}
+
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(DiscoverByNameDenormalizedCmdline_Fork)) {
+  auto prop = DisableFork();
+  ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
+  DiscoverByNameDenormalizedCmdline();
+}
+
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(ReInit_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   ReInit();
 }
 
-TEST_F(HeapprofdEndToEnd, ReInit_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(ReInit_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   ReInit();
 }
 
-TEST_F(HeapprofdEndToEnd, ConcurrentSession_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(ConcurrentSession_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   ConcurrentSession();
 }
 
-TEST_F(HeapprofdEndToEnd, ConcurrentSession_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(ConcurrentSession_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   ConcurrentSession();
+}
+
+TEST_F(HeapprofdEndToEnd,
+       MAYBE_SKIP(NativeProfilingActiveAtProcessExit_Central)) {
+  auto prop = DisableFork();
+  ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
+  NativeProfilingActiveAtProcessExit();
+}
+
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(NativeProfilingActiveAtProcessExit_Fork)) {
+  // RAII handle that resets to central mode when out of scope.
+  auto prop = EnableFork();
+  ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
+  NativeProfilingActiveAtProcessExit();
 }
 
 }  // namespace

@@ -54,6 +54,7 @@ group("all") {
       ":perfetto_integrationtests",
       ":traced",
       ":traced_probes",
+      ":trigger_perfetto",
       "protos/perfetto/config:merged_config",  # For syntax-checking the proto.
       "protos/perfetto/trace:merged_trace",  # For syntax-checking the proto.
       "src/ipc/protoc_plugin:ipc_plugin($host_toolchain)",
@@ -73,6 +74,8 @@ group("all") {
       ]
       if (is_linux || is_android) {
         deps += [ "tools/skippy" ]
+        deps += [ "tools/busy_threads" ]
+        deps += [ "tools/dump_ftrace_stats" ]
       }
       if (is_fuzzer) {
         deps += [ ":fuzzers" ]
@@ -135,7 +138,10 @@ test("perfetto_unittests") {
     deps += [ "src/profiling/memory:unittests" ]
   }
   if (perfetto_build_standalone && !is_android) {
-    deps += [ "src/trace_processor:unittests" ]
+    deps += [
+      "src/trace_processor:unittests",
+      "src/trace_processor/metrics:unittests",
+    ]
   }
 }
 
@@ -211,6 +217,22 @@ if (perfetto_build_standalone || perfetto_build_with_android) {
     ]
   }
 
+  # Tool to finalize long running traces.
+  # This connects to traced as a producer and sends the triggers passed on the
+  # commandline. This is a subset of what the perfetto binary can do but we
+  # need a separate binary for programs that cannot (for good reason) use the
+  # additional functionality (for example starting traces via consumer socket)
+  # due to selinux rules.
+  executable("trigger_perfetto") {
+    deps = [
+      "gn:default_deps",
+      "src/perfetto_cmd:trigger_perfetto_cmd",
+    ]
+    sources = [
+      "src/perfetto_cmd/trigger_perfetto_main.cc",
+    ]
+  }
+
   if (perfetto_build_with_android) {
     executable("trace_to_text") {
       testonly = true
@@ -278,6 +300,7 @@ if (perfetto_build_standalone) {
     deps = [
       "src/ipc:buffered_frame_deserializer_fuzzer",
       "src/profiling/memory:shared_ring_buffer_fuzzer",
+      "src/profiling/memory:shared_ring_buffer_write_fuzzer",
       "src/profiling/memory:unwinding_fuzzer",
       "src/protozero:protozero_decoder_fuzzer",
       "src/trace_processor:trace_processor_fuzzer",

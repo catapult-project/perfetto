@@ -43,6 +43,7 @@
 #include "perfetto/tracing/core/trace_packet.h"
 #include "src/perfetto_cmd/config.h"
 #include "src/perfetto_cmd/pbtxt_to_pb.h"
+#include "src/perfetto_cmd/trigger_producer.h"
 
 #include "perfetto/config/trace_config.pb.h"
 
@@ -131,13 +132,13 @@ using protozero::proto_utils::MakeTagLengthDelimited;
 int PerfettoCmd::PrintUsage(const char* argv0) {
   PERFETTO_ELOG(R"(
 Usage: %s
-  --background     -d     : Exits immediately and continues tracing in background
-  --config         -c     : /path/to/trace/config/file or - for stdin
-  --out            -o     : /path/to/out/trace/file or - for stdout
-  --dropbox           TAG : Upload trace into DropBox using tag TAG
-  --no-guardrails         : Ignore guardrails triggered when using --dropbox (for testing).
-  --txt                   : Parse config as pbtxt. Not a stable API. Not for production use.
-  --reset-guardrails      : Resets the state of the guardails and exits (for testing).
+  --background     -d      : Exits immediately and continues tracing in background
+  --config         -c      : /path/to/trace/config/file or - for stdin
+  --out            -o      : /path/to/out/trace/file or - for stdout
+  --dropbox           TAG  : Upload trace into DropBox using tag TAG
+  --no-guardrails          : Ignore guardrails triggered when using --dropbox (for testing).
+  --txt                    : Parse config as pbtxt. Not a stable API. Not for production use.
+  --reset-guardrails       : Resets the state of the guardails and exits (for testing).
   --help           -h
 
 
@@ -381,9 +382,10 @@ int PerfettoCmd::Main(int argc, char** argv) {
   // 1) A proto-encoded file/stdin (-c ...).
   // 2) A proto-text file/stdin (-c ... --txt).
   // 3) A set of option arguments (-t 10s -s 10m).
-  // The only case in which a trace config is not expected is --attach. In this
-  // case we are just re-attaching to an already started session.
+  // The only cases in which a trace config is not expected is --attach.
+  // For this we are just acting on already existing sessions.
   perfetto::protos::TraceConfig trace_config_proto;
+  std::vector<std::string> triggers_to_activate;
   bool parsed = false;
   if (is_attach()) {
     if ((!trace_config_raw.empty() || has_config_options)) {
@@ -403,7 +405,6 @@ int PerfettoCmd::Main(int argc, char** argv) {
       PERFETTO_ELOG("The TraceConfig is empty");
       return 1;
     }
-
     PERFETTO_DLOG("Parsing TraceConfig, %zu bytes", trace_config_raw.size());
     if (parse_as_pbtxt) {
       parsed = ParseTraceConfigPbtxt(config_file_name, trace_config_raw,
@@ -433,6 +434,17 @@ int PerfettoCmd::Main(int argc, char** argv) {
     return 1;
   }
 
+  // |activate_triggers| in the trace config is shorthand for trigger_perfetto.
+  // In this case we don't intend to send any trace config to the service,
+  // rather use that as a signal to the cmdline client to connect as a producer
+  // and activate triggers.
+  if (!trace_config_->activate_triggers().empty()) {
+    for (const auto& trigger : trace_config_->activate_triggers()) {
+      triggers_to_activate.push_back(trigger);
+    }
+    trace_config_.reset(new TraceConfig());
+  }
+
   bool open_out_file = true;
   if (is_attach()) {
     open_out_file = false;
@@ -440,6 +452,8 @@ int PerfettoCmd::Main(int argc, char** argv) {
       PERFETTO_ELOG("Can't pass an --out file (or --dropbox) to --attach");
       return 1;
     }
+  } else if (!triggers_to_activate.empty()) {
+    open_out_file = false;
   } else if (trace_out_path_.empty() && dropbox_tag_.empty()) {
     PERFETTO_ELOG("Either --out or --dropbox is required");
     return 1;
@@ -478,15 +492,38 @@ int PerfettoCmd::Main(int argc, char** argv) {
     }
   }
 
+  // If we are just activating triggers then we don't need to rate limit,
+  // connect as a consumer or run the trace. So bail out after processing all
+  // the options.
+  if (!triggers_to_activate.empty()) {
+    bool finished_with_success = false;
+    TriggerProducer producer(&task_runner_,
+                             [this, &finished_with_success](bool success) {
+                               finished_with_success = success;
+                               task_runner_.Quit();
+                             },
+                             &triggers_to_activate);
+    task_runner_.Run();
+    return finished_with_success ? 0 : 1;
+  }
+
   RateLimiter::Args args{};
   args.is_dropbox = !dropbox_tag_.empty();
   args.current_time = base::GetWallTimeS();
   args.ignore_guardrails = ignore_guardrails;
+  args.allow_user_build_tracing = trace_config_->allow_user_build_tracing();
 #if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_USERDEBUG_BUILD) || \
     PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
   args.max_upload_bytes_override =
       trace_config_->guardrail_overrides().max_upload_per_day_bytes();
 #endif
+
+  if ((trace_config_->duration_ms() == 0) && args.is_dropbox &&
+      !args.ignore_guardrails) {
+    PERFETTO_ELOG("Can't trace indefinitely when uploading via Dropbox.");
+    return 1;
+  }
+
   if (!limiter.ShouldTrace(args))
     return 1;
 
@@ -589,6 +626,12 @@ void PerfettoCmd::FinalizeTraceAndExit() {
     }
   } else {
 #if PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD)
+    if (bytes_written_ == 0) {
+      PERFETTO_ILOG("Skipping upload to dropbox. Empty trace.");
+      did_process_full_trace_ = true;
+      task_runner_.Quit();
+      return;
+    }
     android::sp<android::os::DropBoxManager> dropbox =
         new android::os::DropBoxManager();
     fseek(*trace_out_stream_, 0, SEEK_SET);
@@ -636,6 +679,14 @@ bool PerfettoCmd::OpenOutputFile() {
     fd.reset(dup(STDOUT_FILENO));
   } else {
     fd = base::OpenFile(trace_out_path_, O_RDWR | O_CREAT | O_TRUNC, 0600);
+  }
+  if (!fd) {
+    PERFETTO_PLOG(
+        "Failed to open %s. If you get permission denied in "
+        "/data/misc/perfetto-traces, the file might have been "
+        "created by another user, try deleting it first.",
+        trace_out_path_.c_str());
+    return false;
   }
   trace_out_stream_.reset(fdopen(fd.release(), "wb"));
   PERFETTO_CHECK(trace_out_stream_);

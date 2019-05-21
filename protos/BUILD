@@ -29,6 +29,7 @@ proto_library(
     srcs = [
         "perfetto/common/android_log_constants.proto",
         "perfetto/common/commit_data_request.proto",
+        "perfetto/common/descriptor.proto",
         "perfetto/common/observable_events.proto",
         "perfetto/common/sys_stats_counters.proto",
         "perfetto/common/trace_stats.proto",
@@ -58,6 +59,7 @@ proto_library(
     srcs = [
         "perfetto/common/android_log_constants.proto",
         "perfetto/common/commit_data_request.proto",
+        "perfetto/common/descriptor.proto",
         "perfetto/common/observable_events.proto",
         "perfetto/common/sys_stats_counters.proto",
         "perfetto/common/trace_stats.proto",
@@ -110,6 +112,31 @@ cc_proto_library(
     ],
     deps = [
         "//third_party/perfetto/protos:config",
+    ],
+)
+
+# GN target: //protos/perfetto/config:merged_config_gen
+proto_library(
+    name = "config_merged_config_gen",
+    srcs = [
+        "perfetto/config/perfetto_config.proto",
+    ],
+    has_services = 1,
+    cc_api_version = 2,
+    cc_generic_services = 1,
+    visibility = [
+        "//visibility:public",
+    ],
+)
+
+# GN target: //protos/perfetto/config:merged_config_gen
+cc_proto_library(
+    name = "config_merged_config_gen_cc_proto",
+    visibility = [
+        "//visibility:public",
+    ],
+    deps = [
+        "//third_party/perfetto/protos:config_merged_config_gen",
     ],
 )
 
@@ -167,6 +194,7 @@ proto_library(
     name = "metrics_android",
     srcs = [
         "perfetto/metrics/android/mem_metric.proto",
+        "perfetto/metrics/android/startup_metric.proto",
     ],
     has_services = 1,
     cc_api_version = 2,
@@ -187,6 +215,25 @@ cc_proto_library(
     ],
 )
 
+# GN target: //protos/perfetto/metrics/android:zero_gen
+proto_library(
+    name = "metrics_android_zero",
+    srcs = [
+        "perfetto/metrics/android/mem_metric.proto",
+        "perfetto/metrics/android/startup_metric.proto",
+    ],
+)
+
+# GN target: //protos/perfetto/metrics/android:zero_gen
+pbzero_cc_proto_library(
+    name = "metrics_android_zero_cc_proto",
+    src_proto_library = "//third_party/perfetto/protos:metrics_android_zero",
+    deps = [
+        "//third_party/perfetto:libprotozero",
+        "//third_party/perfetto/google:gtest_prod",
+    ],
+)
+
 # GN target: //protos/perfetto/metrics:lite_gen
 cc_proto_library(
     name = "metrics_cc_proto",
@@ -195,6 +242,27 @@ cc_proto_library(
     ],
     deps = [
         "//third_party/perfetto/protos:metrics",
+    ],
+)
+
+# GN target: //protos/perfetto/metrics:zero_gen
+proto_library(
+    name = "metrics_zero",
+    srcs = [
+        "perfetto/metrics/metrics.proto",
+    ],
+    deps = [
+        "//third_party/perfetto/protos:metrics_android_zero",
+    ],
+)
+
+# GN target: //protos/perfetto/metrics:zero_gen
+pbzero_cc_proto_library(
+    name = "metrics_zero_cc_proto",
+    src_proto_library = "//third_party/perfetto/protos:metrics_zero",
+    deps = [
+        "//third_party/perfetto:libprotozero",
+        "//third_party/perfetto/google:gtest_prod",
     ],
 )
 
@@ -320,6 +388,7 @@ cc_proto_library(
 proto_library(
     name = "trace_chrome",
     srcs = [
+        "perfetto/trace/chrome/chrome_benchmark_metadata.proto",
         "perfetto/trace/chrome/chrome_trace_event.proto",
     ],
     has_services = 1,
@@ -345,6 +414,7 @@ cc_proto_library(
 proto_library(
     name = "trace_chrome_zero",
     srcs = [
+        "perfetto/trace/chrome/chrome_benchmark_metadata.proto",
         "perfetto/trace/chrome/chrome_trace_event.proto",
     ],
     deps = [
@@ -557,6 +627,31 @@ pbzero_cc_proto_library(
     deps = [
         "//third_party/perfetto:libprotozero",
         "//third_party/perfetto/google:gtest_prod",
+    ],
+)
+
+# GN target: //protos/perfetto/trace:merged_trace_gen
+proto_library(
+    name = "trace_merged_trace_gen",
+    srcs = [
+        "perfetto/trace/perfetto_trace.proto",
+    ],
+    has_services = 1,
+    cc_api_version = 2,
+    cc_generic_services = 1,
+    visibility = [
+        "//visibility:public",
+    ],
+)
+
+# GN target: //protos/perfetto/trace:merged_trace_gen
+cc_proto_library(
+    name = "trace_merged_trace_gen_cc_proto",
+    visibility = [
+        "//visibility:public",
+    ],
+    deps = [
+        "//third_party/perfetto/protos:trace_merged_trace_gen",
     ],
 )
 

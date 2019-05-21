@@ -106,14 +106,20 @@ source_set("daemon") {
   sources = [
     "bookkeeping.cc",
     "bookkeeping.h",
+    "bookkeeping_dump.cc",
+    "bookkeeping_dump.h",
     "heapprofd_producer.cc",
     "heapprofd_producer.h",
     "interner.h",
+    "page_idle_checker.cc",
+    "page_idle_checker.h",
     "system_property.cc",
     "system_property.h",
     "unwinding.cc",
     "unwinding.h",
     "unwound_messages.h",
+    "utils.cc",
+    "utils.h",
   ]
 }
 
@@ -148,12 +154,14 @@ source_set("unittests") {
     "../../../gn:gtest_deps",
     "../../base",
     "../../base:test_support",
+    "../../tracing",
   ]
   sources = [
     "bookkeeping_unittest.cc",
     "client_unittest.cc",
     "heapprofd_producer_unittest.cc",
     "interner_unittest.cc",
+    "page_idle_checker_unittest.cc",
     "proc_utils_unittest.cc",
     "sampler_unittest.cc",
     "system_property_unittest.cc",
@@ -222,6 +230,18 @@ perfetto_fuzzer_test("shared_ring_buffer_fuzzer") {
   testonly = true
   sources = [
     "shared_ring_buffer_fuzzer.cc",
+  ]
+  deps = [
+    ":ring_buffer",
+    "../../../gn:default_deps",
+    "../../base",
+  ]
+}
+
+perfetto_fuzzer_test("shared_ring_buffer_write_fuzzer") {
+  testonly = true
+  sources = [
+    "shared_ring_buffer_write_fuzzer.cc",
   ]
   deps = [
     ":ring_buffer",

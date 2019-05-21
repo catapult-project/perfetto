@@ -16,7 +16,9 @@
 
 #include <aio.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <inttypes.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -25,14 +27,12 @@
 #include <vector>
 
 #include "perfetto/base/build_config.h"
+#include "perfetto/base/file_utils.h"
 #include "perfetto/base/logging.h"
 #include "perfetto/base/scoped_file.h"
 #include "perfetto/base/string_splitter.h"
 #include "perfetto/base/time.h"
 #include "perfetto/trace_processor/trace_processor.h"
-
-#include "perfetto/metrics/metrics.pb.h"
-#include "perfetto/trace_processor/raw_query.pb.h"
 
 #if PERFETTO_BUILDFLAG(PERFETTO_OS_LINUX) ||   \
     PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID) || \
@@ -141,6 +141,59 @@ char* GetLine(const char* prompt) {
 
 #endif
 
+bool PrintStats() {
+  auto it = g_tp->ExecuteQuery(
+      "SELECT name, idx, source, value from stats "
+      "where severity = 'error' and value > 0");
+
+  bool first = true;
+  for (uint32_t rows = 0; it.Next(); rows++) {
+    if (first) {
+      fprintf(stderr, "Error stats for this trace:\n");
+
+      for (uint32_t i = 0; i < it.ColumnCount(); i++)
+        fprintf(stderr, "%40s ", it.GetColumName(i).c_str());
+      fprintf(stderr, "\n");
+
+      for (uint32_t i = 0; i < it.ColumnCount(); i++)
+        fprintf(stderr, "%40s ", "----------------------------------------");
+      fprintf(stderr, "\n");
+
+      first = false;
+    }
+
+    for (uint32_t c = 0; c < it.ColumnCount(); c++) {
+      auto value = it.Get(c);
+      switch (value.type) {
+        case SqlValue::Type::kNull:
+          fprintf(stderr, "%-40.40s", "[NULL]");
+          break;
+        case SqlValue::Type::kDouble:
+          fprintf(stderr, "%40f", value.double_value);
+          break;
+        case SqlValue::Type::kLong:
+          fprintf(stderr, "%40" PRIi64, value.long_value);
+          break;
+        case SqlValue::Type::kString:
+          fprintf(stderr, "%-40.40s", value.string_value);
+          break;
+        case SqlValue::Type::kBytes:
+          printf("%-40.40s", "<raw bytes>");
+          break;
+      }
+      fprintf(stderr, " ");
+    }
+    fprintf(stderr, "\n");
+  }
+
+  util::Status status = it.Status();
+  if (!status.ok()) {
+    PERFETTO_ELOG("Error while iterating stats %s", status.c_message());
+    return false;
+  }
+  return true;
+}
+
 int ExportTraceToDatabase(const std::string& output_name) {
   PERFETTO_CHECK(output_name.find("'") == std::string::npos);
   {
@@ -153,78 +206,71 @@ int ExportTraceToDatabase(const std::string& output_name) {
     PERFETTO_CHECK(res == 0);
   }
 
-  // TODO(skyostil): Use synchronous queries.
   std::string attach_sql =
       "ATTACH DATABASE '" + output_name + "' AS perfetto_export";
-  protos::RawQueryArgs attach_query;
-  attach_query.set_sql_query(attach_sql);
-  g_tp->ExecuteQuery(
-      attach_query, [](const protos::RawQueryResult& attach_res) {
-        if (attach_res.has_error()) {
-          PERFETTO_ELOG("SQLite error: %s", attach_res.error().c_str());
-          return;
-        }
-        protos::RawQueryArgs list_query;
-        // Find all the virtual tables we have created internally as well as
-        // actual tables registered through SQL.
-        list_query.set_sql_query(
-            "SELECT name FROM perfetto_tables UNION "
-            "SELECT name FROM sqlite_master WHERE type='table'");
-        g_tp->ExecuteQuery(list_query, [](const protos::RawQueryResult& res) {
-          if (res.has_error()) {
-            PERFETTO_ELOG("SQLite error: %s", res.error().c_str());
-            return;
-          }
-          PERFETTO_CHECK(res.columns_size() == 1);
-          for (int r = 0; r < static_cast<int>(res.num_records()); r++) {
-            std::string table_name = res.columns(0).string_values(r);
-            PERFETTO_CHECK(table_name.find("'") == std::string::npos);
-            std::string export_sql = "CREATE TABLE perfetto_export." +
-                                     table_name + " AS SELECT * FROM " +
-                                     table_name;
-            protos::RawQueryArgs export_query;
-            export_query.set_sql_query(export_sql);
-            g_tp->ExecuteQuery(export_query,
-                               [](const protos::RawQueryResult& export_res) {
-                                 if (export_res.has_error())
-                                   PERFETTO_ELOG("SQLite error: %s",
-                                                 export_res.error().c_str());
-                               });
-          }
-        });
-      });
+  auto attach_it = g_tp->ExecuteQuery(attach_sql);
+  bool attach_has_more = attach_it.Next();
+  PERFETTO_DCHECK(!attach_has_more);
 
-  protos::RawQueryArgs detach_query;
-  detach_query.set_sql_query("DETACH DATABASE perfetto_export");
-  g_tp->ExecuteQuery(detach_query, [](const protos::RawQueryResult& res) {
-    if (res.has_error())
-      PERFETTO_ELOG("SQLite error: %s", res.error().c_str());
-  });
+  util::Status status = attach_it.Status();
+  if (!status.ok()) {
+    PERFETTO_ELOG("SQLite error: %s", status.c_message());
+    return 1;
+  }
+
+  auto tables_it = g_tp->ExecuteQuery(
+      "SELECT name FROM perfetto_tables UNION "
+      "SELECT name FROM sqlite_master WHERE type='table'");
+  for (uint32_t rows = 0; tables_it.Next(); rows++) {
+    std::string table_name = tables_it.Get(0).string_value;
+    PERFETTO_CHECK(table_name.find("'") == std::string::npos);
+    std::string export_sql = "CREATE TABLE perfetto_export." + table_name +
+                             " AS SELECT * FROM " + table_name;
+
+    auto export_it = g_tp->ExecuteQuery(export_sql);
+    bool export_has_more = export_it.Next();
+    PERFETTO_DCHECK(!export_has_more);
+
+    status = export_it.Status();
+    if (!status.ok()) {
+      PERFETTO_ELOG("SQLite error: %s", status.c_message());
+      return 1;
+    }
+  }
+  status = tables_it.Status();
+  if (!status.ok()) {
+    PERFETTO_ELOG("SQLite error: %s", status.c_message());
+    return 1;
+  }
+
+  auto detach_it = g_tp->ExecuteQuery("DETACH DATABASE perfetto_export");
+  bool detach_has_more = attach_it.Next();
+  PERFETTO_DCHECK(!detach_has_more);
+  status = detach_it.Status();
+  if (!status.ok()) {
+    PERFETTO_ELOG("SQLite error: %s", status.c_message());
+    return 1;
+  }
   return 0;
 }
 
 int RunMetrics(const std::vector<std::string>& metric_names) {
-  protos::TraceMetrics metrics_proto;
-  for (const auto& metric : metric_names) {
-    perfetto::base::ignore_result(metric);
+  std::vector<uint8_t> metric_result;
+  util::Status status = g_tp->ComputeMetric(metric_names, &metric_result);
+  if (!status.ok()) {
+    PERFETTO_ELOG("Error when computing metrics: %s", status.c_message());
+    return 1;
   }
-  perfetto::base::ignore_result(metrics_proto);
+  fwrite(metric_result.data(), sizeof(uint8_t), metric_result.size(), stdout);
   return 0;
 }
 
-void PrintQueryResultInteractively(base::TimeNanos t_start,
-                                   const protos::RawQueryResult& res) {
-  if (res.has_error()) {
-    PERFETTO_ELOG("SQLite error: %s", res.error().c_str());
-    return;
-  }
-  PERFETTO_CHECK(res.columns_size() == res.column_descriptors_size());
-
-  base::TimeNanos t_end = base::GetWallTimeNs();
-
-  for (int r = 0; r < static_cast<int>(res.num_records()); r++) {
-    if (r % 32 == 0) {
-      if (r > 0) {
+void PrintQueryResultInteractively(TraceProcessor::Iterator* it,
+                                   base::TimeNanos t_start) {
+  base::TimeNanos t_end = t_start;
+  for (uint32_t rows = 0; it->Next(); rows++) {
+    if (rows % 32 == 0) {
+      if (rows > 0) {
         fprintf(stderr, "...\nType 'q' to stop, Enter for more records: ");
         fflush(stderr);
         char input[32];
@@ -232,41 +278,45 @@ void PrintQueryResultInteractively(base::TimeNanos t_start,
           exit(0);
         if (input[0] == 'q')
           break;
+      } else {
+        t_end = base::GetWallTimeNs();
       }
-      for (const auto& col : res.column_descriptors())
-        printf("%20s ", col.name().c_str());
+      for (uint32_t i = 0; i < it->ColumnCount(); i++)
+        printf("%20s ", it->GetColumName(i).c_str());
       printf("\n");
 
-      for (int i = 0; i < res.columns_size(); i++)
+      for (uint32_t i = 0; i < it->ColumnCount(); i++)
         printf("%20s ", "--------------------");
       printf("\n");
     }
 
-    using ColumnDesc = protos::RawQueryResult::ColumnDesc;
-    for (int c = 0; c < res.columns_size(); c++) {
-      if (res.columns(c).is_nulls(r)) {
-        printf("%-20.20s", "[NULL]");
-      } else {
-        switch (res.column_descriptors(c).type()) {
-          case ColumnDesc::STRING:
-            printf("%-20.20s", res.columns(c).string_values(r).c_str());
-            break;
-          case ColumnDesc::DOUBLE:
-            printf("%20f", res.columns(c).double_values(r));
-            break;
-          case ColumnDesc::LONG: {
-            auto value = res.columns(c).long_values(r);
-            printf("%20lld", value);
-            break;
-          }
-          case ColumnDesc::UNKNOWN:
-            PERFETTO_FATAL("Row should be null so handled above");
-            break;
-        }
+    for (uint32_t c = 0; c < it->ColumnCount(); c++) {
+      auto value = it->Get(c);
+      switch (value.type) {
+        case SqlValue::Type::kNull:
+          printf("%-20.20s", "[NULL]");
+          break;
+        case SqlValue::Type::kDouble:
+          printf("%20f", value.double_value);
+          break;
+        case SqlValue::Type::kLong:
+          printf("%20" PRIi64, value.long_value);
+          break;
+        case SqlValue::Type::kString:
+          printf("%-20.20s", value.string_value);
+          break;
+        case SqlValue::Type::kBytes:
+          printf("%-20.20s", "<raw bytes>");
+          break;
       }
       printf(" ");
     }
     printf("\n");
+  }
+
+  util::Status status = it->Status();
+  if (!status.ok()) {
+    PERFETTO_ELOG("SQLite error: %s", status.c_message());
   }
   printf("\nQuery executed in %.3f ms\n\n", (t_end - t_start).count() / 1E6);
 }
@@ -304,60 +354,66 @@ int StartInteractiveShell() {
       }
       continue;
     }
-    protos::RawQueryArgs query;
-    query.set_sql_query(line);
+
     base::TimeNanos t_start = base::GetWallTimeNs();
-    g_tp->ExecuteQuery(query, [t_start](const protos::RawQueryResult& res) {
-      PrintQueryResultInteractively(t_start, res);
-    });
+    auto it = g_tp->ExecuteQuery(line);
+    PrintQueryResultInteractively(&it, t_start);
 
     FreeLine(line);
   }
   return 0;
 }
 
-void PrintQueryResultAsCsv(const protos::RawQueryResult& res, FILE* output) {
-  PERFETTO_CHECK(res.columns_size() == res.column_descriptors_size());
+void PrintQueryResultAsCsv(TraceProcessor::Iterator* it, FILE* output) {
+  for (uint32_t c = 0; c < it->ColumnCount(); c++) {
+    if (c > 0)
+      fprintf(output, ",");
+    fprintf(output, "\"%s\"", it->GetColumName(c).c_str());
+  }
+  fprintf(output, "\n");
 
-  for (int r = 0; r < static_cast<int>(res.num_records()); r++) {
-    if (r == 0) {
-      for (int c = 0; c < res.column_descriptors_size(); c++) {
-        const auto& col = res.column_descriptors(c);
-        if (c > 0)
-          fprintf(output, ",");
-        fprintf(output, "\"%s\"", col.name().c_str());
-      }
-      fprintf(output, "\n");
-    }
-
-    for (int c = 0; c < res.columns_size(); c++) {
+  for (uint32_t rows = 0; it->Next(); rows++) {
+    for (uint32_t c = 0; c < it->ColumnCount(); c++) {
       if (c > 0)
         fprintf(output, ",");
 
-      using ColumnDesc = protos::RawQueryResult::ColumnDesc;
-      if (res.columns(c).is_nulls(r)) {
-        fprintf(output, "\"%s\"", "[NULL]");
-      } else {
-        switch (res.column_descriptors(c).type()) {
-          case ColumnDesc::STRING:
-            fprintf(output, "\"%s\"", res.columns(c).string_values(r).c_str());
-            break;
-          case ColumnDesc::DOUBLE:
-            fprintf(output, "%f", res.columns(c).double_values(r));
-            break;
-          case ColumnDesc::LONG: {
-            auto value = res.columns(c).long_values(r);
-            fprintf(output, "%lld", value);
-            break;
-          }
-          case ColumnDesc::UNKNOWN:
-            PERFETTO_FATAL("Row should be null so handled above");
-            break;
-        }
+      auto value = it->Get(c);
+      switch (value.type) {
+        case SqlValue::Type::kNull:
+          fprintf(output, "\"%s\"", "[NULL]");
+          break;
+        case SqlValue::Type::kDouble:
+          fprintf(output, "%f", value.double_value);
+          break;
+        case SqlValue::Type::kLong:
+          fprintf(output, "%" PRIi64, value.long_value);
+          break;
+        case SqlValue::Type::kString:
+          fprintf(output, "\"%s\"", value.string_value);
+          break;
+        case SqlValue::Type::kBytes:
+          fprintf(output, "\"%s\"", "<raw bytes>");
+          break;
       }
     }
     fprintf(output, "\n");
   }
+}
+
+bool IsBlankLine(char* buffer) {
+  size_t buf_size = strlen(buffer);
+  for (size_t i = 0; i < buf_size; ++i) {
+    // We can index into buffer[i+1], because strlen does not include the
+    // trailing \0, so even if \r is the last character, this is not out
+    // of bound.
+    if (buffer[i] == '\r') {
+      if (buffer[i + 1] != '\n')
+        return false;
+    } else if (buffer[i] != ' ' && buffer[i] != '\t' && buffer[i] != '\n') {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool LoadQueries(FILE* input, std::vector<std::string>* output) {
@@ -365,7 +421,7 @@ bool LoadQueries(FILE* input, std::vector<std::string>* output) {
   while (!feof(input) && !ferror(input)) {
     std::string sql_query;
     while (fgets(buffer, sizeof(buffer), input)) {
-      if (strncmp(buffer, "\n", sizeof(buffer)) == 0)
+      if (IsBlankLine(buffer))
         break;
       sql_query.append(buffer);
     }
@@ -400,28 +456,54 @@ bool RunQueryAndPrintResult(const std::vector<std::string> queries,
 
     PERFETTO_ILOG("Executing query: %s", sql_query.c_str());
 
-    protos::RawQueryArgs query;
-    query.set_sql_query(sql_query);
-    g_tp->ExecuteQuery(query, [output, &is_query_error,
-                               &has_output](const protos::RawQueryResult& res) {
-      if (res.has_error()) {
-        PERFETTO_ELOG("SQLite error: %s", res.error().c_str());
-        is_query_error = true;
-        return;
-      } else if (res.num_records() != 0) {
-        if (has_output) {
-          PERFETTO_ELOG(
-              "More than one query generated result rows. This is "
-              "unsupported.");
-          is_query_error = true;
-          return;
-        }
-        has_output = true;
-      }
-      PrintQueryResultAsCsv(res, output);
-    });
+    auto it = g_tp->ExecuteQuery(sql_query);
+    util::Status status = it.Status();
+    if (!status.ok()) {
+      PERFETTO_ELOG("SQLite error: %s", status.c_message());
+      is_query_error = true;
+      break;
+    }
+    if (it.ColumnCount() == 0) {
+      bool it_has_more = it.Next();
+      PERFETTO_DCHECK(!it_has_more);
+      continue;
+    }
+
+    if (has_output) {
+      PERFETTO_ELOG(
+          "More than one query generated result rows. This is "
+          "unsupported.");
+      is_query_error = true;
+      break;
+    }
+    PrintQueryResultAsCsv(&it, output);
+    has_output = true;
   }
   return !is_query_error;
+}
+
+int MaybePrintPerfFile(const std::string& perf_file_path,
+                       base::TimeNanos t_load,
+                       base::TimeNanos t_run) {
+  if (perf_file_path.empty())
+    return 0;
+
+  char buf[128];
+  int count = snprintf(buf, sizeof(buf), "%" PRId64 ",%" PRId64,
+                       static_cast<int64_t>(t_load.count()),
+                       static_cast<int64_t>(t_run.count()));
+  if (count < 0) {
+    PERFETTO_ELOG("Failed to write perf data");
+    return 1;
+  }
+
+  auto fd(base::OpenFile(perf_file_path, O_WRONLY | O_CREAT | O_TRUNC, 066));
+  if (!fd) {
+    PERFETTO_ELOG("Failed to open perf file");
+    return 1;
+  }
+  base::WriteAll(fd.get(), buf, static_cast<size_t>(count));
+  return 0;
 }
 
 void PrintUsage(char** argv) {
@@ -429,68 +511,107 @@ void PrintUsage(char** argv) {
       "Interactive trace processor shell.\n"
       "Usage: %s [OPTIONS] trace_file.pb\n\n"
       "Options:\n"
-      " -d                   Enable virtual table debugging.\n"
-      " -s FILE              Read and execute contents of file before "
-      "launching an interactive shell.\n"
-      " -q FILE              Read and execute an SQL query from a file.\n"
-      " -e FILE              Export the trace into a SQLite database.\n"
-      " --run-metrics x,y,z   Runs a comma separated list of metrics and "
+      " -h|--help            Prints this usage.\n"
+      " -v|--version         Prints the version of trace processor.\n"
+      " -d|--debug           Enable virtual table debugging.\n"
+      " -p|--perf-file FILE  Writes the time taken to ingest the trace and"
+      "execute the queries to the given file. Only valid with -q or "
+      "--run-metrics and the file will only be written if the execution is "
+      "successful\n"
+      " -q|--query-file FILE Read and execute an SQL query from a file.\n"
+      " -i|--interactive     Starts interactive mode even after a query file "
+      "is specified with -q.\n"
+      " -e|--export FILE     Export the trace into a SQLite database.\n"
+      " --run-metrics x,y,z  Runs a comma separated list of metrics and "
       "prints the result as a TraceMetrics proto to stdout.\n",
       argv[0]);
 }
 
 int TraceProcessorMain(int argc, char** argv) {
-  if (argc < 2) {
-    PrintUsage(argv);
-    return 1;
-  }
-  const char* trace_file_path = nullptr;
-  const char* query_file_path = nullptr;
-  const char* sqlite_file_path = nullptr;
-  const char* metric_names = nullptr;
-  bool launch_shell = true;
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+  enum LongOption {
+    OPT_RUN_METRICS = 1000,
+  };
+
+  static const struct option long_options[] = {
+      {"help", no_argument, nullptr, 'h'},
+      {"version", no_argument, nullptr, 'v'},
+      {"interactive", no_argument, nullptr, 'i'},
+      {"debug", no_argument, nullptr, 'd'},
+      {"perf-file", required_argument, nullptr, 'p'},
+      {"query-file", required_argument, nullptr, 'q'},
+      {"export", required_argument, nullptr, 'e'},
+      {"run-metrics", required_argument, nullptr, OPT_RUN_METRICS},
+      {nullptr, 0, nullptr, 0}};
+
+  std::string perf_file_path;
+  std::string query_file_path;
+  std::string sqlite_file_path;
+  std::string metric_names;
+  bool explicit_interactive = false;
+  int option_index = 0;
+  for (;;) {
+    int option =
+        getopt_long(argc, argv, "hvidp:q:e:", long_options, &option_index);
+
+    if (option == -1)
+      break;  // EOF.
+
+    if (option == 'v') {
       printf("%s\n", PERFETTO_GET_GIT_REVISION());
-      exit(0);
+      return 0;
     }
-    if (strcmp(argv[i], "-d") == 0) {
+
+    if (option == 'i') {
+      explicit_interactive = true;
+      continue;
+    }
+
+    if (option == 'd') {
       EnableSQLiteVtableDebugging();
       continue;
     }
-    if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "-s") == 0) {
-      launch_shell = strcmp(argv[i], "-s") == 0;
-      if (++i == argc) {
-        PrintUsage(argv);
-        return 1;
-      }
-      query_file_path = argv[i];
+
+    if (option == 'p') {
+      perf_file_path = optarg;
       continue;
-    } else if (strcmp(argv[i], "-e") == 0) {
-      if (++i == argc) {
-        PrintUsage(argv);
-        return 1;
-      }
-      sqlite_file_path = argv[i];
-      continue;
-    } else if (strcmp(argv[i], "--run-metrics") == 0) {
-      if (++i == argc) {
-        PrintUsage(argv);
-        return 1;
-      }
-      metric_names = argv[i];
-      continue;
-    } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-      PrintUsage(argv);
-      return 0;
-    } else if (argv[i][0] == '-') {
-      PERFETTO_ELOG("Unknown option: %s", argv[i]);
-      return 1;
     }
-    trace_file_path = argv[i];
+
+    if (option == 'q') {
+      query_file_path = optarg;
+      continue;
+    }
+
+    if (option == 'e') {
+      sqlite_file_path = optarg;
+      continue;
+    }
+
+    if (option == OPT_RUN_METRICS) {
+      metric_names = optarg;
+      continue;
+    }
+
+    PrintUsage(argv);
+    return option == 'h' ? 0 : 1;
   }
 
+  // Ensure that we have the tracefile argument only at the end.
+  if (optind != argc - 1) {
+    PrintUsage(argv);
+    return 1;
+  }
+
+  const char* trace_file_path = argv[optind];
   if (trace_file_path == nullptr) {
+    PrintUsage(argv);
+    return 1;
+  }
+
+  bool launch_shell =
+      explicit_interactive || (metric_names.empty() && query_file_path.empty());
+
+  // Only allow non-interactive queries to emit perf data.
+  if (!perf_file_path.empty() && launch_shell) {
     PrintUsage(argv);
     return 1;
   }
@@ -526,7 +647,7 @@ int TraceProcessorMain(int argc, char** argv) {
   struct aiocb* aio_list[1] = {&cb};
 
   uint64_t file_size = 0;
-  auto t_load_start = base::GetWallTimeMs();
+  auto t_load_start = base::GetWallTimeNs();
   for (int i = 0;; i++) {
     if (i % 128 == 0)
       fprintf(stderr, "\rLoading trace: %.2f MB\r", file_size / 1E6);
@@ -552,34 +673,54 @@ int TraceProcessorMain(int argc, char** argv) {
     PERFETTO_CHECK(aio_read(&cb) == 0);
 
     // Parse the completed buffer while the async read is in-flight.
-    tp->Parse(std::move(buf), static_cast<size_t>(rsize));
+    util::Status status = tp->Parse(std::move(buf), static_cast<size_t>(rsize));
+    if (PERFETTO_UNLIKELY(!status.ok())) {
+      PERFETTO_ELOG("Fatal error while parsing trace: %s", status.c_message());
+      return 1;
+    }
   }
   tp->NotifyEndOfFile();
-  double t_load = (base::GetWallTimeMs() - t_load_start).count() / 1E3;
+
+  auto t_load = base::GetWallTimeNs() - t_load_start;
+  double t_load_s = t_load.count() / 1E9;
   double size_mb = file_size / 1E6;
-  PERFETTO_ILOG("Trace loaded: %.2f MB (%.1f MB/s)", size_mb, size_mb / t_load);
+  PERFETTO_ILOG("Trace loaded: %.2f MB (%.1f MB/s)", size_mb,
+                size_mb / t_load_s);
   g_tp = tp.get();
 
 #if PERFETTO_HAS_SIGNAL_H()
   signal(SIGINT, [](int) { g_tp->InterruptQuery(); });
 #endif
 
+  // Print out the stats to stderr for the trace.
+  if (!PrintStats()) {
+    return 1;
+  }
+
+  auto t_run_start = base::GetWallTimeNs();
+
   // First, see if we have some metrics to run. If we do, just run them and
   // return.
-  if (metric_names) {
+  if (!metric_names.empty()) {
     std::vector<std::string> metrics;
     for (base::StringSplitter ss(metric_names, ','); ss.Next();) {
       metrics.emplace_back(ss.cur_token());
     }
-    return RunMetrics(std::move(metrics));
+    int ret = RunMetrics(std::move(metrics));
+    if (!ret) {
+      auto t_query = base::GetWallTimeNs() - t_run_start;
+      ret = MaybePrintPerfFile(perf_file_path, t_load, t_query);
+    }
+    return ret;
   }
 
   // If we were given a query file, load contents
   std::vector<std::string> queries;
-  if (query_file_path) {
-    base::ScopedFstream file(fopen(query_file_path, "r"));
+  if (!query_file_path.empty()) {
+    base::ScopedFstream file(fopen(query_file_path.c_str(), "r"));
     if (!file) {
-      PERFETTO_ELOG("Could not open query file (path: %s)", query_file_path);
+      PERFETTO_ELOG("Could not open query file (path: %s)",
+                    query_file_path.c_str());
       return 1;
     }
     if (!LoadQueries(file.get(), &queries)) {
@@ -591,17 +732,15 @@ int TraceProcessorMain(int argc, char** argv) {
     return 1;
   }
 
-  // After this we can dump the database and exit if needed.
-  if (sqlite_file_path) {
+  if (!sqlite_file_path.empty()) {
     return ExportTraceToDatabase(sqlite_file_path);
   }
 
-  // If we ran an automated query, exit.
   if (!launch_shell) {
-    return 0;
+    auto t_query = base::GetWallTimeNs() - t_run_start;
+    return MaybePrintPerfFile(perf_file_path, t_load, t_query);
   }
 
-  // Otherwise start an interactive shell.
   return StartInteractiveShell();
 }
 
