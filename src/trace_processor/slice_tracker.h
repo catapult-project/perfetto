@@ -43,11 +43,12 @@ class SliceTracker {
                      StringId cat,
                      StringId name);
 
-  void Scoped(int64_t timestamp,
-              UniqueTid utid,
-              StringId cat,
-              StringId name,
-              int64_t duration);
+  // virtual for testing
+  virtual void Scoped(int64_t timestamp,
+                      UniqueTid utid,
+                      StringId cat,
+                      StringId name,
+                      int64_t duration);
 
   void EndAndroid(int64_t timestamp, uint32_t ftrace_tid, uint32_t atrace_tgid);
 
@@ -69,6 +70,10 @@ class SliceTracker {
 
   void MaybeCloseStack(int64_t end_ts, SlicesStack*);
   int64_t GetStackHash(const SlicesStack&);
+
+  // Timestamp of the previous event. Used to discard events arriving out
+  // of order.
+  int64_t prev_timestamp_ = 0;
 
   TraceProcessorContext* const context_;
   std::unordered_map<UniqueTid, SlicesStack> threads_;

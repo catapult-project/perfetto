@@ -14,21 +14,22 @@
  * limitations under the License.
  */
 
+#include <fcntl.h>
+#include <sys/system_properties.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "perfetto/base/build_config.h"
 #include "perfetto/base/pipe.h"
+#include "perfetto/protozero/scattered_heap_buffer.h"
 #include "src/base/test/test_task_runner.h"
-#include "test/test_helper.h"
-
 #include "src/profiling/memory/heapprofd_producer.h"
 #include "src/tracing/ipc/default_socket.h"
+#include "test/test_helper.h"
 
-#include <sys/system_properties.h>
-
-#include <fcntl.h>
-#include <sys/types.h>
-#include <sys/wait.h>
+#include "perfetto/config/profiling/heapprofd_config.pbzero.h"
 
 // This test only works when run on Android using an Android Q version of
 // Bionic.
@@ -39,12 +40,6 @@
 namespace perfetto {
 namespace profiling {
 namespace {
-
-// If we're building on Android and starting the daemons ourselves,
-// create the sockets in a world-writable location.
-#if PERFETTO_BUILDFLAG(PERFETTO_START_DAEMONS)
-constexpr const char* kTestProducerSockName "/data/local/tmp/traced_producer";
-#endif
 
 constexpr useconds_t kMsToUs = 1000;
 
@@ -301,12 +296,6 @@ class HeapprofdEndToEnd : public ::testing::Test {
     EXPECT_GT(dumps, 0);
   }
 
-#if PERFETTO_BUILDFLAG(PERFETTO_START_DAEMONS)
-  TaskRunnerThread producer_thread("perfetto.prd");
-  producer_thread.Start(std::unique_ptr<HeapprofdDelegate>(
-      new HeapprofdDelegate(kTestProducerSockName)));
-#endif
-
   void Smoke() {
     constexpr size_t kAllocSize = 1024;
 
@@ -321,13 +310,14 @@ class HeapprofdEndToEnd : public ::testing::Test {
     ds_config->set_name("android.heapprofd");
     ds_config->set_target_buffer(0);
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_pid() = static_cast<uint64_t>(pid);
+    heapprofd_config->add_pid(static_cast<uint64_t>(pid));
     heapprofd_config->set_all(false);
-    heapprofd_config->mutable_continuous_dump_config()->set_dump_phase_ms(0);
-    heapprofd_config->mutable_continuous_dump_config()->set_dump_interval_ms(
-        100);
+    auto* cont_config = heapprofd_config->set_continuous_dump_config();
+    cont_config->set_dump_phase_ms(0);
+    cont_config->set_dump_interval_ms(100);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     auto helper = Trace(trace_config);
     PrintStats(helper.get());
@@ -355,11 +345,12 @@ class HeapprofdEndToEnd : public ::testing::Test {
     ds_config->set_name("android.heapprofd");
     ds_config->set_target_buffer(0);
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_pid() = static_cast<uint64_t>(pid);
-    *heapprofd_config->add_pid() = static_cast<uint64_t>(pid2);
+    heapprofd_config->add_pid(static_cast<uint64_t>(pid));
+    heapprofd_config->add_pid(static_cast<uint64_t>(pid2));
     heapprofd_config->set_all(false);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     auto helper = Trace(trace_config);
     PrintStats(helper.get());
@@ -388,10 +379,11 @@ class HeapprofdEndToEnd : public ::testing::Test {
     ds_config->set_name("android.heapprofd");
     ds_config->set_target_buffer(0);
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_pid() = static_cast<uint64_t>(pid);
+    heapprofd_config->add_pid(static_cast<uint64_t>(pid));
     heapprofd_config->set_all(false);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     auto helper = Trace(trace_config);
     PrintStats(helper.get());
@@ -414,10 +406,11 @@ class HeapprofdEndToEnd : public ::testing::Test {
     auto* ds_config = trace_config.add_data_sources()->mutable_config();
     ds_config->set_name("android.heapprofd");
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_process_cmdline() = "heapprofd_continuous_malloc";
+    heapprofd_config->add_process_cmdline("heapprofd_continuous_malloc");
     heapprofd_config->set_all(false);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     helper->StartTracing(trace_config);
 
@@ -494,11 +487,11 @@ class HeapprofdEndToEnd : public ::testing::Test {
     auto* ds_config = trace_config.add_data_sources()->mutable_config();
     ds_config->set_name("android.heapprofd");
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_process_cmdline() =
-        "heapprofd_continuous_malloc@something";
+    heapprofd_config->add_process_cmdline("heapprofd_continuous_malloc@1.2.3");
     heapprofd_config->set_all(false);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     helper->StartTracing(trace_config);
 
@@ -575,10 +568,11 @@ class HeapprofdEndToEnd : public ::testing::Test {
     auto* ds_config = trace_config.add_data_sources()->mutable_config();
     ds_config->set_name("android.heapprofd");
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_process_cmdline() = "heapprofd_continuous_malloc";
+    heapprofd_config->add_process_cmdline("heapprofd_continuous_malloc");
     heapprofd_config->set_all(false);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     // Make sure the forked process does not get reparented to init.
     setsid();
@@ -651,11 +645,11 @@ class HeapprofdEndToEnd : public ::testing::Test {
     auto* ds_config = trace_config.add_data_sources()->mutable_config();
     ds_config->set_name("android.heapprofd");
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_process_cmdline() =
-        "heapprofd_continuous_malloc@something";
+    heapprofd_config->add_process_cmdline("heapprofd_continuous_malloc@1.2.3");
     heapprofd_config->set_all(false);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     // Make sure the forked process does not get reparented to init.
     setsid();
@@ -764,10 +758,11 @@ class HeapprofdEndToEnd : public ::testing::Test {
     ds_config->set_name("android.heapprofd");
     ds_config->set_target_buffer(0);
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_pid() = static_cast<uint64_t>(pid);
+    heapprofd_config->add_pid(static_cast<uint64_t>(pid));
     heapprofd_config->set_all(false);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     auto helper = Trace(trace_config);
     PrintStats(helper.get());
@@ -783,7 +778,7 @@ class HeapprofdEndToEnd : public ::testing::Test {
 
     // A brief sleep to allow the client to notice that the profiling session is
     // to be torn down (as it rejects concurrent sessions).
-    usleep(100 * kMsToUs);
+    usleep(500 * kMsToUs);
 
     PERFETTO_LOG("HeapprofdEndToEnd::Reinit: Starting second");
     helper = Trace(trace_config);
@@ -811,13 +806,14 @@ class HeapprofdEndToEnd : public ::testing::Test {
     ds_config->set_name("android.heapprofd");
     ds_config->set_target_buffer(0);
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_pid() = static_cast<uint64_t>(pid);
+    heapprofd_config->add_pid(static_cast<uint64_t>(pid));
     heapprofd_config->set_all(false);
-    heapprofd_config->mutable_continuous_dump_config()->set_dump_phase_ms(0);
-    heapprofd_config->mutable_continuous_dump_config()->set_dump_interval_ms(
-        100);
+    auto* cont_config = heapprofd_config->set_continuous_dump_config();
+    cont_config->set_dump_phase_ms(0);
+    cont_config->set_dump_interval_ms(100);
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     auto helper = GetHelper(&task_runner);
     helper->StartTracing(trace_config);
@@ -882,9 +878,10 @@ class HeapprofdEndToEnd : public ::testing::Test {
     auto* ds_config = trace_config.add_data_sources()->mutable_config();
     ds_config->set_name("android.heapprofd");
 
-    auto* heapprofd_config = ds_config->mutable_heapprofd_config();
+    protozero::HeapBuffered<protos::pbzero::HeapprofdConfig> heapprofd_config;
     heapprofd_config->set_sampling_interval_bytes(1);
-    *heapprofd_config->add_pid() = static_cast<uint64_t>(pid);
+    heapprofd_config->add_pid(static_cast<uint64_t>(pid));
+    ds_config->set_heapprofd_config_raw(heapprofd_config.SerializeAsString());
 
     // Wait for child to have been scheduled at least once.
     char buf[1] = {};
@@ -935,196 +932,139 @@ class HeapprofdEndToEnd : public ::testing::Test {
   }
 };
 
-// TODO(b/118428762): unwinding is broken at least x86 emulators, blanket-skip
-// all x86-like primary ABIs until we've taken a closer look.
-bool IsX86() {
-  std::string abi = ReadProperty("ro.product.cpu.abi", "");
-  return abi.find("x86") != std::string::npos;
-}
+// TODO(b/118428762): look into unwinding issues on x86.
+#if defined(__i386__) || defined(__x86_64__)
+#define MAYBE_SKIP(x) DISABLED_##x
+#else
+#define MAYBE_SKIP(x) x
+#endif
 
-TEST_F(HeapprofdEndToEnd, Smoke_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(Smoke_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   Smoke();
 }
 
-TEST_F(HeapprofdEndToEnd, TwoProcesses_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(TwoProcesses_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   TwoProcesses();
 }
 
-TEST_F(HeapprofdEndToEnd, TwoProcesses_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(TwoProcesses_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   TwoProcesses();
 }
 
-TEST_F(HeapprofdEndToEnd, Smoke_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(Smoke_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   Smoke();
 }
 
-TEST_F(HeapprofdEndToEnd, FinalFlush_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(FinalFlush_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   FinalFlush();
 }
 
-TEST_F(HeapprofdEndToEnd, FinalFlush_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(FinalFlush_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   FinalFlush();
 }
 
-TEST_F(HeapprofdEndToEnd, NativeStartup_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(NativeStartup_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   NativeStartup();
 }
 
-TEST_F(HeapprofdEndToEnd, NativeStartup_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(NativeStartup_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   NativeStartup();
 }
 
-TEST_F(HeapprofdEndToEnd, NativeStartupDenormalizedCmdline_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd,
+       MAYBE_SKIP(NativeStartupDenormalizedCmdline_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   NativeStartupDenormalizedCmdline();
 }
 
-TEST_F(HeapprofdEndToEnd, NativeStartupDenormalizedCmdline_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(NativeStartupDenormalizedCmdline_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   NativeStartupDenormalizedCmdline();
 }
 
-TEST_F(HeapprofdEndToEnd, DiscoverByName_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(DiscoverByName_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   DiscoverByName();
 }
 
-TEST_F(HeapprofdEndToEnd, DiscoverByName_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(DiscoverByName_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   DiscoverByName();
 }
 
-TEST_F(HeapprofdEndToEnd, DiscoverByNameDenormalizedCmdline_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd,
+       MAYBE_SKIP(DiscoverByNameDenormalizedCmdline_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   DiscoverByNameDenormalizedCmdline();
 }
 
-TEST_F(HeapprofdEndToEnd, DiscoverByNameDenormalizedCmdline_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(DiscoverByNameDenormalizedCmdline_Fork)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   DiscoverByNameDenormalizedCmdline();
 }
 
-TEST_F(HeapprofdEndToEnd, ReInit_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(ReInit_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   ReInit();
 }
 
-TEST_F(HeapprofdEndToEnd, ReInit_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(ReInit_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   ReInit();
 }
 
-TEST_F(HeapprofdEndToEnd, ConcurrentSession_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(ConcurrentSession_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   ConcurrentSession();
 }
 
-TEST_F(HeapprofdEndToEnd, ConcurrentSession_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(ConcurrentSession_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");
   ConcurrentSession();
 }
 
-TEST_F(HeapprofdEndToEnd, NativeProfilingActiveAtProcessExit_Central) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd,
+       MAYBE_SKIP(NativeProfilingActiveAtProcessExit_Central)) {
   auto prop = DisableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "");
   NativeProfilingActiveAtProcessExit();
 }
 
-TEST_F(HeapprofdEndToEnd, NativeProfilingActiveAtProcessExit_Fork) {
-  if (IsX86())
-    return;
-
+TEST_F(HeapprofdEndToEnd, MAYBE_SKIP(NativeProfilingActiveAtProcessExit_Fork)) {
   // RAII handle that resets to central mode when out of scope.
   auto prop = EnableFork();
   ASSERT_EQ(ReadProperty(kHeapprofdModeProperty, ""), "fork");

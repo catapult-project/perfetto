@@ -49,17 +49,22 @@ namespace stats {
   F(ftrace_cpu_overrun_end,                     kIndexed, kError, kTrace),    \
   F(ftrace_cpu_read_events_begin,               kIndexed, kInfo,  kTrace),    \
   F(ftrace_cpu_read_events_end,                 kIndexed, kInfo,  kTrace),    \
+  F(guess_trace_type_duration_ns,               kSingle,  kInfo,  kAnalysis), \
+  F(interned_data_tokenizer_errors,             kSingle,  kInfo,  kAnalysis), \
   F(invalid_clock_snapshots,                    kSingle,  kError, kAnalysis), \
   F(invalid_cpu_times,                          kSingle,  kError, kAnalysis), \
   F(meminfo_unknown_keys,                       kSingle,  kError, kAnalysis), \
   F(mismatched_sched_switch_tids,               kSingle,  kError, kAnalysis), \
   F(mm_unknown_type,                            kSingle,  kError, kAnalysis), \
+  F(parse_trace_duration_ns,                    kSingle,  kInfo,  kAnalysis), \
   F(power_rail_unknown_index,                   kSingle,  kError, kTrace), \
   F(proc_stat_unknown_counters,                 kSingle,  kError, kAnalysis), \
   F(rss_stat_unknown_keys,                      kSingle,  kError, kAnalysis), \
   F(rss_stat_negative_size,                     kSingle,  kInfo,  kAnalysis), \
   F(sched_switch_out_of_order,                  kSingle,  kError, kAnalysis), \
+  F(slice_out_of_order,                         kSingle,  kError, kAnalysis), \
   F(systrace_parse_failure,                     kSingle,  kError, kAnalysis), \
+  F(task_state_invalid,                         kSingle,  kError, kAnalysis), \
   F(traced_buf_buffer_size,                     kIndexed, kInfo,  kTrace),    \
   F(traced_buf_bytes_overwritten,               kIndexed, kInfo,  kTrace),    \
   F(traced_buf_bytes_read,                      kIndexed, kInfo,  kTrace),    \
@@ -85,10 +90,19 @@ namespace stats {
   F(traced_producers_seen,                      kSingle,  kInfo,  kTrace),    \
   F(traced_total_buffers,                       kSingle,  kInfo,  kTrace),    \
   F(traced_tracing_sessions,                    kSingle,  kInfo,  kTrace),    \
+  F(track_event_tokenizer_errors,               kSingle,  kInfo,  kAnalysis), \
+  F(track_event_tokenizer_skipped_packets,      kSingle,  kInfo,  kAnalysis), \
   F(vmstat_unknown_keys,                        kSingle,  kError, kAnalysis), \
   F(clock_sync_failure,                         kSingle,  kError, kAnalysis), \
   F(process_tracker_errors,                     kSingle,  kError, kAnalysis), \
-  F(json_tokenizer_failure,                     kSingle,  kError, kTrace)
+  F(json_tokenizer_failure,                     kSingle,  kError, kTrace),    \
+  F(heapprofd_buffer_corrupted,                 kIndexed, kError, kTrace),    \
+  F(heapprofd_buffer_overran,                   kIndexed, kError, kTrace),    \
+  F(heapprofd_rejected_concurrent,              kIndexed, kError, kTrace),    \
+  F(heapprofd_invalid_string_id,                kSingle,  kError, kTrace),    \
+  F(heapprofd_invalid_mapping_id,               kSingle,  kError, kTrace),    \
+  F(heapprofd_invalid_frame_id,                 kSingle,  kError, kTrace),    \
+  F(heapprofd_invalid_callstack_id,             kSingle,  kError, kTrace)
 // clang-format on
 
 enum Type {
