@@ -98,6 +98,15 @@ class TraceProcessor {
   virtual Iterator ExecuteQuery(const std::string& sql,
                                 int64_t time_queued = 0) = 0;
 
+  // Registers a metric at the given path which will run the specified SQL.
+  virtual util::Status RegisterMetric(const std::string& path,
+                                      const std::string& sql) = 0;
+
+  // Reads the FileDescriptorSet proto message given by |data| and |size| and
+  // adds any extensions to the metrics proto to allow them to be available as
+  // proto builder functions when computing metrics.
+  virtual util::Status ExtendMetricsProto(const uint8_t* data, size_t size) = 0;
+
   // Computes the given metrics on the loded portion of the trace. If
   // successful, the output argument |metrics_proto| will be filled with the
   // proto-encoded bytes for the message TraceMetrics in
@@ -105,18 +114,6 @@ class TraceProcessor {
   virtual util::Status ComputeMetric(
       const std::vector<std::string>& metric_names,
       std::vector<uint8_t>* metrics_proto) = 0;
-
-  // Computes the given metrics on the loaded porition of the trace. If
-  // successfull, the output argument |metrics_proto| will be filled with the
-  // proto encoded bytes for the metrics proto specified.
-  // Note: This is an advanced function and should generally not be called
-  // without understanding the metrics platform code.
-  virtual util::Status ComputeMetric(
-      const std::vector<SqlMetric>& metrics,
-      const uint8_t* file_descriptor_set_proto,
-      size_t file_descriptor_set_proto_size,
-      const std::string& output_proto_name,
-      std::vector<uint8_t>* output_proto_bytes) = 0;
 
   // Interrupts the current query. Typically used by Ctrl-C handler.
   virtual void InterruptQuery() = 0;
