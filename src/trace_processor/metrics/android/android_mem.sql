@@ -15,15 +15,15 @@
 --
 
 -- Create all the views used to generate the Android Memory metrics proto.
-SELECT RUN_METRIC('android_mem_lmk.sql');
+SELECT RUN_METRIC('android/android_mem_lmk.sql');
 
 -- Generate the process counter metrics.
-SELECT RUN_METRIC('android_mem_proc_counters.sql',
+SELECT RUN_METRIC('android/android_mem_proc_counters.sql',
                   'table_name',
                   'file_rss',
                   'counter_names',
                   'mem.rss.file');
-SELECT RUN_METRIC('android_mem_proc_counters.sql',
+SELECT RUN_METRIC('android/android_mem_proc_counters.sql',
                   'table_name',
                   'anon_rss',
                   'counter_names',
@@ -46,7 +46,7 @@ SELECT
         anon_rss.avg
       )
     )
-  )
+  ) as metric
 FROM
   anon_rss;
 
@@ -58,11 +58,9 @@ SELECT
       'lmks',
       AndroidMemoryMetric_LowMemoryKills(
         'total_count',
-        lmks.count
+        (SELECT COUNT(*) FROM lmk_by_score)
       )
     ),
     'process_metrics',
-    'process_metrics_view'
-  )
-FROM
-  (SELECT COUNT(*) as count from lmk_by_score) as lmks;
+    (SELECT RepeatedField(metric) FROM process_metrics_view)
+  );

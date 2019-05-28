@@ -31,7 +31,7 @@ trace.add_atrace_begin(ts=100, tid=2, pid=2,
     buf='MetricsLogger:launchObserverNotifyIntentStarted')
 trace.add_atrace_end(ts=101, tid=2, pid=2)
 
-# Valid start intent
+# Start intent for a successful launch of calendar
 trace.add_atrace_begin(ts=102, tid=2, pid=2,
     buf='MetricsLogger:launchObserverNotifyIntentStarted')
 trace.add_atrace_end(ts=103, tid=2, pid=2)
@@ -46,6 +46,10 @@ trace.add_sched(ts=120, prev_pid=3, next_pid=0, prev_state='S')
 trace.add_sched(ts=130, prev_pid=0, next_pid=3)
 
 trace.add_sched(ts=130, prev_pid=0, next_pid=4)
+
+# Create an unrelated task
+trace.add_newtask(ts=155, tid=1, new_tid=5, new_comm='', flags=0)
+
 # P2: 30ns running
 trace.add_sched(ts=160, prev_pid=4, next_pid=0, prev_state='R')
 # P2: 49ns runnable
@@ -55,5 +59,19 @@ trace.add_sched(ts=210, prev_pid=4, next_pid=0)
 
 trace.add_atrace_async_end(ts=210, tid=2, pid=2,
     buf='launching: com.google.android.calendar')
+trace.add_atrace_begin(ts=211, tid=2, pid=2,
+    buf='MetricsLogger:launchObserverNotifyActivityLaunchFinished')
+trace.add_atrace_end(ts=212, tid=2, pid=2)
+
+# Start intent for calendar, we failed to launch the activity.
+trace.add_atrace_begin(ts=402, tid=2, pid=2,
+    buf='MetricsLogger:launchObserverNotifyIntentStarted')
+trace.add_atrace_end(ts=403, tid=2, pid=2)
+
+trace.add_atrace_async_begin(ts=410, tid=2, pid=2,
+    buf='launching: com.google.android.calendar')
+
+trace.add_atrace_async_end(ts=510, tid=2, pid=2,
+    buf='launching: com.google.android.apps.nexuslauncher')
 
 print(trace.trace.SerializeToString())

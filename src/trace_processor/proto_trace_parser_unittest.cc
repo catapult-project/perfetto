@@ -22,12 +22,14 @@
 #include "perfetto/protozero/scattered_heap_buffer.h"
 #include "src/trace_processor/args_tracker.h"
 #include "src/trace_processor/event_tracker.h"
+#include "src/trace_processor/metadata.h"
 #include "src/trace_processor/process_tracker.h"
 #include "src/trace_processor/proto_trace_parser.h"
 #include "src/trace_processor/slice_tracker.h"
 #include "src/trace_processor/trace_sorter.h"
 
 #include "perfetto/common/sys_stats_counters.pbzero.h"
+#include "perfetto/trace/chrome/chrome_benchmark_metadata.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace_event.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace_event_bundle.pbzero.h"
@@ -102,6 +104,8 @@ class MockTraceStorage : public TraceStorage {
   MockTraceStorage() : TraceStorage() {}
 
   MOCK_METHOD1(InternString, StringId(base::StringView));
+  MOCK_METHOD2(SetMetadata, void(size_t, Variadic));
+  MOCK_METHOD2(AppendMetadata, void(size_t, Variadic));
 };
 
 class MockArgsTracker : public ArgsTracker {
@@ -117,18 +121,25 @@ class MockSliceTracker : public SliceTracker {
  public:
   MockSliceTracker(TraceProcessorContext* context) : SliceTracker(context) {}
 
-  MOCK_METHOD4(
-      Begin,
-      void(int64_t timestamp, UniqueTid utid, StringId cat, StringId name));
-  MOCK_METHOD4(
-      End,
-      void(int64_t timestamp, UniqueTid utid, StringId cat, StringId name));
-  MOCK_METHOD5(Scoped,
+  MOCK_METHOD5(Begin,
                void(int64_t timestamp,
                     UniqueTid utid,
                     StringId cat,
                     StringId name,
-                    int64_t duration));
+                    SetArgsCallback args_callback));
+  MOCK_METHOD5(End,
+               void(int64_t timestamp,
+                    UniqueTid utid,
+                    StringId cat,
+                    StringId name,
+                    SetArgsCallback args_callback));
+  MOCK_METHOD6(Scoped,
+               void(int64_t timestamp,
+                    UniqueTid utid,
+                    StringId cat,
+                    StringId name,
+                    int64_t duration,
+                    SetArgsCallback args_callback));
 };
 
 class ProtoTraceParserTest : public ::testing::Test {
@@ -590,9 +601,9 @@ TEST_F(ProtoTraceParserTest, TrackEventWithoutInternedData) {
       .WillRepeatedly(Return(1));
 
   InSequence in_sequence;  // Below slices should be sorted by timestamp.
-  EXPECT_CALL(*slice_, Scoped(1005000, 1, 0, 0, 23000));
-  EXPECT_CALL(*slice_, Begin(1010000, 1, 0, 0));
-  EXPECT_CALL(*slice_, End(1020000, 1, 0, 0));
+  EXPECT_CALL(*slice_, Scoped(1005000, 1, 0, 0, 23000, _));
+  EXPECT_CALL(*slice_, Begin(1010000, 1, 0, 0, _));
+  EXPECT_CALL(*slice_, End(1020000, 1, 0, 0, _));
 
   context_.sorter->ExtractEventsForced();
 }
@@ -680,15 +691,15 @@ TEST_F(ProtoTraceParserTest, TrackEventWithInternedData) {
       .WillOnce(Return(1));
   EXPECT_CALL(*storage_, InternString(base::StringView("ev2")))
       .WillOnce(Return(2));
-  EXPECT_CALL(*slice_, Scoped(1005000, 1, 1, 2, 23000));
+  EXPECT_CALL(*slice_, Scoped(1005000, 1, 1, 2, 23000, _));
 
   EXPECT_CALL(*storage_, InternString(base::StringView("cat1")))
       .WillOnce(Return(3));
   EXPECT_CALL(*storage_, InternString(base::StringView("ev1")))
       .WillOnce(Return(4));
-  EXPECT_CALL(*slice_, Begin(1010000, 1, 3, 4));
+  EXPECT_CALL(*slice_, Begin(1010000, 1, 3, 4, _));
 
-  EXPECT_CALL(*slice_, End(1020000, 1, 3, 4));
+  EXPECT_CALL(*slice_, End(1020000, 1, 3, 4, _));
 
   context_.sorter->ExtractEventsForced();
 }
@@ -722,7 +733,7 @@ TEST_F(ProtoTraceParserTest, TrackEventWithoutIncrementalStateReset) {
 
   Tokenize();
 
-  EXPECT_CALL(*slice_, Begin(_, _, _, _)).Times(0);
+  EXPECT_CALL(*slice_, Begin(_, _, _, _, _)).Times(0);
   context_.sorter->ExtractEventsForced();
 }
 
@@ -747,7 +758,7 @@ TEST_F(ProtoTraceParserTest, TrackEventWithoutThreadDescriptor) {
 
   Tokenize();
 
-  EXPECT_CALL(*slice_, Begin(_, _, _, _)).Times(0);
+  EXPECT_CALL(*slice_, Begin(_, _, _, _, _)).Times(0);
   context_.sorter->ExtractEventsForced();
 }
 
@@ -843,8 +854,8 @@ TEST_F(ProtoTraceParserTest, TrackEventWithDataLoss) {
       .WillRepeatedly(Return(1));
 
   InSequence in_sequence;  // Below slices should be sorted by timestamp.
-  EXPECT_CALL(*slice_, Begin(1010000, 1, 0, 0));
-  EXPECT_CALL(*slice_, End(2010000, 1, 0, 0));
+  EXPECT_CALL(*slice_, Begin(1010000, 1, 0, 0, _));
+  EXPECT_CALL(*slice_, End(2010000, 1, 0, 0, _));
 
   context_.sorter->ExtractEventsForced();
 }
@@ -951,16 +962,16 @@ TEST_F(ProtoTraceParserTest, TrackEventMultipleSequences) {
   EXPECT_CALL(*storage_, InternString(base::StringView("ev2")))
       .WillOnce(Return(2));
 
-  EXPECT_CALL(*slice_, Begin(1005000, 2, 1, 2));
+  EXPECT_CALL(*slice_, Begin(1005000, 2, 1, 2, _));
 
   EXPECT_CALL(*storage_, InternString(base::StringView("cat1")))
       .WillOnce(Return(1));
   EXPECT_CALL(*storage_, InternString(base::StringView("ev1")))
       .WillOnce(Return(3));
 
-  EXPECT_CALL(*slice_, Begin(1010000, 1, 1, 3));
-  EXPECT_CALL(*slice_, End(1015000, 2, 1, 2));
-  EXPECT_CALL(*slice_, End(1020000, 1, 1, 3));
+  EXPECT_CALL(*slice_, Begin(1010000, 1, 1, 3, _));
+  EXPECT_CALL(*slice_, End(1015000, 2, 1, 2, _));
+  EXPECT_CALL(*slice_, End(1020000, 1, 1, 3, _));
 
   context_.sorter->ExtractEventsForced();
 }
@@ -987,6 +998,38 @@ TEST(SystraceParserTest, SystraceEvent) {
 
   ASSERT_EQ(ParseSystraceTracePoint(base::StringView("S|"), &result),
             SystraceParseResult::kUnsupported);
+}
+
+TEST_F(ProtoTraceParserTest, LoadChromeBenchmarkMetadata) {
+  static const char kName[] = "name";
+  static const char kTag2[] = "tag1";
+  static const char kTag1[] = "tag2";
+
+  InitStorage();
+  context_.sorter.reset(new TraceSorter(
+      &context_, std::numeric_limits<int64_t>::max() /*window size*/));
+
+  auto* metadata = trace_.add_packet()->set_chrome_benchmark_metadata();
+  metadata->set_benchmark_name(kName);
+  metadata->add_story_tags(kTag1);
+  metadata->add_story_tags(kTag2);
+
+  Tokenize();
+
+  EXPECT_CALL(*storage_, InternString(base::StringView(kName)))
+      .WillOnce(Return(1));
+  EXPECT_CALL(*storage_, InternString(base::StringView(kTag1)))
+      .WillOnce(Return(2));
+  EXPECT_CALL(*storage_, InternString(base::StringView(kTag2)))
+      .WillOnce(Return(3));
+  EXPECT_CALL(*storage_,
+              SetMetadata(metadata::benchmark_name, Variadic::String(1)));
+  EXPECT_CALL(*storage_, AppendMetadata(metadata::benchmark_story_tags,
+                                        Variadic::String(2)));
+  EXPECT_CALL(*storage_, AppendMetadata(metadata::benchmark_story_tags,
+                                        Variadic::String(3)));
+
+  context_.sorter->ExtractEventsForced();
 }
 
 }  // namespace

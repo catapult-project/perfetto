@@ -23,10 +23,12 @@ source_set("tracing") {
     "../../protos/perfetto/trace:minimal_lite",
     "../../protos/perfetto/trace:trusted_lite",
     "../../protos/perfetto/trace:zero",
+    "../public:common",
   ]
   deps = [
     "../../gn:default_deps",
     "../../gn:gtest_prod_config",
+    "../../include/perfetto/public",
     "../../protos/perfetto/config:lite",
     "../base",
     "../protozero",
