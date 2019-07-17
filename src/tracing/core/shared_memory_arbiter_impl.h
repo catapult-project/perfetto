@@ -24,11 +24,11 @@
 #include <mutex>
 #include <vector>
 
-#include "perfetto/base/weak_ptr.h"
-#include "perfetto/tracing/core/basic_types.h"
-#include "perfetto/tracing/core/shared_memory_abi.h"
-#include "perfetto/tracing/core/shared_memory_arbiter.h"
-#include "perfetto/tracing/core/startup_trace_writer_registry.h"
+#include "perfetto/ext/base/weak_ptr.h"
+#include "perfetto/ext/tracing/core/basic_types.h"
+#include "perfetto/ext/tracing/core/shared_memory_abi.h"
+#include "perfetto/ext/tracing/core/shared_memory_arbiter.h"
+#include "perfetto/ext/tracing/core/startup_trace_writer_registry.h"
 #include "src/tracing/core/id_allocator.h"
 
 namespace perfetto {
@@ -110,6 +110,14 @@ class SharedMemoryArbiterImpl : public SharedMemoryArbiter {
       BufferID target_buffer) override;
 
   void NotifyFlushComplete(FlushRequestID) override;
+
+  base::TaskRunner* task_runner() const { return task_runner_; }
+  size_t page_size() const { return shmem_abi_.page_size(); }
+  size_t num_pages() const { return shmem_abi_.num_pages(); }
+
+  base::WeakPtr<SharedMemoryArbiterImpl> GetWeakPtr() const {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
 
  private:
   friend class TraceWriterImpl;

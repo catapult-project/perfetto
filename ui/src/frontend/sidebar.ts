@@ -109,8 +109,18 @@ const SECTIONS = [
       },
       {t: 'Record new trace', a: navigateRecord, i: 'fiber_smart_record'},
       {t: 'Show timeline', a: navigateViewer, i: 'line_style'},
-      {t: 'Share current trace', a: dispatchCreatePermalink, i: 'share'},
-      {t: 'Download current trace', a: downloadTrace, i: 'file_download'},
+      {
+        t: 'Share current trace',
+        a: dispatchCreatePermalink,
+        i: 'share',
+        disableInLocalOnlyMode: true,
+      },
+      {
+        t: 'Download current trace',
+        a: downloadTrace,
+        i: 'file_download',
+        disableInLocalOnlyMode: true,
+      },
     ],
   },
   {
@@ -185,6 +195,26 @@ const SECTIONS = [
 
 ];
 
+const vidSection = {
+  title: 'Video',
+  summary: 'Open a screen recording',
+  expanded: true,
+  items: [
+    {t: 'Open video file', a: popupVideoSelectionDialog, i: 'folder_open'},
+    {t: 'View hotkeys', a: showHotkeys, i: 'description'},
+  ],
+};
+
+function showHotkeys() {
+  let hks = '';
+  hks += '\'v\': Shows/hides video components \n';
+  hks += '\'p\': Enables/disables pausing and flagging synchronization \n';
+  hks += '\'mid + left mouse click\': Flags point on trace timeline and jumps ';
+  hks += 'to same position in video \n';
+  window.alert(hks);
+  return false;
+}
+
 function getFileElement(): HTMLInputElement {
   return document.querySelector('input[type=file]')! as HTMLInputElement;
 }
@@ -192,18 +222,28 @@ function getFileElement(): HTMLInputElement {
 function popupFileSelectionDialog(e: Event) {
   e.preventDefault();
   delete getFileElement().dataset['useCatapultLegacyUi'];
+  delete getFileElement().dataset['video'];
   getFileElement().click();
 }
 
 function popupFileSelectionDialogOldUI(e: Event) {
   e.preventDefault();
+  delete getFileElement().dataset['video'];
   getFileElement().dataset['useCatapultLegacyUi'] = '1';
+  getFileElement().click();
+}
+
+function popupVideoSelectionDialog(e: Event) {
+  e.preventDefault();
+  delete getFileElement().dataset['useCatapultLegacyUi'];
+  getFileElement().dataset['video'] = '1';
   getFileElement().click();
 }
 
 function openTraceUrl(url: string): (e: Event) => void {
   return e => {
     e.preventDefault();
+    globals.frontendLocalState.localOnlyMode = false;
     globals.dispatch(Actions.openTraceFromUrl({url}));
   };
 }
@@ -215,6 +255,8 @@ function onInputElementFileSelectionChanged(e: Event) {
   if (!e.target.files) return;
   const file = e.target.files[0];
 
+  globals.frontendLocalState.localOnlyMode = false;
+
   if (e.target.dataset['useCatapultLegacyUi'] === '1') {
     // Switch back the old catapult UI.
     if (isLegacyTrace(file.name)) {
@@ -225,8 +267,11 @@ function onInputElementFileSelectionChanged(e: Event) {
     return;
   }
 
-  // Open with the current UI.
-  globals.dispatch(Actions.openTraceFromFile({file}));
+  if (e.target.dataset['video'] === '1') {
+    globals.dispatch(Actions.openVideoFromFile({file}));
+  } else {
+    globals.dispatch(Actions.openTraceFromFile({file}));
+  }
 }
 
 function navigateRecord(e: Event) {
@@ -239,8 +284,18 @@ function navigateViewer(e: Event) {
   globals.dispatch(Actions.navigate({route: '/viewer'}));
 }
 
+function localOnlyMode(): boolean {
+  if (globals.frontendLocalState.localOnlyMode) return true;
+  const engine = Object.values(globals.state.engines)[0];
+  if (!engine) return true;
+  const src = engine.source;
+  return (src instanceof ArrayBuffer);
+}
+
 function dispatchCreatePermalink(e: Event) {
   e.preventDefault();
+  if (localOnlyMode()) return;
+
   const result = confirm(
       `Upload the trace and generate a permalink. ` +
       `The trace will be accessible by anybody with the permalink.`);
@@ -249,11 +304,16 @@ function dispatchCreatePermalink(e: Event) {
 
 function downloadTrace(e: Event) {
   e.preventDefault();
+  if (localOnlyMode()) return;
+
   const engine = Object.values(globals.state.engines)[0];
   if (!engine) return;
   const src = engine.source;
   if (typeof src === 'string') {
     window.open(src);
+  } else if (src instanceof ArrayBuffer) {
+    console.error('Can not download external trace.');
+    return;
   } else {
     const url = URL.createObjectURL(src);
     const a = document.createElement('a');
@@ -272,15 +332,21 @@ export class Sidebar implements m.ClassComponent {
     for (const section of SECTIONS) {
       const vdomItems = [];
       for (const item of section.items) {
+        let attrs = {
+          onclick: typeof item.a === 'function' ? item.a : null,
+          href: typeof item.a === 'string' ? item.a : '#',
+          disabled: false,
+        };
+        if (globals.frontendLocalState.localOnlyMode &&
+            item.hasOwnProperty('disableInLocalOnlyMode')) {
+          attrs = {
+            onclick: () => alert('Can not download or share external trace.'),
+            href: '#',
+            disabled: true
+          };
+        }
         vdomItems.push(
-            m('li',
-              m(`a`,
-                {
-                  onclick: typeof item.a === 'function' ? item.a : null,
-                  href: typeof item.a === 'string' ? item.a : '#',
-                },
-                m('i.material-icons', item.i),
-                item.t)));
+            m('li', m('a', attrs, m('i.material-icons', item.i), item.t)));
       }
       vdomSections.push(
           m(`section${section.expanded ? '.expanded' : ''}`,
@@ -294,6 +360,32 @@ export class Sidebar implements m.ClassComponent {
               m('h1', section.title),
               m('h2', section.summary), ),
             m('.section-content', m('ul', vdomItems))));
+    }
+    if (globals.state.videoEnabled) {
+      const videoVdomItems = [];
+      for (const item of vidSection.items) {
+        videoVdomItems.push(
+          m('li',
+            m(`a`,
+              {
+                onclick: typeof item.a === 'function' ? item.a : null,
+                href: typeof item.a === 'string' ? item.a : '#',
+              },
+              m('i.material-icons', item.i),
+              item.t)));
+      }
+      vdomSections.push(
+        m(`section${vidSection.expanded ? '.expanded' : ''}`,
+          m('.section-header',
+            {
+              onclick: () => {
+                vidSection.expanded = !vidSection.expanded;
+                globals.rafScheduler.scheduleFullRedraw();
+              }
+            },
+            m('h1', vidSection.title),
+            m('h2', vidSection.summary), ),
+          m('.section-content', m('ul', videoVdomItems))));
     }
     return m(
         'nav.sidebar',

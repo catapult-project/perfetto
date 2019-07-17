@@ -20,8 +20,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include "src/traced/probes/ftrace/cpu_reader.h"
 #include "src/traced/probes/ftrace/ftrace_config_muxer.h"
 #include "src/traced/probes/ftrace/ftrace_config_utils.h"
@@ -423,10 +423,10 @@ TEST(FtraceControllerTest, BackToBackEnableDisable) {
 
   // Disable the first data source and run the delayed task that it generated.
   // It should be a no-op.
+  worker.join();
   data_source.reset();
   controller->runner()->RunLastTask();
   controller->runner()->RunLastTask();
-  worker.join();
 
   // Register another data source and wait for it to generate data.
   data_source = controller->AddFakeDataSource(config);
@@ -437,10 +437,10 @@ TEST(FtraceControllerTest, BackToBackEnableDisable) {
   controller->WaitForData(0u);
 
   // This drain should also be a no-op after the data source is unregistered.
+  worker2.join();
   data_source.reset();
   controller->runner()->RunLastTask();
   controller->runner()->RunLastTask();
-  worker2.join();
 }
 
 TEST(FtraceControllerTest, BufferSize) {
@@ -618,8 +618,8 @@ TEST(FtraceStatsTest, Write) {
     stats.Write(out);
   }
 
-  std::unique_ptr<protos::TracePacket> result_packet = writer->ParseProto();
-  auto result = result_packet->ftrace_stats().cpu_stats(0);
+  protos::TracePacket result_packet = writer->GetOnlyTracePacket();
+  auto result = result_packet.ftrace_stats().cpu_stats(0);
   EXPECT_EQ(result.cpu(), 0);
   EXPECT_EQ(result.entries(), 1);
   EXPECT_EQ(result.overrun(), 2);

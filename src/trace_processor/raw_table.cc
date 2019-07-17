@@ -24,6 +24,7 @@
 
 #include "perfetto/trace/ftrace/binder.pbzero.h"
 #include "perfetto/trace/ftrace/clk.pbzero.h"
+#include "perfetto/trace/ftrace/filemap.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace_event.pbzero.h"
 #include "perfetto/trace/ftrace/sched.pbzero.h"
@@ -90,12 +91,27 @@ void RawTable::FormatSystraceArgs(NullTermStringView event_name,
       case Variadic::kInt:
         writer->AppendInt(value.int_value);
         break;
-      case Variadic::kReal:
-        writer->AppendDouble(value.real_value);
+      case Variadic::kUint:
+        writer->AppendUnsignedInt(value.uint_value);
         break;
       case Variadic::kString: {
         const auto& str = storage_->GetString(value.string_value);
         writer->AppendString(str.c_str(), str.size());
+        break;
+      }
+      case Variadic::kReal:
+        writer->AppendDouble(value.real_value);
+        break;
+      case Variadic::kPointer:
+        writer->AppendUnsignedInt(value.pointer_value);
+        break;
+      case Variadic::kBool:
+        writer->AppendBool(value.bool_value);
+        break;
+      case Variadic::kJson: {
+        const auto& str = storage_->GetString(value.json_value);
+        writer->AppendString(str.c_str(), str.size());
+        break;
       }
     }
   };
@@ -190,6 +206,29 @@ void RawTable::FormatSystraceArgs(NullTermStringView event_name,
     using BTR = protos::pbzero::BinderTransactionReceivedFtraceEvent;
     writer->AppendString(" transaction=");
     write_value_at_index(BTR::kDebugIdFieldNumber - 1, write_value);
+    return;
+  } else if (event_name == "mm_filemap_add_to_page_cache") {
+    using MFA = protos::pbzero::MmFilemapAddToPageCacheFtraceEvent;
+    writer->AppendString(" dev ");
+    write_value_at_index(MFA::kSDevFieldNumber - 1,
+                         [writer](const Variadic& value) {
+                           writer->AppendInt(value.int_value >> 20);
+                         });
+    writer->AppendString(":");
+    write_value_at_index(MFA::kSDevFieldNumber - 1,
+                         [writer](const Variadic& value) {
+                           writer->AppendInt(value.int_value & ((1 << 20) - 1));
+                         });
+    writer->AppendString(" ino ");
+    write_value_at_index(MFA::kIInoFieldNumber - 1, write_value);
+    writer->AppendString(" page=0000000000000000");
+    writer->AppendString(" pfn=");
+    write_value_at_index(MFA::kPfnFieldNumber - 1, write_value);
+    writer->AppendString(" ofs=");
+    write_value_at_index(MFA::kIndexFieldNumber - 1,
+                         [writer](const Variadic& value) {
+                           writer->AppendInt(value.int_value << 12);
+                         });
     return;
   } else if (event_name == "print") {
     using P = protos::pbzero::PrintFtraceEvent;

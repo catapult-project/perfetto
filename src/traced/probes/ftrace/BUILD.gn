@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import("../../../../gn/fuzzer.gni")
 import("../../../../gn/perfetto.gni")
 import("../../../../gn/proto_library.gni")
-import("../../../../gn/fuzzer.gni")
 import("../../../../gn/protozero_library.gni")
 
 # For use_libfuzzer.
@@ -50,7 +50,7 @@ source_set("unittests") {
     ":test_messages_zero",
     ":test_support",
     "../../../../gn:default_deps",
-    "../../../../gn:gtest_deps",
+    "../../../../gn:gtest_and_gmock",
     "../../../../protos/perfetto/trace/ftrace:lite",
     "../../../base:test_support",
     "../../../tracing:test_support",
@@ -93,7 +93,7 @@ source_set("integrationtests") {
     ":ftrace",
     ":test_support",
     "../../../../gn:default_deps",
-    "../../../../gn:gtest_deps",
+    "../../../../gn:gtest_and_gmock",
     "../../../../protos/perfetto/trace/ftrace:lite",
     "../../../base",
     "../../../tracing",
@@ -113,7 +113,7 @@ source_set("ftrace") {
     ":format_parser",
     "..:data_source",
     "../../../../gn:default_deps",
-    "../../../../include/perfetto/traced",
+    "../../../../include/perfetto/ext/traced",
     "../../../../protos/perfetto/config:lite",
     "../../../android_internal:headers",
     "../../../base",
@@ -172,8 +172,8 @@ if (perfetto_build_standalone) {
     deps = [
       ":ftrace",
       ":test_support",
+      "../../../../gn:benchmark",
       "../../../../gn:default_deps",
-      "//buildtools:benchmark",
     ]
     sources = [
       "cpu_reader_benchmark.cc",

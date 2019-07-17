@@ -19,15 +19,17 @@
 #include <condition_variable>
 #include <mutex>
 
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 #include "perfetto/base/logging.h"
-#include "perfetto/base/time.h"
-#include "perfetto/base/utils.h"
+#include "perfetto/ext/base/time.h"
+#include "perfetto/ext/base/utils.h"
+#include "perfetto/ext/traced/traced.h"
+#include "perfetto/ext/tracing/core/trace_packet.h"
+#include "perfetto/ext/tracing/core/trace_writer.h"
 #include "perfetto/trace/test_event.pbzero.h"
 #include "perfetto/trace/trace_packet.pbzero.h"
-#include "perfetto/traced/traced.h"
-#include "perfetto/tracing/core/trace_packet.h"
-#include "perfetto/tracing/core/trace_writer.h"
+#include "perfetto/tracing/core/data_source_config.h"
+#include "perfetto/tracing/core/test_config.h"
 
 namespace perfetto {
 

@@ -14,30 +14,30 @@
  * limitations under the License.
  */
 
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include <unistd.h>
 
 #include <chrono>
-#include <condition_variable>
 #include <functional>
 #include <initializer_list>
 #include <random>
 #include <thread>
 
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "perfetto/base/build_config.h"
-#include "perfetto/base/file_utils.h"
 #include "perfetto/base/logging.h"
-#include "perfetto/base/pipe.h"
-#include "perfetto/base/temp_file.h"
+#include "perfetto/ext/base/file_utils.h"
+#include "perfetto/ext/base/pipe.h"
+#include "perfetto/ext/base/temp_file.h"
+#include "perfetto/ext/traced/traced.h"
+#include "perfetto/ext/tracing/core/trace_packet.h"
+#include "perfetto/ext/tracing/ipc/default_socket.h"
 #include "perfetto/protozero/scattered_heap_buffer.h"
-#include "perfetto/traced/traced.h"
+#include "perfetto/tracing/core/test_config.h"
 #include "perfetto/tracing/core/trace_config.h"
-#include "perfetto/tracing/core/trace_packet.h"
 #include "src/base/test/test_task_runner.h"
 #include "src/traced/probes/ftrace/ftrace_controller.h"
 #include "src/traced/probes/ftrace/ftrace_procfs.h"
-#include "src/tracing/ipc/default_socket.h"
 #include "test/task_runner_thread.h"
 #include "test/task_runner_thread_delegates.h"
 #include "test/test_helper.h"
@@ -606,10 +606,10 @@ TEST_F(PerfettoCmdlineTest, NoSanitizers(InvalidCases)) {
 
   EXPECT_EQ(1,
             ExecPerfetto({"-c", "-", "--txt", "-o", "-", "--attach=foo"}, cfg));
-  EXPECT_THAT(stderr_, HasSubstr("trace config with --attach"));
+  EXPECT_THAT(stderr_, HasSubstr("Cannot specify a trace config"));
 
   EXPECT_EQ(1, ExecPerfetto({"-t", "2s", "-o", "-", "--attach=foo"}, cfg));
-  EXPECT_THAT(stderr_, HasSubstr("trace config with --attach"));
+  EXPECT_THAT(stderr_, HasSubstr("Cannot specify a trace config"));
 
   EXPECT_EQ(1, ExecPerfetto({"--attach"}, cfg));
   EXPECT_THAT(stderr_, ContainsRegex("option.*--attach.*requires an argument"));
@@ -619,6 +619,12 @@ TEST_F(PerfettoCmdlineTest, NoSanitizers(InvalidCases)) {
 
   EXPECT_EQ(1, ExecPerfetto({"-t", "2s", "--detach=foo"}, cfg));
   EXPECT_THAT(stderr_, HasSubstr("--out or --dropbox is required"));
+
+  EXPECT_EQ(1, ExecPerfetto({"-t", "2s", "--query"}, cfg));
+  EXPECT_THAT(stderr_, HasSubstr("Cannot specify a trace config"));
+
+  EXPECT_EQ(1, ExecPerfetto({"-c", "-", "--query"}, cfg));
+  EXPECT_THAT(stderr_, HasSubstr("Cannot specify a trace config"));
 }
 
 TEST_F(PerfettoCmdlineTest, NoSanitizers(TxtConfig)) {
@@ -849,7 +855,7 @@ TEST_F(PerfettoCmdlineTest, DISABLED_NoDataNoFileWithoutTrigger) {
   background_trace.join();
 
   EXPECT_THAT(stderr_,
-              ::testing::HasSubstr("Skipping upload to dropbox. Empty trace."));
+              ::testing::HasSubstr("Skipping write to dropbox. Empty trace."));
 }
 
 TEST_F(PerfettoCmdlineTest, NoSanitizers(StopTracingTriggerFromConfig)) {
@@ -1001,6 +1007,11 @@ TEST_F(PerfettoCmdlineTest, NoSanitizers(TriggerFromConfigStopsFileOpening)) {
       << "stderr: " << stderr_;
 
   EXPECT_FALSE(base::ReadFile(path, &trace_str));
+}
+
+TEST_F(PerfettoCmdlineTest, NoSanitizers(Query)) {
+  EXPECT_EQ(0, ExecPerfetto({"--query"})) << stderr_;
+  EXPECT_EQ(0, ExecPerfetto({"--query-raw"})) << stderr_;
 }
 
 }  // namespace perfetto

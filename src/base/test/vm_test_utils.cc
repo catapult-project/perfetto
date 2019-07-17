@@ -17,7 +17,7 @@
 #include "src/base/test/vm_test_utils.h"
 
 #include "perfetto/base/build_config.h"
-#include "perfetto/base/utils.h"
+#include "perfetto/ext/base/utils.h"
 
 #include <memory>
 
@@ -32,7 +32,7 @@
 #include <sys/stat.h>
 #endif
 
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 #include "perfetto/base/build_config.h"
 
 namespace perfetto {
