@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <fcntl.h>
+
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -32,7 +34,6 @@
 // Deliberately not pulling any non-public perfetto header to spot accidental
 // header public -> non-public dependency while building this file.
 
-// TODO(primiano): move these generated classes to /public/.
 #include "perfetto/tracing/core/data_source_descriptor.h"
 #include "perfetto/tracing/core/trace_config.h"
 
@@ -86,6 +87,10 @@ struct TestDataSourceHandle {
   WaitableTestEvent on_stop;
   MockDataSource* instance;
   perfetto::DataSourceConfig config;
+  bool handle_stop_asynchronously = false;
+  std::function<void()> on_start_callback;
+  std::function<void()> on_stop_callback;
+  std::function<void()> async_stop_closure;
 };
 
 class MockDataSource : public perfetto::DataSource<MockDataSource> {
@@ -129,6 +134,8 @@ class PerfettoApiTest : public ::testing::Test {
       was_initialized = true;
       RegisterDataSource<MockDataSource>("my_data_source");
     }
+    // Make sure our data source always has a valid handle.
+    data_sources_["my_data_source"];
   }
 
   void TearDown() override { instance = nullptr; }
@@ -143,13 +150,14 @@ class PerfettoApiTest : public ::testing::Test {
     return handle;
   }
 
-  TestTracingSessionHandle* NewTrace(const perfetto::TraceConfig& cfg) {
+  TestTracingSessionHandle* NewTrace(const perfetto::TraceConfig& cfg,
+                                     int fd = -1) {
     sessions_.emplace_back();
     TestTracingSessionHandle* handle = &sessions_.back();
     handle->session =
         perfetto::Tracing::NewTrace(perfetto::BackendType::kInProcessBackend);
     handle->session->SetOnStopCallback([handle] { handle->on_stop.Notify(); });
-    handle->session->Setup(cfg);
+    handle->session->Setup(cfg, fd);
     return handle;
   }
 
@@ -176,11 +184,17 @@ void MockDataSource::OnSetup(const SetupArgs& args) {
 
 void MockDataSource::OnStart(const StartArgs&) {
   EXPECT_NE(handle_, nullptr);
+  if (handle_->on_start_callback)
+    handle_->on_start_callback();
   handle_->on_start.Notify();
 }
 
-void MockDataSource::OnStop(const StopArgs&) {
+void MockDataSource::OnStop(const StopArgs& args) {
   EXPECT_NE(handle_, nullptr);
+  if (handle_->handle_stop_asynchronously)
+    handle_->async_stop_closure = args.HandleStopAsynchronously();
+  if (handle_->on_stop_callback)
+    handle_->on_stop_callback();
   handle_->on_stop.Notify();
 }
 
@@ -293,6 +307,199 @@ TEST_F(PerfettoApiTest, BlockingStartAndStopOnEmptySession) {
   tracing_session->get()->StartBlocking();
   tracing_session->get()->StopBlocking();
   EXPECT_TRUE(tracing_session->on_stop.notified());
+}
+
+TEST_F(PerfettoApiTest, WriteEventsAfterDeferredStop) {
+  auto* data_source = &data_sources_["my_data_source"];
+  data_source->handle_stop_asynchronously = true;
+
+  // Setup the trace config and start the tracing session.
+  perfetto::TraceConfig cfg;
+  cfg.set_duration_ms(500);
+  cfg.add_buffers()->set_size_kb(1024);
+  auto* ds_cfg = cfg.add_data_sources()->mutable_config();
+  ds_cfg->set_name("my_data_source");
+  auto* tracing_session = NewTrace(cfg);
+  tracing_session->get()->StartBlocking();
+
+  // Stop and wait for the producer to have seen the stop event.
+  WaitableTestEvent consumer_stop_signal;
+  tracing_session->get()->SetOnStopCallback(
+      [&consumer_stop_signal] { consumer_stop_signal.Notify(); });
+  tracing_session->get()->Stop();
+  data_source->on_stop.Wait();
+
+  // At this point tracing should be still allowed because of the
+  // HandleStopAsynchronously() call.
+  bool lambda_called = false;
+
+  // This usleep is here just to prevent that we accidentally pass the test
+  // just by virtue of hitting some race. We should be able to trace up until
+  // 5 seconds after seeing the stop when using the deferred stop mechanism.
+  usleep(250 * 1000);
+
+  MockDataSource::Trace([&lambda_called](MockDataSource::TraceContext ctx) {
+    auto packet = ctx.NewTracePacket();
+    packet->set_for_testing()->set_str("event written after OnStop");
+    packet->Finalize();
+    ctx.Flush();
+    lambda_called = true;
+  });
+  ASSERT_TRUE(lambda_called);
+
+  // Now call the async stop closure. This acks the stop to the service and
+  // disallows further Trace() calls.
+  EXPECT_TRUE(data_source->async_stop_closure);
+  data_source->async_stop_closure();
+
+  // Wait that the stop is propagated to the consumer.
+  consumer_stop_signal.Wait();
+
+  MockDataSource::Trace([](MockDataSource::TraceContext) {
+    FAIL() << "Should not be called after the stop is acked";
+  });
+
+  // Check the contents of the trace.
+  std::vector<char> raw_trace = tracing_session->get()->ReadTraceBlocking();
+  ASSERT_GE(raw_trace.size(), 0u);
+  perfetto::protos::Trace trace;
+  ASSERT_TRUE(trace.ParseFromArray(raw_trace.data(), int(raw_trace.size())));
+  int test_packet_found = 0;
+  for (const auto& packet : trace.packet()) {
+    if (!packet.has_for_testing())
+      continue;
+    EXPECT_EQ(packet.for_testing().str(), "event written after OnStop");
+    test_packet_found++;
+  }
+  EXPECT_EQ(test_packet_found, 1);
+}
+
+TEST_F(PerfettoApiTest, RepeatedStartAndStop) {
+  perfetto::TraceConfig cfg;
+  cfg.set_duration_ms(500);
+  cfg.add_buffers()->set_size_kb(1024);
+  auto* ds_cfg = cfg.add_data_sources()->mutable_config();
+  ds_cfg->set_name("my_data_source");
+
+  for (int i = 0; i < 5; i++) {
+    auto* tracing_session = NewTrace(cfg);
+    tracing_session->get()->Start();
+    std::atomic<bool> stop_called{false};
+    tracing_session->get()->SetOnStopCallback(
+        [&stop_called] { stop_called = true; });
+    tracing_session->get()->StopBlocking();
+    EXPECT_TRUE(stop_called);
+  }
+}
+
+TEST_F(PerfettoApiTest, SetupWithFile) {
+#if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID)
+  char temp_file[] = "/data/local/tmp/perfetto-XXXXXXXX";
+#else
+  char temp_file[] = "/tmp/perfetto-XXXXXXXX";
+#endif
+  int fd = mkstemp(temp_file);
+  ASSERT_TRUE(fd >= 0);
+
+  perfetto::TraceConfig cfg;
+  cfg.set_duration_ms(500);
+  cfg.add_buffers()->set_size_kb(1024);
+  auto* ds_cfg = cfg.add_data_sources()->mutable_config();
+  ds_cfg->set_name("my_data_source");
+  // Write a trace into |fd|.
+  auto* tracing_session = NewTrace(cfg, fd);
+  tracing_session->get()->StartBlocking();
+  tracing_session->get()->StopBlocking();
+  // Check that |fd| didn't get closed.
+  EXPECT_EQ(0, fcntl(fd, F_GETFD, 0));
+  // Check that the trace got written.
+  EXPECT_GT(lseek(fd, 0, SEEK_END), 0);
+  EXPECT_EQ(0, close(fd));
+  // Clean up.
+  EXPECT_EQ(0, unlink(temp_file));
+}
+
+TEST_F(PerfettoApiTest, MultipleRegistrations) {
+  // Attempt to register the same data source again.
+  perfetto::DataSourceDescriptor dsd;
+  dsd.set_name("my_data_source");
+  EXPECT_TRUE(MockDataSource::Register(dsd));
+
+  // Setup the trace config.
+  perfetto::TraceConfig cfg;
+  cfg.set_duration_ms(500);
+  cfg.add_buffers()->set_size_kb(1024);
+  auto* ds_cfg = cfg.add_data_sources()->mutable_config();
+  ds_cfg->set_name("my_data_source");
+
+  // Create a new trace session.
+  auto* tracing_session = NewTrace(cfg);
+  tracing_session->get()->StartBlocking();
+
+  // Emit one trace event.
+  std::atomic<int> trace_lambda_calls{0};
+  MockDataSource::Trace([&trace_lambda_calls](MockDataSource::TraceContext) {
+    trace_lambda_calls++;
+  });
+
+  // Make sure the data source got called only once.
+  tracing_session->get()->StopBlocking();
+  EXPECT_EQ(trace_lambda_calls, 1);
+}
+
+// Regression test for b/139110180. Checks that GetDataSourceLocked() can be
+// called from OnStart() and OnStop() callbacks without deadlocking.
+TEST_F(PerfettoApiTest, GetDataSourceLockedFromCallbacks) {
+  auto* data_source = &data_sources_["my_data_source"];
+
+  // Setup the trace config.
+  perfetto::TraceConfig cfg;
+  cfg.set_duration_ms(1);
+  cfg.add_buffers()->set_size_kb(1024);
+  auto* ds_cfg = cfg.add_data_sources()->mutable_config();
+  ds_cfg->set_name("my_data_source");
+
+  // Create a new trace session.
+  auto* tracing_session = NewTrace(cfg);
+
+  data_source->on_start_callback = [] {
+    MockDataSource::Trace([](MockDataSource::TraceContext ctx) {
+      ctx.NewTracePacket()->set_for_testing()->set_str("on-start");
+      auto ds = ctx.GetDataSourceLocked();
+      ASSERT_TRUE(!!ds);
+      ctx.NewTracePacket()->set_for_testing()->set_str("on-start-locked");
+    });
+  };
+
+  data_source->on_stop_callback = [] {
+    MockDataSource::Trace([](MockDataSource::TraceContext ctx) {
+      ctx.NewTracePacket()->set_for_testing()->set_str("on-stop");
+      auto ds = ctx.GetDataSourceLocked();
+      ASSERT_TRUE(!!ds);
+      ctx.NewTracePacket()->set_for_testing()->set_str("on-stop-locked");
+      ctx.Flush();
+    });
+  };
+
+  tracing_session->get()->Start();
+  data_source->on_stop.Wait();
+  tracing_session->on_stop.Wait();
+
+  std::vector<char> raw_trace = tracing_session->get()->ReadTraceBlocking();
+  ASSERT_GE(raw_trace.size(), 0u);
+
+  perfetto::protos::Trace trace;
+  ASSERT_TRUE(trace.ParseFromArray(raw_trace.data(), int(raw_trace.size())));
+  int packets_found = 0;
+  for (const auto& packet : trace.packet()) {
+    if (!packet.has_for_testing())
+      continue;
+    packets_found |= packet.for_testing().str() == "on-start" ? 1 : 0;
+    packets_found |= packet.for_testing().str() == "on-start-locked" ? 2 : 0;
+    packets_found |= packet.for_testing().str() == "on-stop" ? 4 : 0;
+    packets_found |= packet.for_testing().str() == "on-stop-locked" ? 8 : 0;
+  }
+  EXPECT_EQ(packets_found, 1 | 2 | 4 | 8);
 }
 
 }  // namespace

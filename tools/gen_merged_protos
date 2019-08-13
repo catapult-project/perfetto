@@ -46,6 +46,7 @@ MERGED_CONFIG_PROTO = 'protos/perfetto/config/perfetto_config.proto'
 TRACE_PROTOS = (
   'protos/perfetto/common/trace_stats.proto', # only referenced by trace protos
   'protos/perfetto/trace/android/android_log.proto',
+  'protos/perfetto/trace/android/graphics_frame_event.proto',
   'protos/perfetto/trace/android/packages_list.proto',
   'protos/perfetto/trace/chrome/chrome_benchmark_metadata.proto',
   "protos/perfetto/trace/chrome/chrome_metadata.proto",
@@ -76,6 +77,7 @@ TRACE_PROTOS = (
   'protos/perfetto/trace/perfetto/perfetto_metatrace.proto',
   'protos/perfetto/trace/power/battery_counters.proto',
   'protos/perfetto/trace/power/power_rails.proto',
+  'protos/perfetto/trace/profiling/heap_graph.proto',
   'protos/perfetto/trace/profiling/profile_common.proto',
   'protos/perfetto/trace/profiling/profile_packet.proto',
   'protos/perfetto/trace/ps/process_stats.proto',
@@ -84,8 +86,11 @@ TRACE_PROTOS = (
   'protos/perfetto/trace/system_info.proto',
   'protos/perfetto/trace/trace.proto',
   'protos/perfetto/trace/trace_packet.proto',
+  'protos/perfetto/trace/trace_packet_defaults.proto',
   'protos/perfetto/trace/track_event/debug_annotation.proto',
+  'protos/perfetto/trace/track_event/log_message.proto',
   'protos/perfetto/trace/track_event/process_descriptor.proto',
+  'protos/perfetto/trace/track_event/source_location.proto',
   'protos/perfetto/trace/track_event/task_execution.proto',
   'protos/perfetto/trace/track_event/thread_descriptor.proto',
   'protos/perfetto/trace/track_event/track_event.proto',

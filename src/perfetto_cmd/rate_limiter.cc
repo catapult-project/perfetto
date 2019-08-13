@@ -107,7 +107,7 @@ bool RateLimiter::ShouldTrace(const Args& args) {
 
   // If we've uploaded in the last 5mins we shouldn't trace now.
   if ((now_in_s - state_.last_trace_timestamp()) < kCooldownInSeconds) {
-    PERFETTO_ELOG("Guardrail: Uploaded to DropBox in the last 5mins.");
+    PERFETTO_LOG("Guardrail: Uploaded to DropBox in the last 5mins.");
     if (!args.ignore_guardrails)
       return false;
   }
@@ -164,7 +164,7 @@ bool RateLimiter::OnTraceDone(const Args& args, bool success, uint64_t bytes) {
 }
 
 std::string RateLimiter::GetStateFilePath() const {
-  return std::string(kTempDropBoxTraceDir) + "/.guardraildata";
+  return std::string(kStateDir) + "/.guardraildata";
 }
 
 bool RateLimiter::StateFileExists() {

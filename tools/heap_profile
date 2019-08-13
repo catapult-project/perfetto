@@ -30,8 +30,8 @@ import time
 import urllib
 
 TRACE_TO_TEXT_SHAS = {
-  'linux': 'b91fd044422c5276f314728dca52a1d1cf43df69',
-  'mac': 'd00c9ba443c93c18ed9e712d3e699ddda72a8bd8',
+  'linux': '74cb40d9413d7ad756e327e09e46a8adde90db92',
+  'mac': '47045bc6abd4f9113969211f37fdd2259b0c1cc3',
 }
 TRACE_TO_TEXT_PATH = tempfile.gettempdir()
 TRACE_TO_TEXT_BASE_URL = (
@@ -148,8 +148,10 @@ def main(argv):
                       default=8 * 1048576)
   parser.add_argument("--block-client", help="When buffer is full, block the "
                       "client to wait for buffer space. Use with caution as "
-                      "this can significantly slow down the client.",
-                      action="store_true")
+                      "this can significantly slow down the client. "
+                      "This is the default", action="store_true")
+  parser.add_argument("--no-block-client", help="When buffer is full, stop the "
+                      "profile early.", action="store_true")
   parser.add_argument("--idle-allocations", help="Keep track of how many "
                       "bytes were unused since the last dump, per "
                       "callstack", action="store_true")
@@ -167,6 +169,10 @@ def main(argv):
   args = parser.parse_args()
 
   fail = False
+  if args.block_client and args.no_block_client:
+    print("FATAL: Both block-client and no-block-client given.",
+            file=sys.stderr)
+    fail = True
   if args.pid is None and args.name is None:
     print("FATAL: Neither PID nor NAME given.", file=sys.stderr)
     fail = True
@@ -187,7 +193,7 @@ def main(argv):
     fail = True
 
   target_cfg = ""
-  if args.block_client:
+  if not args.no_block_client:
     target_cfg += "block_client: true\n"
   if args.idle_allocations:
     target_cfg += "idle_allocations: true\n"
@@ -263,7 +269,7 @@ def main(argv):
         ['adb', 'shell',
          'mkdir -p /data/local/tmp/heapprofd_profile && '
          'cd /data/local/tmp/heapprofd_profile &&'
-         '(nohup simpleperf record -g -p $(pgrep heapprofd) 2>&1 &) '
+         '(nohup simpleperf record -g -p $(pidof heapprofd) 2>&1 &) '
          '> /dev/null'])
 
   perfetto_pid = subprocess.check_output(
@@ -294,7 +300,7 @@ def main(argv):
     subprocess.check_call(['adb', 'shell', 'killall', '-INT', 'simpleperf'])
     print("Waiting for simpleperf to exit.")
     while subprocess.call(
-        ['adb', 'shell', '[ -f /proc/$(pgrep simpleperf)/exe ]'],
+        ['adb', 'shell', '[ -f /proc/$(pidof simpleperf)/exe ]'],
         **NOOUT) == 0:
       time.sleep(1)
     subprocess.check_call(['adb', 'pull', '/data/local/tmp/heapprofd_profile',

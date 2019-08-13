@@ -35,7 +35,6 @@
 #include "src/trace_processor/heap_profile_tracker.h"
 #include "src/trace_processor/metadata.h"
 #include "src/trace_processor/process_tracker.h"
-#include "src/trace_processor/slice_tracker.h"
 #include "src/trace_processor/syscall_tracker.h"
 #include "src/trace_processor/systrace_parser.h"
 #include "src/trace_processor/trace_processor_context.h"
@@ -49,6 +48,7 @@
 #include "perfetto/trace/android/android_log.pbzero.h"
 #include "perfetto/trace/android/packages_list.pbzero.h"
 #include "perfetto/trace/chrome/chrome_benchmark_metadata.pbzero.h"
+#include "perfetto/trace/chrome/chrome_trace_event.pbzero.h"
 #include "perfetto/trace/clock_snapshot.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace_event.pbzero.h"
@@ -65,6 +65,7 @@
 #include "perfetto/trace/ftrace/systrace.pbzero.h"
 #include "perfetto/trace/ftrace/task.pbzero.h"
 #include "perfetto/trace/gpu/gpu_counter_event.pbzero.h"
+#include "perfetto/trace/gpu/gpu_render_stage_event.pbzero.h"
 #include "perfetto/trace/interned_data/interned_data.pbzero.h"
 #include "perfetto/trace/perfetto/perfetto_metatrace.pbzero.h"
 #include "perfetto/trace/power/battery_counters.pbzero.h"
@@ -78,8 +79,8 @@
 #include "perfetto/trace/trace.pbzero.h"
 #include "perfetto/trace/trace_packet.pbzero.h"
 #include "perfetto/trace/track_event/debug_annotation.pbzero.h"
+#include "perfetto/trace/track_event/source_location.pbzero.h"
 #include "perfetto/trace/track_event/task_execution.pbzero.h"
-#include "perfetto/trace/track_event/track_event.pbzero.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -202,8 +203,9 @@ class ProfilePacketInternLookup : public HeapProfileTracker::InternLookup {
 
 namespace {
 // Slices which have been opened but haven't been closed yet will be marked
-// with this placeholder value.
+// with these placeholder values.
 constexpr int64_t kPendingThreadDuration = -1;
+constexpr int64_t kPendingThreadInstructionDelta = -1;
 }  // namespace
 
 }  // namespace
@@ -252,7 +254,46 @@ ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
       task_file_name_args_key_id_(
           context->storage->InternString("task.posted_from.file_name")),
       task_function_name_args_key_id_(
-          context->storage->InternString("task.posted_from.function_name")) {
+          context->storage->InternString("task.posted_from.function_name")),
+      raw_chrome_metadata_event_id_(
+          context->storage->InternString("chrome_event.metadata")),
+      raw_legacy_event_id_(
+          context->storage->InternString("track_event.legacy_event")),
+      legacy_event_category_key_id_(
+          context->storage->InternString("legacy_event.category")),
+      legacy_event_name_key_id_(
+          context->storage->InternString("legacy_event.name")),
+      legacy_event_phase_key_id_(
+          context->storage->InternString("legacy_event.phase")),
+      legacy_event_duration_ns_key_id_(
+          context->storage->InternString("legacy_event.duration_ns")),
+      legacy_event_thread_timestamp_ns_key_id_(
+          context->storage->InternString("legacy_event.thread_timestamp_ns")),
+      legacy_event_thread_duration_ns_key_id_(
+          context->storage->InternString("legacy_event.thread_duration_ns")),
+      legacy_event_thread_instruction_count_key_id_(
+          context->storage->InternString(
+              "legacy_event.thread_instruction_count")),
+      legacy_event_thread_instruction_delta_key_id_(
+          context->storage->InternString(
+              "legacy_event.thread_instruction_delta")),
+      legacy_event_use_async_tts_key_id_(
+          context->storage->InternString("legacy_event.use_async_tts")),
+      legacy_event_global_id_key_id_(
+          context->storage->InternString("legacy_event.global_id")),
+      legacy_event_local_id_key_id_(
+          context->storage->InternString("legacy_event.local_id")),
+      legacy_event_id_scope_key_id_(
+          context->storage->InternString("legacy_event.id_scope")),
+      legacy_event_bind_id_key_id_(
+          context->storage->InternString("legacy_event.bind_id")),
+      legacy_event_bind_to_enclosing_key_id_(
+          context->storage->InternString("legacy_event.bind_to_enclosing")),
+      legacy_event_flow_direction_key_id_(
+          context->storage->InternString("legacy_event.flow_direction")),
+      flow_direction_value_in_id_(context->storage->InternString("in")),
+      flow_direction_value_out_id_(context->storage->InternString("out")),
+      flow_direction_value_inout_id_(context->storage->InternString("inout")) {
   for (const auto& name : BuildMeminfoCounterNames()) {
     meminfo_strs_id_.emplace_back(context->storage->InternString(name));
   }
@@ -384,12 +425,16 @@ void ProtoTraceParser::ParseTracePacket(
     ParseSystemInfo(packet.system_info());
 
   if (packet.has_track_event()) {
-    ParseTrackEvent(ts, ttp.thread_timestamp, ttp.packet_sequence_state,
-                    packet.track_event());
+    ParseTrackEvent(ts, ttp.thread_timestamp, ttp.thread_instruction_count,
+                    ttp.packet_sequence_state, packet.track_event());
   }
 
   if (packet.has_chrome_benchmark_metadata()) {
     ParseChromeBenchmarkMetadata(packet.chrome_benchmark_metadata());
+  }
+
+  if (packet.has_chrome_events()) {
+    ParseChromeEvents(packet.chrome_events());
   }
 
   if (packet.has_perfetto_metatrace()) {
@@ -398,6 +443,10 @@ void ProtoTraceParser::ParseTracePacket(
 
   if (packet.has_gpu_counter_event()) {
     ParseGpuCounterEvent(ts, packet.gpu_counter_event());
+  }
+
+  if (packet.has_gpu_render_stage_event()) {
+    ParseGpuRenderStageEvent(ts, packet.gpu_render_stage_event());
   }
 
   if (packet.has_packages_list()) {
@@ -1114,12 +1163,8 @@ void ProtoTraceParser::ParseTypedFtraceToRaw(uint32_t ftrace_id,
     ProtoSchemaType type = m->fields[fld.id()].type;
     StringId name_id = message_strings.field_name_ids[fld.id()];
     switch (type) {
-      case ProtoSchemaType::kUint32:
       case ProtoSchemaType::kInt32:
-      case ProtoSchemaType::kUint64:
       case ProtoSchemaType::kInt64:
-      case ProtoSchemaType::kFixed64:
-      case ProtoSchemaType::kFixed32:
       case ProtoSchemaType::kSfixed32:
       case ProtoSchemaType::kSfixed64:
       case ProtoSchemaType::kSint32:
@@ -1128,6 +1173,18 @@ void ProtoTraceParser::ParseTypedFtraceToRaw(uint32_t ftrace_id,
       case ProtoSchemaType::kEnum: {
         context_->args_tracker->AddArg(raw_event_id, name_id, name_id,
                                        Variadic::Integer(fld.as_int64()));
+        break;
+      }
+      case ProtoSchemaType::kUint32:
+      case ProtoSchemaType::kUint64:
+      case ProtoSchemaType::kFixed32:
+      case ProtoSchemaType::kFixed64: {
+        // Note that SQLite functions will still treat unsigned values
+        // as a signed 64 bit integers (but the translation back to ftrace
+        // refers to this storage directly).
+        context_->args_tracker->AddArg(
+            raw_event_id, name_id, name_id,
+            Variadic::UnsignedInteger(fld.as_uint64()));
         break;
       }
       case ProtoSchemaType::kString:
@@ -1165,11 +1222,13 @@ void ProtoTraceParser::ParseClockSnapshot(ConstBytes blob) {
   int64_t clock_realtime = 0;
   for (auto it = evt.clocks(); it; ++it) {
     protos::pbzero::ClockSnapshot::Clock::Decoder clk(it->data(), it->size());
-    if (clk.type() == protos::pbzero::ClockSnapshot::Clock::BOOTTIME) {
+    if (clk.clock_id() == protos::pbzero::ClockSnapshot::Clock::BOOTTIME) {
       clock_boottime = static_cast<int64_t>(clk.timestamp());
-    } else if (clk.type() == protos::pbzero::ClockSnapshot::Clock::REALTIME) {
+    } else if (clk.clock_id() ==
+               protos::pbzero::ClockSnapshot::Clock::REALTIME) {
       clock_realtime = static_cast<int64_t>(clk.timestamp());
-    } else if (clk.type() == protos::pbzero::ClockSnapshot::Clock::MONOTONIC) {
+    } else if (clk.clock_id() ==
+               protos::pbzero::ClockSnapshot::Clock::MONOTONIC) {
       clock_monotonic = static_cast<int64_t>(clk.timestamp());
     }
   }
@@ -1339,6 +1398,9 @@ void ProtoTraceParser::ParseTraceStats(ConstBytes blob) {
                              static_cast<int64_t>(buf.readaheads_succeeded()));
     storage->SetIndexedStats(stats::traced_buf_readaheads_failed, buf_num,
                              static_cast<int64_t>(buf.readaheads_failed()));
+    storage->SetIndexedStats(
+        stats::traced_buf_trace_writer_packet_loss, buf_num,
+        static_cast<int64_t>(buf.trace_writer_packet_loss()));
   }
 }
 
@@ -1485,6 +1547,7 @@ void ProtoTraceParser::ParseSystemInfo(ConstBytes blob) {
 void ProtoTraceParser::ParseTrackEvent(
     int64_t ts,
     int64_t tts,
+    int64_t ticount,
     ProtoIncrementalState::PacketSequenceState* sequence_state,
     ConstBytes blob) {
   protos::pbzero::TrackEvent::Decoder event(blob.data, blob.size);
@@ -1495,8 +1558,8 @@ void ProtoTraceParser::ParseTrackEvent(
 
   // TODO(eseckler): This legacy event field will eventually be replaced by
   // fields in TrackEvent itself.
-  if (PERFETTO_UNLIKELY(!legacy_event.has_phase())) {
-    PERFETTO_ELOG("TrackEvent without phase");
+  if (PERFETTO_UNLIKELY(!event.type() && !legacy_event.has_phase())) {
+    PERFETTO_ELOG("TrackEvent without type or phase");
     return;
   }
 
@@ -1526,6 +1589,7 @@ void ProtoTraceParser::ParseTrackEvent(
         sequence_state->GetInternedDataMap<protos::pbzero::EventCategory>();
     auto cat_view_it = map->find(category_iids[0]);
     if (cat_view_it == map->end()) {
+      context_->storage->IncrementStats(stats::track_event_tokenizer_errors);
       PERFETTO_ELOG("Could not find category interning entry for ID %" PRIu64,
                     category_iids[0]);
     } else {
@@ -1551,6 +1615,7 @@ void ProtoTraceParser::ParseTrackEvent(
     for (uint64_t iid : category_iids) {
       auto cat_view_it = map->find(iid);
       if (cat_view_it == map->end()) {
+        context_->storage->IncrementStats(stats::track_event_tokenizer_errors);
         PERFETTO_ELOG("Could not find category interning entry for ID %" PRIu64,
                       iid);
         continue;
@@ -1574,6 +1639,7 @@ void ProtoTraceParser::ParseTrackEvent(
         sequence_state->GetInternedDataMap<protos::pbzero::LegacyEventName>();
     auto name_view_it = map->find(legacy_event.name_iid());
     if (name_view_it == map->end()) {
+      context_->storage->IncrementStats(stats::track_event_tokenizer_errors);
       PERFETTO_ELOG("Could not find event name interning entry for ID %" PRIu64,
                     legacy_event.name_iid());
     } else {
@@ -1590,11 +1656,6 @@ void ProtoTraceParser::ParseTrackEvent(
       }
     }
   }
-
-  // TODO(eseckler): Handle thread instruction counts, legacy event attributes,
-  // legacy event types (async S, T, p, F phases, flow events, sample events,
-  // object events, metadata events, memory dumps, mark events, clock sync
-  // events, context events, counter events), ...
 
   auto args_callback = [this, &event, &sequence_state](
                            ArgsTracker* args_tracker, RowId row_id) {
@@ -1629,7 +1690,23 @@ void ProtoTraceParser::ParseTrackEvent(
     id_scope = storage->InternString(legacy_event.id_scope());
   }
 
-  int32_t phase = legacy_event.phase();
+  int32_t phase = 0;
+  if (legacy_event.has_phase()) {
+    phase = legacy_event.phase();
+  } else {
+    switch (event.type()) {
+      case protos::pbzero::TrackEvent::TYPE_SLICE_BEGIN:
+        phase = 'B';
+        break;
+      case protos::pbzero::TrackEvent::TYPE_SLICE_END:
+        phase = 'E';
+        break;
+      default:
+        PERFETTO_FATAL("unexpected event type %d", event.type());
+        return;
+    }
+  }
+
   switch (static_cast<char>(phase)) {
     case 'B': {  // TRACE_EVENT_PHASE_BEGIN.
       auto opt_slice_id = slice_tracker->Begin(
@@ -1640,9 +1717,8 @@ void ProtoTraceParser::ParseTrackEvent(
                         thread_slices->slice_ids().back() <
                             opt_slice_id.value());
         thread_slices->AddThreadSlice(opt_slice_id.value(), tts,
-                                      kPendingThreadDuration,
-                                      /*thread_instruction_count=*/0,
-                                      /*thread_instruction_delta=*/0);
+                                      kPendingThreadDuration, ticount,
+                                      kPendingThreadInstructionDelta);
       }
       break;
     }
@@ -1651,8 +1727,8 @@ void ProtoTraceParser::ParseTrackEvent(
           ts, utid, RefType::kRefUtid, category_id, name_id, args_callback);
       if (opt_slice_id.has_value()) {
         auto* thread_slices = storage->mutable_thread_slices();
-        thread_slices->UpdateThreadDurationForSliceId(opt_slice_id.value(),
-                                                      tts);
+        thread_slices->UpdateThreadDeltasForSliceId(opt_slice_id.value(), tts,
+                                                    ticount);
       }
       break;
     }
@@ -1670,9 +1746,8 @@ void ProtoTraceParser::ParseTrackEvent(
                             opt_slice_id.value());
         auto thread_duration_ns = legacy_event.thread_duration_us() * 1000;
         thread_slices->AddThreadSlice(opt_slice_id.value(), tts,
-                                      thread_duration_ns,
-                                      /*thread_instruction_count=*/0,
-                                      /*thread_instruction_delta=*/0);
+                                      thread_duration_ns, ticount,
+                                      legacy_event.thread_instruction_delta());
       }
       break;
     }
@@ -1681,6 +1756,7 @@ void ProtoTraceParser::ParseTrackEvent(
       // Handle instant events as slices with zero duration, so that they end
       // up nested underneath their parent slices.
       int64_t duration_ns = 0;
+      int64_t tidelta = 0;
 
       switch (legacy_event.instant_event_scope()) {
         case LegacyEvent::SCOPE_UNSPECIFIED:
@@ -1694,9 +1770,7 @@ void ProtoTraceParser::ParseTrackEvent(
                             thread_slices->slice_ids().back() <
                                 opt_slice_id.value());
             thread_slices->AddThreadSlice(opt_slice_id.value(), tts,
-                                          duration_ns,
-                                          /*thread_instruction_count=*/0,
-                                          /*thread_instruction_delta=*/0);
+                                          duration_ns, ticount, tidelta);
           }
           break;
         }
@@ -1722,31 +1796,58 @@ void ProtoTraceParser::ParseTrackEvent(
     case 'b': {  // TRACE_EVENT_PHASE_NESTABLE_ASYNC_BEGIN
       TrackId track_id = context_->virtual_track_tracker->GetOrCreateTrack(
           {vtrack_scope, vtrack_upid, id, id_scope}, name_id);
-      slice_tracker->Begin(ts, track_id, RefType::kRefTrack, category_id,
-                           name_id, args_callback);
+      auto opt_slice_id =
+          slice_tracker->Begin(ts, track_id, RefType::kRefTrack, category_id,
+                               name_id, args_callback);
+      // For the time beeing, we only create vtrack slice rows if we need to
+      // store thread timestamps/counters.
+      if (legacy_event.use_async_tts() && opt_slice_id.has_value()) {
+        auto* vtrack_slices = storage->mutable_virtual_track_slices();
+        PERFETTO_DCHECK(!vtrack_slices->slice_count() ||
+                        vtrack_slices->slice_ids().back() <
+                            opt_slice_id.value());
+        vtrack_slices->AddVirtualTrackSlice(opt_slice_id.value(), tts,
+                                            kPendingThreadDuration, ticount,
+                                            kPendingThreadInstructionDelta);
+      }
       break;
     }
     case 'e': {  // TRACE_EVENT_PHASE_NESTABLE_ASYNC_END
       TrackId track_id = context_->virtual_track_tracker->GetOrCreateTrack(
           {vtrack_scope, vtrack_upid, id, id_scope}, name_id);
-      slice_tracker->End(ts, track_id, RefType::kRefTrack, category_id, name_id,
-                         args_callback);
+      auto opt_slice_id =
+          slice_tracker->End(ts, track_id, RefType::kRefTrack, category_id,
+                             name_id, args_callback);
+      if (legacy_event.use_async_tts() && opt_slice_id.has_value()) {
+        auto* vtrack_slices = storage->mutable_virtual_track_slices();
+        vtrack_slices->UpdateThreadDeltasForSliceId(opt_slice_id.value(), tts,
+                                                    ticount);
+      }
       break;
     }
     case 'n': {  // TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT
       // Handle instant events as slices with zero duration, so that they end up
       // nested underneath their parent slices.
       int64_t duration_ns = 0;
+      int64_t tidelta = 0;
       TrackId track_id = context_->virtual_track_tracker->GetOrCreateTrack(
           {vtrack_scope, vtrack_upid, id, id_scope}, name_id);
-      slice_tracker->Scoped(ts, track_id, RefType::kRefTrack, category_id,
-                            name_id, duration_ns, args_callback);
+      auto opt_slice_id =
+          slice_tracker->Scoped(ts, track_id, RefType::kRefTrack, category_id,
+                                name_id, duration_ns, args_callback);
+      if (legacy_event.use_async_tts() && opt_slice_id.has_value()) {
+        auto* vtrack_slices = storage->mutable_virtual_track_slices();
+        PERFETTO_DCHECK(!vtrack_slices->slice_count() ||
+                        vtrack_slices->slice_ids().back() <
+                            opt_slice_id.value());
+        vtrack_slices->AddVirtualTrackSlice(opt_slice_id.value(), tts,
+                                            duration_ns, ticount, tidelta);
+      }
       break;
     }
     case 'M': {  // TRACE_EVENT_PHASE_METADATA (process and thread names).
-      // For now, we just compare the event name and assume there's a single
-      // argument in these events with the name of the process/thread.
-      // TODO(eseckler): Use names from process/thread descriptors instead.
+      // Parse process and thread names from correspondingly named events.
+      // TODO(eseckler): Also consider names from process/thread descriptors.
       NullTermStringView event_name = storage->GetString(name_id);
       PERFETTO_DCHECK(event_name.data());
       if (strcmp(event_name.c_str(), "thread_name") == 0) {
@@ -1760,7 +1861,9 @@ void ProtoTraceParser::ParseTrackEvent(
           break;
         auto thread_name_id = context_->storage->InternString(thread_name);
         procs->UpdateThreadName(tid, thread_name_id);
-      } else if (strcmp(event_name.c_str(), "process_name") == 0) {
+        break;
+      }
+      if (strcmp(event_name.c_str(), "process_name") == 0) {
         auto it = event.debug_annotations();
         if (!it)
           break;
@@ -1770,10 +1873,142 @@ void ProtoTraceParser::ParseTrackEvent(
         if (!process_name.size)
           break;
         procs->SetProcessMetadata(pid, base::nullopt, process_name);
+        break;
       }
+      // Other metadata events are proxied via the raw table for JSON export.
+      ParseLegacyEventAsRawEvent(ts, tts, ticount, utid, category_id, name_id,
+                                 legacy_event, args_callback);
       break;
     }
+    default: {
+      // Other events are proxied via the raw table for JSON export.
+      ParseLegacyEventAsRawEvent(ts, tts, ticount, utid, category_id, name_id,
+                                 legacy_event, args_callback);
+    }
   }
+}
+
+void ProtoTraceParser::ParseLegacyEventAsRawEvent(
+    int64_t ts,
+    int64_t tts,
+    int64_t ticount,
+    UniqueTid utid,
+    StringId category_id,
+    StringId name_id,
+    const protos::pbzero::TrackEvent::LegacyEvent::Decoder& legacy_event,
+    SliceTracker::SetArgsCallback args_callback) {
+  using LegacyEvent = protos::pbzero::TrackEvent::LegacyEvent;
+
+  RowId row_id = context_->storage->mutable_raw_events()->AddRawEvent(
+      ts, raw_legacy_event_id_, 0, utid);
+  ArgsTracker args(context_);
+  args.AddArg(row_id, legacy_event_category_key_id_,
+              legacy_event_category_key_id_, Variadic::String(category_id));
+  args.AddArg(row_id, legacy_event_name_key_id_, legacy_event_name_key_id_,
+              Variadic::String(name_id));
+
+  std::string phase_string(1, static_cast<char>(legacy_event.phase()));
+  StringId phase_id = context_->storage->InternString(phase_string.c_str());
+  args.AddArg(row_id, legacy_event_phase_key_id_, legacy_event_phase_key_id_,
+              Variadic::String(phase_id));
+
+  if (legacy_event.has_duration_us()) {
+    args.AddArg(row_id, legacy_event_duration_ns_key_id_,
+                legacy_event_duration_ns_key_id_,
+                Variadic::Integer(legacy_event.duration_us() * 1000));
+  }
+
+  if (tts) {
+    args.AddArg(row_id, legacy_event_thread_timestamp_ns_key_id_,
+                legacy_event_thread_timestamp_ns_key_id_,
+                Variadic::Integer(tts));
+    if (legacy_event.has_thread_duration_us()) {
+      args.AddArg(row_id, legacy_event_thread_duration_ns_key_id_,
+                  legacy_event_thread_duration_ns_key_id_,
+                  Variadic::Integer(legacy_event.thread_duration_us() * 1000));
+    }
+  }
+
+  if (ticount) {
+    args.AddArg(row_id, legacy_event_thread_instruction_count_key_id_,
+                legacy_event_thread_instruction_count_key_id_,
+                Variadic::Integer(tts));
+    if (legacy_event.has_thread_instruction_delta()) {
+      args.AddArg(row_id, legacy_event_thread_instruction_delta_key_id_,
+                  legacy_event_thread_instruction_delta_key_id_,
+                  Variadic::Integer(legacy_event.thread_instruction_delta()));
+    }
+  }
+
+  if (legacy_event.use_async_tts()) {
+    args.AddArg(row_id, legacy_event_use_async_tts_key_id_,
+                legacy_event_use_async_tts_key_id_, Variadic::Boolean(true));
+  }
+
+  bool has_id = false;
+  if (legacy_event.has_unscoped_id()) {
+    args.AddArg(row_id, legacy_event_global_id_key_id_,
+                legacy_event_global_id_key_id_,
+                Variadic::UnsignedInteger(legacy_event.unscoped_id()));
+    has_id = true;
+  } else if (legacy_event.has_global_id()) {
+    args.AddArg(row_id, legacy_event_global_id_key_id_,
+                legacy_event_global_id_key_id_,
+                Variadic::UnsignedInteger(legacy_event.global_id()));
+    has_id = true;
+  } else if (legacy_event.has_local_id()) {
+    args.AddArg(row_id, legacy_event_local_id_key_id_,
+                legacy_event_local_id_key_id_,
+                Variadic::UnsignedInteger(legacy_event.local_id()));
+    has_id = true;
+  }
+
+  if (has_id && legacy_event.has_id_scope() && legacy_event.id_scope().size) {
+    args.AddArg(row_id, legacy_event_id_scope_key_id_,
+                legacy_event_id_scope_key_id_,
+                Variadic::String(
+                    context_->storage->InternString(legacy_event.id_scope())));
+  }
+
+  // TODO(eseckler): Parse legacy flow events into flow events table once we
+  // have a design for it.
+  if (legacy_event.has_bind_id()) {
+    args.AddArg(row_id, legacy_event_bind_id_key_id_,
+                legacy_event_bind_id_key_id_,
+                Variadic::UnsignedInteger(legacy_event.bind_id()));
+  }
+
+  if (legacy_event.bind_to_enclosing()) {
+    args.AddArg(row_id, legacy_event_bind_to_enclosing_key_id_,
+                legacy_event_bind_to_enclosing_key_id_,
+                Variadic::Boolean(true));
+  }
+
+  if (legacy_event.flow_direction()) {
+    StringId value;
+    switch (legacy_event.flow_direction()) {
+      case LegacyEvent::FLOW_IN:
+        value = flow_direction_value_in_id_;
+        break;
+      case LegacyEvent::FLOW_OUT:
+        value = flow_direction_value_out_id_;
+        break;
+      case LegacyEvent::FLOW_INOUT:
+        value = flow_direction_value_inout_id_;
+        break;
+      default:
+        PERFETTO_FATAL("Unknown flow direction: %d",
+                       legacy_event.flow_direction());
+        break;
+    }
+    args.AddArg(row_id, legacy_event_flow_direction_key_id_,
+                legacy_event_flow_direction_key_id_, Variadic::String(value));
+  }
+
+  // No need to parse legacy_event.instant_event_scope() because we import
+  // instant events into the slice table.
+
+  args_callback(&args, row_id);
 }
 
 void ProtoTraceParser::ParseDebugAnnotationArgs(
@@ -1791,6 +2026,7 @@ void ProtoTraceParser::ParseDebugAnnotationArgs(
       sequence_state->GetInternedDataMap<protos::pbzero::DebugAnnotationName>();
   auto name_view_it = map->find(iid);
   if (name_view_it == map->end()) {
+    context_->storage->IncrementStats(stats::track_event_tokenizer_errors);
     PERFETTO_ELOG(
         "Could not find debug annotation name interning entry for ID %" PRIu64,
         iid);
@@ -1920,6 +2156,7 @@ void ProtoTraceParser::ParseTaskExecutionArgs(
       sequence_state->GetInternedDataMap<protos::pbzero::SourceLocation>();
   auto location_view_it = map->find(iid);
   if (location_view_it == map->end()) {
+    context_->storage->IncrementStats(stats::track_event_tokenizer_errors);
     PERFETTO_ELOG(
         "Could not find source location interning entry for ID %" PRIu64, iid);
     return;
@@ -1995,6 +2232,39 @@ void ProtoTraceParser::ParseChromeBenchmarkMetadata(ConstBytes blob) {
     storage->SetMetadata(metadata::benchmark_had_failures,
                          Variadic::Integer(packet.had_failures()));
   }
+}
+
+void ProtoTraceParser::ParseChromeEvents(ConstBytes blob) {
+  TraceStorage* storage = context_->storage.get();
+  protos::pbzero::ChromeEventBundle::Decoder bundle(blob.data, blob.size);
+  if (bundle.has_metadata()) {
+    ArgsTracker args(context_);
+    RowId row_id = storage->mutable_raw_events()->AddRawEvent(
+        0, raw_chrome_metadata_event_id_, 0, 0);
+
+    // Metadata is proxied via a special event in the raw table to JSON export.
+    for (auto it = bundle.metadata(); it; ++it) {
+      protos::pbzero::ChromeMetadata::Decoder metadata(it->as_bytes().data,
+                                                       it->as_bytes().size);
+      StringId name_id = storage->InternString(metadata.name());
+      Variadic value;
+      if (metadata.has_string_value()) {
+        value =
+            Variadic::String(storage->InternString(metadata.string_value()));
+      } else if (metadata.has_int_value()) {
+        value = Variadic::Integer(metadata.int_value());
+      } else if (metadata.has_bool_value()) {
+        value = Variadic::Integer(metadata.bool_value());
+      } else if (metadata.has_json_value()) {
+        value = Variadic::Json(storage->InternString(metadata.json_value()));
+      } else {
+        PERFETTO_FATAL("Empty ChromeMetadata message");
+      }
+      args.AddArg(row_id, name_id, name_id, value);
+    }
+  }
+
+  // TODO(khokhlov): parse legacy_ftrace_output and legacy_json_trace.
 }
 
 void ProtoTraceParser::ParseMetatraceEvent(int64_t ts, ConstBytes blob) {
@@ -2087,6 +2357,47 @@ void ProtoTraceParser::ParseGpuCounterEvent(int64_t ts, ConstBytes blob) {
             ts, counter.double_value(), gpu_counter_ids_[counter_id], 0, RefType::kRefGpuId);
       }
     }
+  }
+}
+
+void ProtoTraceParser::ParseGpuRenderStageEvent(int64_t ts, ConstBytes blob) {
+  protos::pbzero::GpuRenderStageEvent::Decoder event(blob.data, blob.size);
+
+  if (event.has_specifications()) {
+    protos::pbzero::GpuRenderStageEvent_Specifications::Decoder spec(
+        event.specifications().data, event.specifications().size);
+    for (auto it = spec.hw_queue(); it; ++it) {
+      protos::pbzero::GpuRenderStageEvent_Specifications_Description::Decoder
+          hw_queue(it->data(), it->size());
+      if (hw_queue.has_name()) {
+        // TODO: create vtrack for each HW queue when it's ready.
+        gpu_hw_queue_ids_.emplace_back(
+            context_->storage->InternString(hw_queue.name()));
+      }
+    }
+    for (auto it = spec.stage(); it; ++it) {
+      protos::pbzero::GpuRenderStageEvent_Specifications_Description::Decoder
+          stage(it->data(), it->size());
+      if (stage.has_name()) {
+        gpu_render_stage_ids_.emplace_back(
+            context_->storage->InternString(stage.name()));
+      }
+    }
+  }
+
+  if (event.has_event_id()) {
+    size_t stage_id = static_cast<size_t>(event.stage_id());
+    StringId stage_name;
+    if (stage_id < gpu_render_stage_ids_.size()) {
+      stage_name = gpu_render_stage_ids_[stage_id];
+    } else {
+      char buffer[64];
+      snprintf(buffer, 64, "render stage(%zu)", stage_id);
+      stage_name = context_->storage->InternString(buffer);
+    }
+    context_->slice_tracker->Scoped(
+        ts, event.hw_queue_id(), RefType::kRefGpuId, 0, /* cat */
+        stage_name, static_cast<int64_t>(event.duration()));
   }
 }
 

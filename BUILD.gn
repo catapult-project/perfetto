@@ -63,6 +63,7 @@ group("all") {
       "protos/perfetto/trace:merged_trace",  # For syntax-checking the proto.
       "src/ipc/protoc_plugin:ipc_plugin($host_toolchain)",
       "src/tracing:client_api",
+      "test:client_api_example",
       "tools:protoc_helper",
     ]
     if (perfetto_build_standalone) {
@@ -73,6 +74,7 @@ group("all") {
         "test/configs",
         "tools/ftrace_proto_gen:ftrace_proto_gen",
         "tools/proto_to_cpp",
+        "tools/protoprofile",
         "tools/trace_to_text",
         "tools/trace_to_text:trace_to_text_lite_host($host_toolchain)",
 
@@ -294,11 +296,11 @@ if (perfetto_build_standalone || perfetto_build_with_android) {
 
 if (perfetto_build_with_embedder) {
   if (build_with_chromium) {
-    libperfetto_target_type = "component"
+    lib_target_type = "component"
   } else {
-    libperfetto_target_type = "source_set"
+    lib_target_type = "source_set"
   }
-  target(libperfetto_target_type, "libperfetto") {
+  target(lib_target_type, "libperfetto") {
     public_configs = [ "gn:public_config" ]
     deps = [
       "src/tracing",
@@ -312,6 +314,17 @@ if (perfetto_build_with_embedder) {
       "protos/perfetto/trace/interned_data:zero",
       "protos/perfetto/trace/profiling:zero",
       "protos/perfetto/trace/track_event:zero",
+    ]
+  }
+  target(lib_target_type, "libtrace_processor") {
+    public_configs = [ "gn:public_config" ]
+    deps = [
+      "src/trace_processor:lib",
+    ]
+    configs -= [ "//build/config/compiler:chromium_code" ]
+    configs += [ "//build/config/compiler:no_chromium_code" ]
+    public_deps = [
+      "include/perfetto/trace_processor",
     ]
   }
 }

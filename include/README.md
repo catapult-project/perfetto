@@ -82,9 +82,9 @@ Usage example
   #include "perfetto/tracing.h"
 
   class MyDataSource : public perfetto::DataSource<MyDataSource> {
-    void OnSetup(SetupArgs) override {}
-    void OnStart(StartArgs) override {}
-    void OnStop(StopArgs) override {}
+    void OnSetup(const SetupArgs&) override {}
+    void OnStart(const StartArgs&) override {}
+    void OnStop(const StopArgs&) override {}
   };
   ...
   PERFETTO_DEFINE_DATA_SOURCE_STATIC_MEMBERS(MyDataSource);
@@ -98,10 +98,10 @@ Usage example
 
 4. Emit trace events
 ```cpp
-  MyDataSource::Trace([](TraceContext ctx) {
+  MyDataSource::Trace([](MyDataSource::TraceContext ctx) {
       auto trace_packet = ctx.NewTracePacket();
-      ctx.set_timestamp(...);
-      ctx.set_my_custom_proto(...);
+      trace_packet->set_timestamp(...);
+      auto* my_custom_proto = trace_packet->set_my_custom_proto();
   });
 ```
 

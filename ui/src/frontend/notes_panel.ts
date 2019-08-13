@@ -41,6 +41,11 @@ export class NotesPanel extends Panel {
     dom.addEventListener('mousemove', (e: Event) => {
       this.hoveredX =
         (e as MouseEvent).layerX - TRACK_SHELL_WIDTH - MOUSE_OFFSET;
+      if (globals.state.scrubbingEnabled) {
+        const timescale = globals.frontendLocalState.timeScale;
+        const timestamp = timescale.pxToTime(this.hoveredX);
+        globals.frontendLocalState.setVidTimestamp(timestamp);
+      }
       globals.rafScheduler.scheduleRedraw();
     }, {passive: true});
     dom.addEventListener('mouseenter', (e: Event) => {
@@ -60,7 +65,7 @@ export class NotesPanel extends Panel {
       '.notes-panel',
       {
         onclick: (e: MouseEvent) => {
-          const isMovie = e.buttons === 4;
+          const isMovie = globals.state.flagPauseEnabled;
           this.onClick(e.layerX - TRACK_SHELL_WIDTH, e.layerY, isMovie);
           e.stopPropagation();
         },
@@ -73,7 +78,7 @@ export class NotesPanel extends Panel {
     let aNoteIsHovered = false;
 
     ctx.fillStyle = '#999';
-    ctx.fillRect(TRACK_SHELL_WIDTH - 1, 0, 2, size.height);
+    ctx.fillRect(TRACK_SHELL_WIDTH - 2, 0, 2, size.height);
     for (const xAndTime of gridlines(size.width, range, timeScale)) {
       ctx.fillRect(xAndTime[0], 0, 1, size.height);
     }
@@ -138,7 +143,7 @@ export class NotesPanel extends Panel {
 
   private drawFlag(
       ctx: CanvasRenderingContext2D, x: number, height: number, color: string,
-      fill?: boolean, isMovie = false) {
+      fill?: boolean, isMovie = globals.state.flagPauseEnabled) {
     const prevFont = ctx.font;
     const prevBaseline = ctx.textBaseline;
     ctx.textBaseline = 'alphabetic';

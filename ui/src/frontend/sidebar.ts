@@ -15,12 +15,14 @@
 import * as m from 'mithril';
 
 import {Actions} from '../common/actions';
+import {QueryResponse} from '../common/queries';
 
 import {globals} from './globals';
 import {
   isLegacyTrace,
   openFileWithLegacyTraceViewer,
 } from './legacy_trace_viewer';
+import {showModal} from './modal';
 
 const ALL_PROCESSES_QUERY = 'select name, pid from process order by name;';
 
@@ -90,7 +92,7 @@ function createCannedQuery(query: string): (_: Event) => void {
 }
 
 const EXAMPLE_ANDROID_TRACE_URL =
-    'https://storage.googleapis.com/perfetto-misc/example_android_trace_30s_1';
+    'https://storage.googleapis.com/perfetto-misc/example_android_trace_15s';
 
 const EXAMPLE_CHROME_TRACE_URL =
     'https://storage.googleapis.com/perfetto-misc/example_chrome_trace_4s_1.json';
@@ -105,7 +107,7 @@ const SECTIONS = [
       {
         t: 'Open with legacy UI',
         a: popupFileSelectionDialogOldUI,
-        i: 'folder_open'
+        i: 'filter_none'
       },
       {t: 'Record new trace', a: navigateRecord, i: 'fiber_smart_record'},
       {t: 'Show timeline', a: navigateViewer, i: 'line_style'},
@@ -201,19 +203,8 @@ const vidSection = {
   expanded: true,
   items: [
     {t: 'Open video file', a: popupVideoSelectionDialog, i: 'folder_open'},
-    {t: 'View hotkeys', a: showHotkeys, i: 'description'},
   ],
 };
-
-function showHotkeys() {
-  let hks = '';
-  hks += '\'v\': Shows/hides video components \n';
-  hks += '\'p\': Enables/disables pausing and flagging synchronization \n';
-  hks += '\'mid + left mouse click\': Flags point on trace timeline and jumps ';
-  hks += 'to same position in video \n';
-  window.alert(hks);
-  return false;
-}
 
 function getFileElement(): HTMLInputElement {
   return document.querySelector('input[type=file]')! as HTMLInputElement;
@@ -254,24 +245,98 @@ function onInputElementFileSelectionChanged(e: Event) {
   }
   if (!e.target.files) return;
   const file = e.target.files[0];
+  // Reset the value so onchange will be fired with the same file.
+  e.target.value = '';
 
   globals.frontendLocalState.localOnlyMode = false;
 
   if (e.target.dataset['useCatapultLegacyUi'] === '1') {
-    // Switch back the old catapult UI.
+    // Switch back to the old catapult UI.
     if (isLegacyTrace(file.name)) {
       openFileWithLegacyTraceViewer(file);
-    } else {
-      globals.dispatch(Actions.convertTraceToJson({file}));
+      return;
     }
+
+    // Perfetto traces smaller than 50mb can be safely opened in the legacy UI.
+    if (file.size < 1024 * 1024 * 50) {
+      globals.dispatch(Actions.convertTraceToJson({file}));
+      return;
+    }
+
+    // Give the user the option to truncate larger perfetto traces.
+    const size = Math.round(file.size / (1024 * 1024));
+    showModal({
+      title: 'Legacy UI may fail to open this trace',
+      content:
+          m('div',
+            m('p',
+              `This trace is ${size}mb, opening it in the legacy UI ` +
+                  `may fail.`),
+            m('p',
+              'More options can be found at ',
+              m('a',
+                {
+                  href: 'https://goto.google.com/opening-large-traces',
+                  target: '_blank'
+                },
+                'go/opening-large-traces'),
+              '.')),
+      buttons: [
+        {
+          text: 'Open full trace (not recommended)',
+          primary: false,
+          id: 'open',
+          action: () => {
+            globals.dispatch(Actions.convertTraceToJson({file}));
+          }
+        },
+        {
+          text: 'Open beginning of trace',
+          primary: true,
+          id: 'truncate-start',
+          action: () => {
+            globals.dispatch(
+                Actions.convertTraceToJson({file, truncate: 'start'}));
+          }
+        },
+        {
+          text: 'Open end of trace',
+          primary: true,
+          id: 'truncate-end',
+          action: () => {
+            globals.dispatch(
+                Actions.convertTraceToJson({file, truncate: 'end'}));
+          }
+        }
+
+      ]
+    });
     return;
   }
 
   if (e.target.dataset['video'] === '1') {
+    // TODO(hjd): Update this to use a controller and publish.
+    globals.dispatch(Actions.executeQuery({
+      engineId: '0', queryId: 'command',
+      query: `select ts from slices where name = 'first_frame' union ` +
+             `select start_ts from trace_bounds`}));
+    setTimeout(() => {
+      const resp = globals.queryResults.get('command') as QueryResponse;
+      // First value is screenrecord trace event timestamp
+      // and second value is trace boundary's start timestamp
+      const offset = (parseInt(resp.rows[1]['ts'].toString()) -
+                      parseInt(resp.rows[0]['ts'].toString())) / 1e9;
+      globals.queryResults.delete('command');
+      globals.rafScheduler.scheduleFullRedraw();
+      globals.dispatch(Actions.deleteQuery({queryId: 'command'}));
+      globals.dispatch(Actions.setVideoOffset({offset}));
+    }, 1000);
     globals.dispatch(Actions.openVideoFromFile({file}));
-  } else {
-    globals.dispatch(Actions.openTraceFromFile({file}));
+    return;
   }
+
+  globals.dispatch(Actions.openTraceFromFile({file}));
+
 }
 
 function navigateRecord(e: Event) {
@@ -325,6 +390,7 @@ function downloadTrace(e: Event) {
     URL.revokeObjectURL(url);
   }
 }
+
 
 export class Sidebar implements m.ClassComponent {
   view() {
@@ -389,8 +455,28 @@ export class Sidebar implements m.ClassComponent {
     }
     return m(
         'nav.sidebar',
-        m('header', 'Perfetto'),
+        {
+          class: globals.frontendLocalState.sidebarVisible ? 'show-sidebar' :
+                                                             'hide-sidebar'
+        },
+        m(
+            'header',
+            'Perfetto',
+            m('button.sidebar-button',
+              {
+                onclick: () => {
+                  globals.frontendLocalState.toggleSidebar();
+                },
+              },
+              m('i.material-icons',
+                {
+                  title: globals.frontendLocalState.sidebarVisible ?
+                      'Hide menu' :
+                      'Show menu',
+                },
+                'menu')),
+            ),
         m('input[type=file]', {onchange: onInputElementFileSelectionChanged}),
-        ...vdomSections);
+        m('.sidebar-content', ...vdomSections));
   }
 }

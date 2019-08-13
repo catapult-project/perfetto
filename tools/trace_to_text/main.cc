@@ -16,12 +16,14 @@
 
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <vector>
 
 #include "perfetto/base/logging.h"
-#include "tools/trace_to_text/symbolize_profile.h"
 #include "tools/trace_to_text/trace_to_profile.h"
 #include "tools/trace_to_text/trace_to_systrace.h"
 #include "tools/trace_to_text/trace_to_text.h"
+#include "tools/trace_to_text/symbolize_profile.h"
 
 #if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
 #include "perfetto_version.gen.h"
@@ -33,7 +35,7 @@ namespace {
 
 int Usage(const char* argv0) {
   printf(
-      "Usage: %s systrace|json|text|profile [trace.pb] "
+      "Usage: %s systrace|json|text|profile [--truncate start|end] [trace.pb] "
       "[trace.txt]\n",
       argv0);
   return 1;
@@ -42,20 +44,38 @@ int Usage(const char* argv0) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  std::vector<const char*> positional_args;
+  perfetto::trace_to_text::Keep truncate_keep =
+      perfetto::trace_to_text::Keep::kAll;
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
       printf("%s\n", PERFETTO_GET_GIT_REVISION());
       return 0;
+    } else if (strcmp(argv[i], "-t") == 0 ||
+               strcmp(argv[i], "--truncate") == 0) {
+      i++;
+      if (i <= argc && strcmp(argv[i], "start") == 0) {
+        truncate_keep = perfetto::trace_to_text::Keep::kStart;
+      } else if (i <= argc && strcmp(argv[i], "end") == 0) {
+        truncate_keep = perfetto::trace_to_text::Keep::kEnd;
+      } else {
+        PERFETTO_ELOG(
+            "--truncate must specify whether to keep the end or the "
+            "start of the trace.");
+        return Usage(argv[0]);
+      }
+    } else {
+      positional_args.push_back(argv[i]);
     }
   }
 
-  if (argc < 2)
+  if (positional_args.size() < 1)
     return Usage(argv[0]);
 
   std::istream* input_stream;
   std::ifstream file_istream;
-  if (argc > 2) {
-    const char* file_path = argv[2];
+  if (positional_args.size() > 1) {
+    const char* file_path = positional_args[1];
     file_istream.open(file_path, std::ios_base::in | std::ios_base::binary);
     if (!file_istream.is_open())
       PERFETTO_FATAL("Could not open %s", file_path);
@@ -72,8 +92,8 @@ int main(int argc, char** argv) {
 
   std::ostream* output_stream;
   std::ofstream file_ostream;
-  if (argc > 3) {
-    const char* file_path = argv[3];
+  if (positional_args.size() > 2) {
+    const char* file_path = positional_args[2];
     file_ostream.open(file_path, std::ios_base::out | std::ios_base::trunc);
     if (!file_ostream.is_open())
       PERFETTO_FATAL("Could not open %s", file_path);
@@ -82,14 +102,22 @@ int main(int argc, char** argv) {
     output_stream = &std::cout;
   }
 
-  std::string format(argv[1]);
+  std::string format(positional_args[0]);
 
   if (format == "json")
     return perfetto::trace_to_text::TraceToSystrace(input_stream, output_stream,
+                                                    truncate_keep,
                                                     /*wrap_in_json=*/true);
   if (format == "systrace")
     return perfetto::trace_to_text::TraceToSystrace(input_stream, output_stream,
+                                                    truncate_keep,
                                                     /*wrap_in_json=*/false);
+  if (truncate_keep != perfetto::trace_to_text::Keep::kAll) {
+    PERFETTO_ELOG(
+        "--truncate is unsupported for text|profile|symbolize format.");
+    return 1;
+  }
+
   if (format == "text")
     return perfetto::trace_to_text::TraceToText(input_stream, output_stream);
 

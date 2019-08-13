@@ -120,6 +120,13 @@ class RepeatedFieldIterator {
     return *this;
   }
 
+  RepeatedFieldIterator operator++(int) {
+    PERFETTO_DCHECK(iter_ != end_);
+    RepeatedFieldIterator it(*this);
+    ++(*this);
+    return it;
+  }
+
  private:
   inline void FindNextMatchingId() {
     PERFETTO_DCHECK(iter_ != last_);
@@ -242,6 +249,17 @@ class TypedProtoDecoder : public TypedProtoDecoderBase {
   inline const Field& at() const {
     static_assert(FIELD_ID <= MAX_FIELD_ID, "FIELD_ID > MAX_FIELD_ID");
     return fields_[FIELD_ID];
+  }
+
+  TypedProtoDecoder(TypedProtoDecoder&& other) noexcept
+      : TypedProtoDecoderBase(std::move(other)) {
+    // If the moved-from decoder was using on-stack storage, we need to update
+    // our pointer to point to this decoder's on-stack storage.
+    if (fields_ == other.on_stack_storage_) {
+      fields_ = on_stack_storage_;
+      memcpy(on_stack_storage_, other.on_stack_storage_,
+             sizeof(on_stack_storage_));
+    }
   }
 
  private:

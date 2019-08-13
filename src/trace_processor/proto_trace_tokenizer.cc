@@ -18,7 +18,10 @@
 
 #include <string>
 
+#include <zlib.h>
+
 #include "perfetto/base/logging.h"
+#include "perfetto/ext/base/optional.h"
 #include "perfetto/ext/base/utils.h"
 #include "perfetto/protozero/proto_decoder.h"
 #include "perfetto/protozero/proto_utils.h"
@@ -35,6 +38,7 @@
 #include "perfetto/trace/interned_data/interned_data.pbzero.h"
 #include "perfetto/trace/profiling/profile_common.pbzero.h"
 #include "perfetto/trace/trace.pbzero.h"
+#include "perfetto/trace/track_event/source_location.pbzero.h"
 #include "perfetto/trace/track_event/task_execution.pbzero.h"
 #include "perfetto/trace/track_event/thread_descriptor.pbzero.h"
 #include "perfetto/trace/track_event/track_event.pbzero.h"
@@ -48,6 +52,9 @@ using protozero::proto_utils::MakeTagVarInt;
 using protozero::proto_utils::ParseVarInt;
 
 namespace {
+
+constexpr uint8_t kTracePacketTag =
+    MakeTagLengthDelimited(protos::pbzero::Trace::kPacketFieldNumber);
 
 template <typename MessageType>
 void InternMessage(TraceProcessorContext* context,
@@ -81,6 +88,33 @@ void InternMessage(TraceProcessorContext* context,
                           message_size) == 0));
 }
 
+TraceBlobView Decompress(TraceBlobView input) {
+  uint8_t out[4096];
+  std::string s;
+
+  z_stream stream{};
+  stream.next_in = const_cast<uint8_t*>(input.data());
+  stream.avail_in = static_cast<unsigned int>(input.length());
+
+  if (inflateInit(&stream) != Z_OK)
+    return TraceBlobView(nullptr, 0, 0);
+
+  int ret;
+  do {
+    stream.next_out = out;
+    stream.avail_out = sizeof(out);
+    ret = inflate(&stream, Z_NO_FLUSH);
+    if (ret != Z_STREAM_END && ret != Z_OK)
+      return TraceBlobView(nullptr, 0, 0);
+    s.append(reinterpret_cast<char*>(out), sizeof(out) - stream.avail_out);
+  } while (ret != Z_STREAM_END);
+  inflateEnd(&stream);
+
+  std::unique_ptr<uint8_t[]> output(new uint8_t[s.size()]);
+  memcpy(output.get(), s.data(), s.size());
+  return TraceBlobView(std::move(output), 0, s.size());
+}
+
 }  // namespace
 
 ProtoTraceTokenizer::ProtoTraceTokenizer(TraceProcessorContext* ctx)
@@ -104,8 +138,6 @@ util::Status ProtoTraceTokenizer::Parse(std::unique_ptr<uint8_t[]> owned_buf,
 
     // At this point we have enough data in |partial_buf_| to read at least the
     // field header and know the size of the next TracePacket.
-    constexpr uint8_t kTracePacketTag =
-        MakeTagLengthDelimited(protos::pbzero::Trace::kPacketFieldNumber);
     const uint8_t* pos = &partial_buf_[0];
     uint8_t proto_field_tag = *pos;
     uint64_t field_size = 0;
@@ -217,6 +249,34 @@ util::Status ProtoTraceTokenizer::ParsePacket(TraceBlobView packet) {
 
   if (decoder.has_thread_descriptor()) {
     ParseThreadDescriptorPacket(decoder);
+    return util::OkStatus();
+  }
+
+  if (decoder.has_compressed_packets()) {
+    protozero::ConstBytes field = decoder.compressed_packets();
+    const size_t field_off = packet.offset_of(field.data);
+    TraceBlobView compressed_packets = packet.slice(field_off, field.size);
+    TraceBlobView packets = Decompress(std::move(compressed_packets));
+
+    const uint8_t* start = packets.data();
+    const uint8_t* end = packets.data() + packets.length();
+    const uint8_t* ptr = start;
+    while ((end - ptr) > 2) {
+      const uint8_t* packet_start = ptr;
+      if (PERFETTO_UNLIKELY(*ptr != kTracePacketTag))
+        return util::ErrStatus("Expected TracePacket tag");
+      uint64_t packet_size = 0;
+      ptr = ParseVarInt(++ptr, end, &packet_size);
+      size_t packet_offset = static_cast<size_t>(ptr - start);
+      ptr += packet_size;
+      if (PERFETTO_UNLIKELY((ptr - packet_start) < 2 || ptr > end))
+        return util::ErrStatus("Invalid packet size");
+      util::Status status = ParsePacket(
+          packets.slice(packet_offset, static_cast<size_t>(packet_size)));
+      if (PERFETTO_UNLIKELY(!status.ok()))
+        return status;
+    }
+
     return util::OkStatus();
   }
 
@@ -382,7 +442,8 @@ void ProtoTraceTokenizer::ParseThreadDescriptorPacket(
   state->SetThreadDescriptor(
       thread_descriptor_decoder.pid(), thread_descriptor_decoder.tid(),
       thread_descriptor_decoder.reference_timestamp_us() * 1000,
-      thread_descriptor_decoder.reference_thread_time_us() * 1000);
+      thread_descriptor_decoder.reference_thread_time_us() * 1000,
+      thread_descriptor_decoder.reference_thread_instruction_count());
 
   base::StringView name;
   if (thread_descriptor_decoder.has_thread_name()) {
@@ -454,6 +515,10 @@ void ProtoTraceTokenizer::ParseTrackEventPacket(
       protos::pbzero::TrackEvent::kThreadTimeDeltaUsFieldNumber;
   constexpr auto kThreadTimeAbsoluteUsFieldNumber =
       protos::pbzero::TrackEvent::kThreadTimeAbsoluteUsFieldNumber;
+  constexpr auto kThreadInstructionCountDeltaFieldNumber =
+      protos::pbzero::TrackEvent::kThreadInstructionCountDeltaFieldNumber;
+  constexpr auto kThreadInstructionCountAbsoluteFieldNumber =
+      protos::pbzero::TrackEvent::kThreadInstructionCountAbsoluteFieldNumber;
 
   if (PERFETTO_UNLIKELY(!packet_decoder.has_trusted_packet_sequence_id())) {
     PERFETTO_ELOG("TrackEvent packet without trusted_packet_sequence_id");
@@ -477,6 +542,7 @@ void ProtoTraceTokenizer::ParseTrackEventPacket(
 
   int64_t timestamp;
   int64_t thread_timestamp = 0;
+  int64_t thread_instructions = 0;
 
   if (auto ts_delta_field =
           event_decoder.FindField(kTimestampDeltaUsFieldNumber)) {
@@ -502,7 +568,19 @@ void ProtoTraceTokenizer::ParseTrackEventPacket(
     thread_timestamp = tt_absolute_field.as_int64() * 1000;
   }
 
-  context_->sorter->PushTrackEventPacket(timestamp, thread_timestamp, state,
+  if (auto ti_delta_field =
+          event_decoder.FindField(kThreadInstructionCountDeltaFieldNumber)) {
+    thread_instructions =
+        state->IncrementAndGetTrackEventThreadInstructionCount(
+            ti_delta_field.as_int64());
+  } else if (auto ti_absolute_field = event_decoder.FindField(
+                 kThreadInstructionCountAbsoluteFieldNumber)) {
+    // One-off absolute timestamps don't affect delta computation.
+    thread_instructions = ti_absolute_field.as_int64();
+  }
+
+  context_->sorter->PushTrackEventPacket(timestamp, thread_timestamp,
+                                         thread_instructions, state,
                                          std::move(packet));
 }
 

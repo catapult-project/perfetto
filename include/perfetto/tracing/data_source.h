@@ -52,20 +52,48 @@ class PERFETTO_EXPORT DataSourceBase {
  public:
   virtual ~DataSourceBase();
 
+  // TODO(primiano): change the const& args below to be pointers instead. It
+  // makes it more awkward to handle output arguments and require mutable(s).
+  // This requires synchronizing a breaking API change for existing embedders.
+
   // OnSetup() is invoked when tracing is configured. In most cases this happens
   // just before starting the trace. In the case of deferred start (see
   // deferred_start in trace_config.proto) start might happen later.
-  struct SetupArgs {
+  class SetupArgs {
+   public:
     // This is valid only within the scope of the OnSetup() call and must not
     // be retained.
     const DataSourceConfig* config = nullptr;
   };
   virtual void OnSetup(const SetupArgs&);
 
-  struct StartArgs {};
+  class StartArgs {};
   virtual void OnStart(const StartArgs&);
 
-  struct StopArgs {};
+  class StopArgs {
+   public:
+    virtual ~StopArgs();
+
+    // HandleAsynchronously() can optionally be called to defer the tracing
+    // session stop and write tracing data just before stopping.
+    // This function returns a closure that must be invoked after the last
+    // trace events have been emitted. The returned closure can be called from
+    // any thread. The caller also needs to explicitly call TraceContext.Flush()
+    // from the last Trace() lambda invocation because no other implicit flushes
+    // will happen after the stop signal.
+    // When this function is called, the tracing service will defer the stop of
+    // the tracing session until the returned closure is invoked.
+    // However, the caller cannot hang onto this closure for too long. The
+    // tracing service will forcefully stop the tracing session without waiting
+    // for pending producers after TraceConfig.data_source_stop_timeout_ms
+    // (default: 5s, can be overridden by Consumers when starting a trace).
+    // If the closure is called after this timeout an error will be logged and
+    // the trace data emitted will not be present in the trace. No other
+    // functional side effects (e.g. crashes or corruptions) will happen. In
+    // other words, it is fine to accidentally hold onto this closure for too
+    // long but, if that happens, some tracing data will be lost.
+    virtual std::function<void()> HandleStopAsynchronously() const = 0;
+  };
   virtual void OnStop(const StopArgs&);
 };
 
@@ -87,6 +115,22 @@ class DataSource : public DataSourceBase {
     TracePacketHandle NewTracePacket() {
       return trace_writer_->NewTracePacket();
     }
+
+    // Forces a commit of the thread-local tracing data written so far to the
+    // service. This is almost never required (tracing data is periodically
+    // committed as trace pages are filled up) and has a non-negligible
+    // performance hit (requires an IPC + refresh of the current thread-local
+    // chunk). The only case when this should be used is when handling OnStop()
+    // asynchronously, to ensure sure that the data is committed before the
+    // Stop timeout expires.
+    // The TracePacketHandle obtained by the last NewTracePacket() call must be
+    // finalized before calling Flush() (either implicitly by going out of scope
+    // or by explicitly calling Finalize()).
+    // |cb| is an optional callback. When non-null it will request the
+    // service to ACK the flush and will be invoked on an internal thread after
+    // the service has  acknowledged it. The callback might be NEVER INVOKED if
+    // the service crashes or the IPC connection is dropped.
+    void Flush(std::function<void()> cb = {}) { trace_writer_->Flush(cb); }
 
     // Returns a RAII handle to access the data source instance, guaranteeing
     // that it won't be deleted on another thread (because of trace stopping)
@@ -216,7 +260,7 @@ class DataSource : public DataSourceBase {
         instances =
             static_state_.valid_instances.load(std::memory_order_acquire);
         instance_state = static_state_.TryGetCached(instances, i);
-        if (!instance_state || !instance_state->started)
+        if (!instance_state || !instance_state->trace_lambda_enabled)
           return;
         tls_inst.backend_id = instance_state->backend_id;
         tls_inst.buffer_id = instance_state->buffer_id;
@@ -269,6 +313,16 @@ class DataSource : public DataSourceBase {
 };
 
 }  // namespace perfetto
+
+// If a data source is used across translation units, this declaration must be
+// placed into the header file defining the data source.
+#define PERFETTO_DECLARE_DATA_SOURCE_STATIC_MEMBERS(X)         \
+  template <>                                                  \
+  perfetto::internal::DataSourceStaticState                    \
+      perfetto::DataSource<X>::static_state_;                  \
+  template <>                                                  \
+  thread_local perfetto::internal::DataSourceThreadLocalState* \
+      perfetto::DataSource<X>::tls_state_
 
 // The API client must use this in a translation unit. This is because it needs
 // to instantiate the static storage for the datasource to allow the fastpath

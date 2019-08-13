@@ -22,13 +22,12 @@
 namespace perfetto {
 namespace trace_to_text {
 
+enum class Keep { kStart = 0, kEnd, kAll };
+
 int TraceToSystrace(std::istream* input,
                     std::ostream* output,
+                    Keep truncate_keep,
                     bool wrap_in_json);
-
-int TraceToSystraceLegacy(std::istream* input,
-                          std::ostream* output,
-                          bool wrap_in_json);
 
 }  // namespace trace_to_text
 }  // namespace perfetto

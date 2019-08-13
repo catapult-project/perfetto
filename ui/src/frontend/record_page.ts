@@ -18,7 +18,7 @@ import * as m from 'mithril';
 
 import {Actions} from '../common/actions';
 import {MeminfoCounters, VmstatCounters} from '../common/protos';
-import {RecordMode, MAX_TIME} from '../common/state';
+import {MAX_TIME, RecordMode} from '../common/state';
 
 import {globals} from './globals';
 import {createPage} from './pages';
@@ -254,7 +254,7 @@ function CpuSettings(cssClass: string) {
       } as ProbeAttrs),
       m(Probe, {
         title: 'Syscalls',
-        img: '',
+        img: null,
         descr: `Tracks the enter and exit of all syscalls.`,
         setEnabled: (cfg, val) => cfg.cpuSyscall = val,
         isEnabled: (cfg) => cfg.cpuSyscall
@@ -414,7 +414,7 @@ function ChromeSettings(cssClass: string) {
       `.record-section${cssClass}`,
       m(Probe, {
         title: 'Task scheduling',
-        img: 'rec_atrace.png',
+        img: null,
         descr: `Records events about task scheduling and execution on all
                   threads`,
         setEnabled: (cfg, val) => cfg.taskScheduling = val,
@@ -422,7 +422,7 @@ function ChromeSettings(cssClass: string) {
       } as ProbeAttrs),
       m(Probe, {
         title: 'IPC flows',
-        img: 'rec_logcat.png',
+        img: null,
         descr: `Records flow events for passing of IPC messages between
                 processes.`,
         setEnabled: (cfg, val) => cfg.ipcFlows = val,
@@ -430,7 +430,7 @@ function ChromeSettings(cssClass: string) {
       } as ProbeAttrs),
       m(Probe, {
         title: 'Javascript execution',
-        img: 'rec_logcat.png',
+        img: null,
         descr: `Records events about Javascript execution in the renderer
                     processes.`,
         setEnabled: (cfg, val) => cfg.jsExecution = val,
@@ -438,7 +438,7 @@ function ChromeSettings(cssClass: string) {
       } as ProbeAttrs),
       m(Probe, {
         title: 'Web content rendering',
-        img: 'rec_logcat.png',
+        img: null,
         descr: `Records events about rendering, layout, and compositing of
         web content in Blink.`,
         setEnabled: (cfg, val) => cfg.webContentRendering = val,
@@ -446,7 +446,7 @@ function ChromeSettings(cssClass: string) {
       } as ProbeAttrs),
       m(Probe, {
         title: 'UI rendering & compositing',
-        img: 'rec_logcat.png',
+        img: null,
         descr: `Records events about rendering of browser UI surfaces and
         compositing of surfaces.`,
         setEnabled: (cfg, val) => cfg.uiRendering = val,
@@ -454,14 +454,14 @@ function ChromeSettings(cssClass: string) {
       } as ProbeAttrs),
       m(Probe, {
         title: 'Input events',
-        img: 'rec_logcat.png',
+        img: null,
         descr: `Records input events and their flow between processes.`,
         setEnabled: (cfg, val) => cfg.inputEvents = val,
         isEnabled: (cfg) => cfg.inputEvents
       } as ProbeAttrs),
       m(Probe, {
         title: 'Navigation & Loading',
-        img: 'rec_logcat.png',
+        img: null,
         descr: `Records network events for navigations and resources.`,
         setEnabled: (cfg, val) => cfg.navigationAndLoading = val,
         isEnabled: (cfg) => cfg.navigationAndLoading
@@ -513,11 +513,12 @@ function AdvancedSettings(cssClass: string) {
           set: (cfg, val) => cfg.ftraceExtraEvents = val,
           get: (cfg) => cfg.ftraceExtraEvents
         } as TextareaAttrs)),
-      m(Probe,
-        {
-          title: 'Screen Recording',
-          img: '',
-          descr: `Records the screen along with running a trace. Max
+      globals.state.videoEnabled ?
+          m(Probe,
+            {
+              title: 'Screen recording',
+              img: null,
+              descr: `Records the screen along with running a trace. Max
                   time of recording is 3 minutes (180 seconds).`,
           setEnabled: (cfg, val) => cfg.screenRecord = val,
           isEnabled: (cfg) => cfg.screenRecord,
@@ -530,14 +531,13 @@ function AdvancedSettings(cssClass: string) {
           unit: 'm:s',
           set: (cfg, val) => cfg.durationMs = val,
           get: (cfg) => cfg.durationMs,
-        } as SliderAttrs),));
+        } as SliderAttrs),) : null);
 }
 
 function Instructions(cssClass: string) {
-  const data = globals.trackDataStore.get('config') as {
-    commandline: string,
-    pbtxt: string,
-  } | null;
+  const data = globals.trackDataStore.get('config') as
+          {commandline: string, pbtxt: string} |
+      null;
 
   const cfg = globals.state.recordConfig;
   let time = cfg.durationMs / 1000;
@@ -548,12 +548,12 @@ function Instructions(cssClass: string) {
 
   const pbtx = data ? data.pbtxt : '';
   let cmd = '';
-
   if (cfg.screenRecord) {
-    cmd += `adb shell screenrecord --time-limit ${time}`;
-    cmd += ' "/sdcard/tracescr.mp4" &\\\n';
+    // Half-second delay to ensure Perfetto starts tracing before screenrecord
+    // starts recording
+    cmd += `(sleep 0.5 && adb shell screenrecord --time-limit ${time}`;
+    cmd += ' "/sdcard/tracescr.mp4") &\\\n';
   }
-
   cmd += 'adb shell perfetto \\\n';
   cmd += '  -c - --txt \\\n';
   cmd += '  -o /data/misc/perfetto-traces/trace \\\n';
@@ -608,6 +608,9 @@ function Instructions(cssClass: string) {
     globals.dispatch(Actions.setRecordConfig({config: traceCfg}));
   };
 
+  const bufferUsagePercentage =
+      ((globals.bufferUsage ? globals.bufferUsage : 0.0) * 100).toFixed(1);
+
   return m(
       `.record-section.instructions${cssClass}`,
       m('header', 'Instructions'),
@@ -620,7 +623,27 @@ function Instructions(cssClass: string) {
           m('option', {value: 'O'}, 'Android O-'),
           m('option', {value: 'L'}, 'Linux desktop'))),
       notes.length > 0 ? m('.note', notes) : [],
-      m(CodeSnippet, {text: cmd, hardWhitespace: true}), );
+      m(CodeSnippet, {text: cmd, hardWhitespace: true}),
+      globals.state.extensionInstalled ?
+          [
+            m('button',
+              {
+                onclick: () => globals.dispatch(Actions.startRecording({})),
+                disabled: globals.state.recordingInProgress
+              },
+              'Start Recording'),
+            m('button',
+              {
+                onclick: () => globals.dispatch(Actions.stopRecording({})),
+                disabled: !globals.state.recordingInProgress
+              },
+              'Stop Recording'),
+            m('label',
+              globals.state.recordingInProgress ?
+                  'Buffer usage: ' + bufferUsagePercentage + '%' :
+                  '')
+          ] :
+          []);
 }
 
 export const RecordPage = createPage({
@@ -651,6 +674,7 @@ export const RecordPage = createPage({
         '.record-page',
         m('.record-container',
           m('.record-menu',
+            {onclick: () => globals.rafScheduler.scheduleFullRedraw()},
             m('header', 'Trace config'),
             m(
                 'ul',
@@ -675,7 +699,7 @@ export const RecordPage = createPage({
                     m('.sub', 'CPU usage, scheduling, wakeups'))),
                 m('a[href="#!/record?p=gpu"]',
                   m(`li${routePage === 'gpu' ? '.active' : ''}`,
-                    m('i.material-icons', 'subtitles'),
+                    m('i.material-icons', 'aspect_ratio'),
                     m('.title', 'GPU'),
                     m('.sub', 'GPU frequency'))),
                 m('a[href="#!/record?p=power"]',

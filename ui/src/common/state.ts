@@ -29,7 +29,6 @@ export interface TrackState {
   kind: string;
   name: string;
   trackGroup?: string;
-  dataReq?: TrackDataRequest;
   config: {};
 }
 
@@ -40,12 +39,6 @@ export interface TrackGroupState {
   collapsed: boolean;
   tracks: string[];  // Child track ids.
   summaryTrackId: string;
-}
-
-export interface TrackDataRequest {
-  start: number;
-  end: number;
-  resolution: number;
 }
 
 export interface EngineConfig {
@@ -72,6 +65,7 @@ export interface TraceTime {
 
 export interface FrontendLocalState {
   visibleTraceTime: TraceTime;
+  curResolution: number;
   lastUpdate: number;  // Epoch in seconds (Date.now() / 1000).
 }
 
@@ -99,6 +93,11 @@ export interface SliceSelection {
   id: number;
 }
 
+export interface ChromeSliceSelection {
+  kind: 'CHROME_SLICE';
+  id: number;
+}
+
 export interface TimeSpanSelection {
   kind: 'TIMESPAN';
   startTs: number;
@@ -113,8 +112,8 @@ export interface ThreadStateSelection {
   state: string;
 }
 
-type Selection =
-    NoteSelection|SliceSelection|TimeSpanSelection|ThreadStateSelection;
+type Selection = NoteSelection|SliceSelection|ChromeSliceSelection|
+    TimeSpanSelection|ThreadStateSelection;
 
 export interface LogsPagination {
   offset: number;
@@ -140,6 +139,7 @@ export interface State {
   traceTime: TraceTime;
   trackGroups: ObjectById<TrackGroupState>;
   tracks: ObjectById<TrackState>;
+  visibleTracks: string[];
   scrollingTracks: string[];
   pinnedTracks: string[];
   queries: ObjectById<QueryConfig>;
@@ -160,7 +160,15 @@ export interface State {
 
   video: string | null;
   videoEnabled: boolean;
+  videoOffset: number;
+  videoNoteIds: string[];
+  scrubbingEnabled: boolean;
   flagPauseEnabled: boolean;
+  /**
+   * Trace recording
+   */
+  recordingInProgress: boolean;
+  extensionInstalled: boolean;
 }
 
 export const defaultTraceTime = {
@@ -282,6 +290,7 @@ export function createEmptyState(): State {
     traceTime: {...defaultTraceTime},
     tracks: {},
     trackGroups: {},
+    visibleTracks: [],
     pinnedTracks: [],
     scrollingTracks: [],
     queries: {},
@@ -294,6 +303,7 @@ export function createEmptyState(): State {
     frontendLocalState: {
       visibleTraceTime: {...defaultTraceTime},
       lastUpdate: 0,
+      curResolution: 0,
     },
 
     logsPagination: {
@@ -306,6 +316,11 @@ export function createEmptyState(): State {
 
     video: null,
     videoEnabled: false,
+    videoOffset: 0,
+    videoNoteIds: [],
+    scrubbingEnabled: false,
     flagPauseEnabled: false,
+    recordingInProgress: false,
+    extensionInstalled: false,
   };
 }

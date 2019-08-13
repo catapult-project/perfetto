@@ -26,6 +26,7 @@
 #include <set>
 #include <thread>
 
+#include "perfetto/ext/base/optional.h"
 #include "perfetto/ext/base/paged_memory.h"
 #include "perfetto/ext/base/pipe.h"
 #include "perfetto/ext/base/scoped_file.h"
@@ -34,13 +35,11 @@
 #include "perfetto/protozero/message.h"
 #include "perfetto/protozero/message_handle.h"
 #include "src/traced/probes/ftrace/ftrace_metadata.h"
-#include "src/traced/probes/ftrace/page_pool.h"
 #include "src/traced/probes/ftrace/proto_translation_table.h"
 
 namespace perfetto {
 
 class FtraceDataSource;
-struct FtraceThreadSync;
 class ProtoTranslationTable;
 
 namespace protos {
@@ -49,24 +48,29 @@ class FtraceEventBundle;
 }  // namespace pbzero
 }  // namespace protos
 
-
-// Reads raw ftrace data for a cpu and writes that into the perfetto userspace
-// buffer.
+// Reads raw ftrace data for a cpu, parses it, and writes it into the perfetto
+// tracing buffers.
 class CpuReader {
  public:
   using FtraceEventBundle = protos::pbzero::FtraceEventBundle;
 
-  CpuReader(const ProtoTranslationTable*,
-            FtraceThreadSync*,
+  struct PageHeader {
+    uint64_t timestamp;
+    uint64_t size;
+    bool lost_events;
+  };
+
+  CpuReader(const ProtoTranslationTable* table,
             size_t cpu,
-            int generation,
-            base::ScopedFile fd);
+            base::ScopedFile trace_fd);
   ~CpuReader();
 
-  // Drains all available data into the buffer of the passed data sources.
-  void Drain(const std::set<FtraceDataSource*>&);
-
-  void InterruptWorkerThreadWithSignal();
+  // Reads and parses all ftrace data for this cpu (in batches), until we catch
+  // up to the writer, or hit |max_pages|. Returns number of pages read.
+  size_t ReadCycle(uint8_t* parsing_buf,
+                   size_t parsing_buf_size_pages,
+                   size_t max_pages,
+                   const std::set<FtraceDataSource*>& started_data_sources);
 
   template <typename T>
   static bool ReadAndAdvance(const uint8_t** ptr, const uint8_t* end, T* out) {
@@ -145,6 +149,11 @@ class CpuReader {
         ((min & 0xffffff00ULL) << 12) | ((min & 0xffULL)));
   }
 
+  // Returns a parsed representation of the given raw ftrace page's header.
+  static base::Optional<CpuReader::PageHeader> ParsePageHeader(
+      const uint8_t** ptr,
+      uint16_t page_header_size_len);
+
   // Parse a raw ftrace page beginning at ptr and write the events a protos
   // into the provided bundle respecting the given event filter.
   // |table| contains the mix of compile time (e.g. proto field ids) and
@@ -178,25 +187,23 @@ class CpuReader {
                          FtraceMetadata* metadata);
 
  private:
-  static void RunWorkerThread(size_t cpu,
-                              int generation,
-                              int trace_fd,
-                              PagePool*,
-                              FtraceThreadSync*,
-                              uint16_t header_size_len);
-
   CpuReader(const CpuReader&) = delete;
   CpuReader& operator=(const CpuReader&) = delete;
 
-  const ProtoTranslationTable* const table_;
-  FtraceThreadSync* const thread_sync_;
-  const size_t cpu_;
-  PagePool pool_;
-  base::ScopedFile trace_fd_;
-  std::thread worker_thread_;
-  PERFETTO_THREAD_CHECKER(thread_checker_)
-};
+  // Reads at most |max_pages| of ftrace data, parses it, and writes it
+  // into |started_data_sources|. Returns number of pages read.
+  // See comment on ftrace_controller.cc:kMaxParsingWorkingSetPages for
+  // rationale behind the batching.
+  size_t ReadAndProcessBatch(
+      uint8_t* parsing_buf,
+      size_t max_pages,
+      bool first_batch_in_cycle,
+      const std::set<FtraceDataSource*>& started_data_sources);
 
+  const ProtoTranslationTable* const table_;
+  const size_t cpu_;
+  base::ScopedFile trace_fd_;
+};
 
 }  // namespace perfetto
 

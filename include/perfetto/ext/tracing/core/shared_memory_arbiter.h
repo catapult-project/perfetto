@@ -25,6 +25,7 @@
 
 #include "perfetto/base/export.h"
 #include "perfetto/ext/tracing/core/basic_types.h"
+#include "perfetto/ext/tracing/core/buffer_exhausted_policy.h"
 #include "perfetto/ext/tracing/core/tracing_service.h"
 
 namespace perfetto {
@@ -50,7 +51,9 @@ class PERFETTO_EXPORT SharedMemoryArbiter {
   // the Service to reconstruct TracePackets written by the same TraceWriter.
   // Returns null impl of TraceWriter if all WriterID slots are exhausted.
   virtual std::unique_ptr<TraceWriter> CreateTraceWriter(
-      BufferID target_buffer) = 0;
+      BufferID target_buffer,
+      BufferExhaustedPolicy buffer_exhausted_policy =
+          BufferExhaustedPolicy::kDefault) = 0;
 
   // Binds the provided unbound StartupTraceWriterRegistry to the arbiter's SMB.
   // Normally this happens when the perfetto service has been initialized and we
@@ -79,7 +82,15 @@ class PERFETTO_EXPORT SharedMemoryArbiter {
   // committed in the shared memory buffer.
   virtual void NotifyFlushComplete(FlushRequestID) = 0;
 
-  // Implemented in src/core/shared_memory_arbiter_impl.cc .
+  // Implemented in src/core/shared_memory_arbiter_impl.cc.
+  // Args:
+  // |SharedMemory|: the shared memory buffer to use.
+  // |page_size|: a multiple of 4KB that defines the granularity of tracing
+  // pages. See tradeoff considerations in shared_memory_abi.h.
+  // |ProducerEndpoint|: The service's producer endpoint used e.g. to commit
+  // chunks and register trace writers.
+  // |TaskRunner|: Task runner for perfetto's main thread, which executes the
+  // OnPagesCompleteCallback and IPC calls to the |ProducerEndpoint|.
   static std::unique_ptr<SharedMemoryArbiter> CreateInstance(
       SharedMemory*,
       size_t page_size,

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {fromNs} from '../../common/time';
+import {fromNs, toNs} from '../../common/time';
 import {LIMIT} from '../../common/track_data';
 
 import {
@@ -29,24 +29,16 @@ import {
 
 class ThreadStateTrackController extends TrackController<Config, Data> {
   static readonly kind = THREAD_STATE_TRACK_KIND;
-  private busy = false;
   private setup = false;
 
-  onBoundsChange(start: number, end: number, resolution: number): void {
-    this.update(start, end, resolution);
-  }
-
-  private async update(start: number, end: number, resolution: number):
-      Promise<void> {
-    if (this.busy) return;
-    this.busy = true;
-
-    const startNs = Math.round(start * 1e9);
-    const endNs = Math.round(end * 1e9);
+  async onBoundsChange(start: number, end: number, resolution: number):
+      Promise<Data> {
+    const startNs = toNs(start);
+    const endNs = toNs(end);
     let minNs = 0;
     if (groupBusyStates(resolution)) {
       // Ns for 1px (the smallest state to display)
-      minNs = Math.round(resolution * 1 * 1e9);
+      minNs = Math.round(resolution * 1e9);
     }
 
     if (this.setup === false) {
@@ -198,17 +190,7 @@ class ThreadStateTrackController extends TrackController<Config, Data> {
       summary.state[row] = internString(cols[3].stringValues![row]);
     }
 
-    this.publish(summary);
-    this.busy = false;
-  }
-
-  private async query(query: string) {
-    const result = await this.engine.query(query);
-    if (result.error) {
-      console.error(`Query error "${query}": ${result.error}`);
-      throw new Error(`Query error "${query}": ${result.error}`);
-    }
-    return result;
+    return summary;
   }
 
   onDestroy(): void {

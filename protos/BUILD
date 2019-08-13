@@ -235,7 +235,7 @@ proto_library(
     srcs = [
         "perfetto/metrics/android/batt_metric.proto",
         "perfetto/metrics/android/cpu_metric.proto",
-        "perfetto/metrics/android/heap_profile.proto",
+        "perfetto/metrics/android/heap_profile_callsite_stats.proto",
         "perfetto/metrics/android/ion_metric.proto",
         "perfetto/metrics/android/lmk_metric.proto",
         "perfetto/metrics/android/mem_metric.proto",
@@ -281,7 +281,7 @@ proto_library(
     srcs = [
         "perfetto/metrics/android/batt_metric.proto",
         "perfetto/metrics/android/cpu_metric.proto",
-        "perfetto/metrics/android/heap_profile.proto",
+        "perfetto/metrics/android/heap_profile_callsite_stats.proto",
         "perfetto/metrics/android/ion_metric.proto",
         "perfetto/metrics/android/lmk_metric.proto",
         "perfetto/metrics/android/mem_metric.proto",
@@ -387,6 +387,7 @@ proto_library(
         "perfetto/trace/test_event.proto",
         "perfetto/trace/trace.proto",
         "perfetto/trace/trace_packet.proto",
+        "perfetto/trace/trace_packet_defaults.proto",
     ],
     has_services = 1,
     cc_api_version = 2,
@@ -418,6 +419,7 @@ proto_library(
     name = "trace_android",
     srcs = [
         "perfetto/trace/android/android_log.proto",
+        "perfetto/trace/android/graphics_frame_event.proto",
         "perfetto/trace/android/packages_list.proto",
     ],
     has_services = 1,
@@ -458,6 +460,7 @@ proto_library(
     name = "trace_android_zero",
     srcs = [
         "perfetto/trace/android/android_log.proto",
+        "perfetto/trace/android/graphics_frame_event.proto",
         "perfetto/trace/android/packages_list.proto",
     ],
     deps = [
@@ -1095,6 +1098,7 @@ pbzero_cc_proto_library(
 proto_library(
     name = "trace_profiling",
     srcs = [
+        "perfetto/trace/profiling/heap_graph.proto",
         "perfetto/trace/profiling/profile_common.proto",
         "perfetto/trace/profiling/profile_packet.proto",
     ],
@@ -1132,6 +1136,7 @@ java_proto_library(
 proto_library(
     name = "trace_profiling_zero",
     srcs = [
+        "perfetto/trace/profiling/heap_graph.proto",
         "perfetto/trace/profiling/profile_common.proto",
         "perfetto/trace/profiling/profile_packet.proto",
     ],
@@ -1265,7 +1270,9 @@ proto_library(
     name = "trace_track_event",
     srcs = [
         "perfetto/trace/track_event/debug_annotation.proto",
+        "perfetto/trace/track_event/log_message.proto",
         "perfetto/trace/track_event/process_descriptor.proto",
+        "perfetto/trace/track_event/source_location.proto",
         "perfetto/trace/track_event/task_execution.proto",
         "perfetto/trace/track_event/thread_descriptor.proto",
         "perfetto/trace/track_event/track_event.proto",
@@ -1305,7 +1312,9 @@ proto_library(
     name = "trace_track_event_zero",
     srcs = [
         "perfetto/trace/track_event/debug_annotation.proto",
+        "perfetto/trace/track_event/log_message.proto",
         "perfetto/trace/track_event/process_descriptor.proto",
+        "perfetto/trace/track_event/source_location.proto",
         "perfetto/trace/track_event/task_execution.proto",
         "perfetto/trace/track_event/thread_descriptor.proto",
         "perfetto/trace/track_event/track_event.proto",
@@ -1330,6 +1339,7 @@ proto_library(
         "perfetto/trace/test_event.proto",
         "perfetto/trace/trace.proto",
         "perfetto/trace/trace_packet.proto",
+        "perfetto/trace/trace_packet_defaults.proto",
         "perfetto/trace/trigger.proto",
     ],
     deps = [
