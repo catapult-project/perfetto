@@ -65,7 +65,8 @@ html {
 }
 
 html,
-body {
+body,
+body>main {
     height: 100%;
     width: 100%;
     padding: 0;
@@ -86,14 +87,14 @@ table {
     user-select: text;
 }
 
-body {
+body>main {
     display: grid;
     grid-template-areas:
       "sidebar topbar"
       "sidebar alerts"
       "sidebar page";
-    grid-template-rows: var(--topbar-height) auto 1fr;
-    grid-template-columns: var(--sidebar-width) auto;
+    grid-template-rows: auto auto 1fr;
+    grid-template-columns: auto 1fr;
     color: #121212;
 }
 
@@ -131,6 +132,43 @@ button.close {
     position: relative;
     display: flex;
     flex-direction: column
+}
+
+.split-panel {
+  flex: 1;
+  display: flex;
+  flex-flow: row;
+  position: relative;
+}
+
+.video-panel {
+  position: relative;
+  background-color: #262f3c;
+}
+
+.video-panel-setting {
+  position: sticky;
+  word-wrap: break-word;
+  font-weight: 400;
+  font-size: 15px;
+  font-family: "Raleway";
+  line-height: 1.5;
+  padding: 10px 10px 0px 10px;
+  width: 320px;
+  color: #fff
+}
+
+.video-panel-message {
+  position: sticky;
+  word-wrap: break-word;
+  font-weight: 400;
+  font-size: 12px;
+  font-family: "Raleway";
+  line-height: 1.5;
+  padding: 10px 10px 10px 10px;
+  width: 320px;
+  border-bottom: 1px solid #404854;
+  color: #b4b7ba;
 }
 
 .alerts {
@@ -271,9 +309,10 @@ button.close {
             grid-area: title;
             margin: 0;
             font-size: 14px;
+            overflow: hidden;
             text-overflow: ellipsis;
             text-align: left;
-            direction: rtl;
+            white-space: nowrap;
             font-family: 'Google Sans';
             color: hsl(213, 22%, 30%);
         }
@@ -414,6 +453,10 @@ canvas.main-canvas {
     }
   }
 
+}
+
+.tickbar {
+  height: 5px;
 }
 
 .notes-panel {
@@ -597,10 +640,11 @@ button.query-ctrl {
     h1 {
       grid-area: title;
       font-size: 14px;
+      overflow: hidden;
       text-overflow: ellipsis;
       font-family: 'Google Sans';
+      white-space: nowrap;
       text-align: left;
-      direction: rtl;
     }
     .fold-button {
       grid-area: fold-button;

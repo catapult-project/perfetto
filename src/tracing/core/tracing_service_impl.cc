@@ -38,16 +38,19 @@
 #include <algorithm>
 
 #include "perfetto/base/build_config.h"
-#include "perfetto/base/file_utils.h"
 #include "perfetto/base/task_runner.h"
-#include "perfetto/base/utils.h"
-#include "perfetto/tracing/core/consumer.h"
-#include "perfetto/tracing/core/data_source_config.h"
-#include "perfetto/tracing/core/producer.h"
-#include "perfetto/tracing/core/shared_memory.h"
-#include "perfetto/tracing/core/shared_memory_abi.h"
-#include "perfetto/tracing/core/trace_packet.h"
-#include "perfetto/tracing/core/trace_writer.h"
+#include "perfetto/ext/base/file_utils.h"
+#include "perfetto/ext/base/metatrace.h"
+#include "perfetto/ext/base/utils.h"
+#include "perfetto/ext/base/watchdog.h"
+#include "perfetto/ext/tracing/core/consumer.h"
+#include "perfetto/ext/tracing/core/producer.h"
+#include "perfetto/ext/tracing/core/shared_memory.h"
+#include "perfetto/ext/tracing/core/shared_memory_abi.h"
+#include "perfetto/ext/tracing/core/trace_packet.h"
+#include "perfetto/ext/tracing/core/trace_writer.h"
+#include "perfetto/tracing/core/data_source_descriptor.h"
+#include "perfetto/tracing/core/tracing_service_state.h"
 #include "src/tracing/core/packet_stream_validator.h"
 #include "src/tracing/core/shared_memory_arbiter_impl.h"
 #include "src/tracing/core/trace_buffer.h"
@@ -64,7 +67,6 @@
 namespace perfetto {
 
 namespace {
-constexpr size_t kDefaultShmPageSize = base::kPageSize;
 constexpr int kMaxBuffersPerConsumer = 128;
 constexpr base::TimeMillis kSnapshotsInterval(10 * 1000);
 constexpr int kDefaultWriteIntoFilePeriodMs = 5000;
@@ -108,10 +110,34 @@ uid_t geteuid() {
 }
 #endif  // PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
 
+// Partially encodes a CommitDataRequest in an int32 for the purposes of
+// metatracing. Note that it encodes only the bottom 10 bits of the producer id
+// (which is technically 16 bits wide).
+//
+// Format (by bit range):
+// [   31 ][         30 ][             29:20 ][            19:10 ][        9:0]
+// [unused][has flush id][num chunks to patch][num chunks to move][producer id]
+static int32_t EncodeCommitDataRequest(ProducerID producer_id,
+                                       const CommitDataRequest& req_untrusted) {
+  uint32_t cmov = static_cast<uint32_t>(req_untrusted.chunks_to_move_size());
+  uint32_t cpatch = static_cast<uint32_t>(req_untrusted.chunks_to_patch_size());
+  uint32_t has_flush_id = req_untrusted.flush_request_id() != 0;
+
+  uint32_t mask = (1 << 10) - 1;
+  uint32_t acc = 0;
+  acc |= has_flush_id << 30;
+  acc |= (cpatch & mask) << 20;
+  acc |= (cmov & mask) << 10;
+  acc |= (producer_id & mask);
+  return static_cast<int32_t>(acc);
+}
+
 }  // namespace
 
 // These constants instead are defined in the header because are used by tests.
 constexpr size_t TracingServiceImpl::kDefaultShmSize;
+constexpr size_t TracingServiceImpl::kDefaultShmPageSize;
+
 constexpr size_t TracingServiceImpl::kMaxShmSize;
 constexpr uint32_t TracingServiceImpl::kDataSourceStopTimeoutMs;
 constexpr uint8_t TracingServiceImpl::kSyncMarker[];
@@ -145,7 +171,8 @@ TracingServiceImpl::ConnectProducer(Producer* producer,
                                     const std::string& producer_name,
                                     size_t shared_memory_size_hint_bytes,
                                     bool in_process,
-                                    ProducerSMBScrapingMode smb_scraping_mode) {
+                                    ProducerSMBScrapingMode smb_scraping_mode,
+                                    size_t shared_memory_page_size_hint_bytes) {
   PERFETTO_DCHECK_THREAD(thread_checker_);
 
   if (lockdown_mode_ && uid != geteuid()) {
@@ -179,6 +206,7 @@ TracingServiceImpl::ConnectProducer(Producer* producer,
   auto it_and_inserted = producers_.emplace(id, endpoint.get());
   PERFETTO_DCHECK(it_and_inserted.second);
   endpoint->shmem_size_hint_bytes_ = shared_memory_size_hint_bytes;
+  endpoint->shmem_page_size_hint_bytes_ = shared_memory_page_size_hint_bytes;
   task_runner_->PostTask(std::bind(&Producer::OnConnect, endpoint->producer_));
 
   return std::move(endpoint);
@@ -381,7 +409,7 @@ bool TracingServiceImpl::EnableTracing(ConsumerEndpointImpl* consumer,
     for (auto& kv : tracing_sessions_) {
       if (kv.second.config.unique_session_name() == name) {
         PERFETTO_ELOG(
-            "A trace wtih this unique session name (%s) already exists",
+            "A trace with this unique session name (%s) already exists",
             name.c_str());
         return false;
       }
@@ -801,22 +829,13 @@ void TracingServiceImpl::DisableTracing(TracingSessionID tsid,
   for (auto& data_source_inst : tracing_session->data_source_instances) {
     const ProducerID producer_id = data_source_inst.first;
     DataSourceInstance& instance = data_source_inst.second;
-    const DataSourceInstanceID ds_inst_id = instance.instance_id;
     ProducerEndpointImpl* producer = GetProducer(producer_id);
     PERFETTO_DCHECK(producer);
     PERFETTO_DCHECK(instance.state == DataSourceInstance::CONFIGURED ||
                     instance.state == DataSourceInstance::STARTING ||
                     instance.state == DataSourceInstance::STARTED);
-    if (instance.will_notify_on_stop && !disable_immediately) {
-      instance.state = DataSourceInstance::STOPPING;
-    } else {
-      instance.state = DataSourceInstance::STOPPED;
-    }
-    if (tracing_session->consumer_maybe_null) {
-      tracing_session->consumer_maybe_null->OnDataSourceInstanceStateChange(
-          *producer, instance);
-    }
-    producer->StopDataSource(ds_inst_id);
+    StopDataSourceInstance(producer, tracing_session, &instance,
+                           disable_immediately);
   }
 
   // Either this request is flagged with |disable_immediately| or there are no
@@ -828,15 +847,12 @@ void TracingServiceImpl::DisableTracing(TracingSessionID tsid,
 
   tracing_session->state = TracingSession::DISABLING_WAITING_STOP_ACKS;
   auto weak_this = weak_ptr_factory_.GetWeakPtr();
-  auto timeout_ms = override_data_source_test_timeout_ms_for_testing
-                        ? override_data_source_test_timeout_ms_for_testing
-                        : kDataSourceStopTimeoutMs;
   task_runner_->PostDelayedTask(
       [weak_this, tsid] {
         if (weak_this)
           weak_this->OnDisableTracingTimeout(tsid);
       },
-      timeout_ms);
+      tracing_session->data_source_stop_timeout_ms());
 
   // Deliberately NOT removing the session from |tracing_session_|, it's still
   // needed to call ReadBuffers(). FreeBuffers() will erase() the session.
@@ -854,8 +870,13 @@ void TracingServiceImpl::NotifyDataSourceStarted(
     if (!instance)
       continue;
 
+    // If the tracing session was already stopped, ignore this notification.
+    if (tracing_session.state != TracingSession::STARTED)
+      continue;
+
     if (instance->state != DataSourceInstance::STARTING) {
-      PERFETTO_ELOG("Data source instance in incorrect state.");
+      PERFETTO_ELOG("Started data source instance in incorrect state: %d",
+                    instance->state);
       continue;
     }
 
@@ -883,11 +904,10 @@ void TracingServiceImpl::NotifyDataSourceStopped(
       continue;
 
     if (instance->state != DataSourceInstance::STOPPING) {
-      PERFETTO_ELOG("Data source instance in incorrect state.");
+      PERFETTO_ELOG("Stopped data source instance in incorrect state: %d",
+                    instance->state);
       continue;
     }
-    PERFETTO_DCHECK(tracing_session.state ==
-                    TracingSession::DISABLING_WAITING_STOP_ACKS);
 
     instance->state = DataSourceInstance::STOPPED;
 
@@ -899,6 +919,9 @@ void TracingServiceImpl::NotifyDataSourceStopped(
     }
 
     if (!tracing_session.AllDataSourceInstancesStopped())
+      continue;
+
+    if (tracing_session.state != TracingSession::DISABLING_WAITING_STOP_ACKS)
       continue;
 
     // All data sources acked the termination.
@@ -1375,7 +1398,7 @@ void TracingServiceImpl::PeriodicClearIncrementalStateTask(
 // Note: when this is called to write into a file passed when starting tracing
 // |consumer| will be == nullptr (as opposite to the case of a consumer asking
 // to send the trace data back over IPC).
-void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
+bool TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
                                      ConsumerEndpointImpl* consumer) {
   PERFETTO_DCHECK_THREAD(thread_checker_);
   TracingSession* tracing_session = GetTracingSession(tsid);
@@ -1383,9 +1406,10 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
     // This will be hit systematically from the PostDelayedTask when directly
     // writing into the file (in which case consumer == nullptr). Suppress the
     // log in this case as it's just spam.
-    if (consumer)
+    if (consumer) {
       PERFETTO_DLOG("Cannot ReadBuffers(): no tracing session is active");
-    return;  // TODO(primiano): signal failure?
+    }
+    return false;
   }
 
   // When a tracing session is waiting for a trigger it is considered empty. If
@@ -1395,24 +1419,22 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
   // the consumer know there is no data.
   if (!tracing_session->config.trigger_config().triggers().empty() &&
       tracing_session->received_triggers.empty()) {
-    if (consumer)
-      consumer->consumer_->OnTraceData({}, /* has_more = */ false);
     PERFETTO_DLOG(
         "ReadBuffers(): tracing session has not received a trigger yet.");
-    return;
+    return false;
   }
 
   // This can happen if the file is closed by a previous task because it reaches
   // |max_file_size_bytes|.
   if (!tracing_session->write_into_file && !consumer)
-    return;
+    return false;
 
   if (tracing_session->write_into_file && consumer) {
     // If the consumer enabled tracing and asked to save the contents into the
     // passed file makes little sense to also try to read the buffers over IPC,
     // as that would just steal data from the periodic draining task.
     PERFETTO_DFATAL("Consumer trying to read from write_into_file session.");
-    return;
+    return false;
   }
 
   std::vector<TracePacket> packets;
@@ -1426,8 +1448,13 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
   base::TimeMillis now = base::GetWallTimeMs();
   if (now >= tracing_session->last_snapshot_time + kSnapshotsInterval) {
     tracing_session->last_snapshot_time = now;
+    // Don't emit the stats immediately, but instead wait until no more trace
+    // data is available to read. That way, any problems that occur while
+    // reading from the buffers are reflected in the emitted stats. This is
+    // particularly important for use cases where ReadBuffers is only ever
+    // called after the tracing session is stopped.
+    tracing_session->should_emit_stats = true;
     SnapshotSyncMarker(&packets);
-    SnapshotStats(tracing_session, &packets);
 
     if (!tracing_session->config.builtin_data_sources()
              .disable_clock_snapshotting()) {
@@ -1492,6 +1519,7 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
       PERFETTO_DCHECK(sequence_properties.producer_uid_trusted != kInvalidUid);
       PERFETTO_DCHECK(packet.size() > 0);
       if (!PacketStreamValidator::Validate(packet.slices())) {
+        tracing_session->invalid_packets++;
         PERFETTO_DLOG("Dropping invalid packet");
         continue;
       }
@@ -1529,6 +1557,19 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
       packets.emplace_back(std::move(packet));
     }  // for(packets...)
   }    // for(buffers...)
+
+  const bool has_more = did_hit_threshold;
+  if (!has_more && tracing_session->should_emit_stats) {
+    size_t prev_packets_size = packets.size();
+    SnapshotStats(tracing_session, &packets);
+    tracing_session->should_emit_stats = false;
+
+    // Add sizes of packets emitted by SnapshotStats.
+    for (size_t i = prev_packets_size; i < packets.size(); ++i) {
+      packets_bytes += packets[i].size();
+      total_slices += packets[i].slices().size();
+    }
+  }
 
   // If the caller asked us to write into a file by setting
   // |write_into_file| == true in the trace config, drain the packets read
@@ -1601,7 +1642,7 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
       tracing_session->write_period_ms = 0;
       if (tracing_session->state == TracingSession::STARTED)
         DisableTracing(tsid);
-      return;
+      return true;
     }
 
     auto weak_this = weak_ptr_factory_.GetWeakPtr();
@@ -1611,10 +1652,9 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
             weak_this->ReadBuffers(tsid, nullptr);
         },
         tracing_session->delay_to_next_write_period_ms());
-    return;
+    return true;
   }  // if (tracing_session->write_into_file)
 
-  const bool has_more = did_hit_threshold;
   if (has_more) {
     auto weak_consumer = consumer->GetWeakPtr();
     auto weak_this = weak_ptr_factory_.GetWeakPtr();
@@ -1627,6 +1667,7 @@ void TracingServiceImpl::ReadBuffers(TracingSessionID tsid,
 
   // Keep this as tail call, just in case the consumer re-enters.
   consumer->consumer_->OnTraceData(std::move(packets), has_more);
+  return true;
 }
 
 void TracingServiceImpl::FreeBuffers(TracingSessionID tsid) {
@@ -1715,9 +1756,28 @@ void TracingServiceImpl::RegisterDataSource(ProducerID producer_id,
   }
 }
 
+void TracingServiceImpl::StopDataSourceInstance(ProducerEndpointImpl* producer,
+                                                TracingSession* tracing_session,
+                                                DataSourceInstance* instance,
+                                                bool disable_immediately) {
+  const DataSourceInstanceID ds_inst_id = instance->instance_id;
+  if (instance->will_notify_on_stop && !disable_immediately) {
+    instance->state = DataSourceInstance::STOPPING;
+  } else {
+    instance->state = DataSourceInstance::STOPPED;
+  }
+  if (tracing_session->consumer_maybe_null) {
+    tracing_session->consumer_maybe_null->OnDataSourceInstanceStateChange(
+        *producer, *instance);
+  }
+  producer->StopDataSource(ds_inst_id);
+}
+
 void TracingServiceImpl::UnregisterDataSource(ProducerID producer_id,
                                               const std::string& name) {
   PERFETTO_DCHECK_THREAD(thread_checker_);
+  PERFETTO_DLOG("Producer %" PRIu16 " unregistered data source \"%s\"",
+                producer_id, name.c_str());
   PERFETTO_CHECK(producer_id);
   ProducerEndpointImpl* producer = GetProducer(producer_id);
   PERFETTO_DCHECK(producer);
@@ -1728,7 +1788,8 @@ void TracingServiceImpl::UnregisterDataSource(ProducerID producer_id,
         DataSourceInstanceID ds_inst_id = it->second.instance_id;
         if (it->second.state != DataSourceInstance::STOPPED) {
           if (it->second.state != DataSourceInstance::STOPPING)
-            producer->StopDataSource(ds_inst_id);
+            StopDataSourceInstance(producer, &kv.second, &it->second,
+                                   /* disable_immediately = */ false);
           // Mark the instance as stopped immediately, since we are
           // unregistering it below.
           if (it->second.state == DataSourceInstance::STOPPING)
@@ -1822,6 +1883,7 @@ TracingServiceImpl::DataSourceInstance* TracingServiceImpl::SetupDataSource(
 
   DataSourceConfig& ds_config = ds_instance->config;
   ds_config.set_trace_duration_ms(tracing_session->config.duration_ms());
+  ds_config.set_stop_timeout_ms(tracing_session->data_source_stop_timeout_ms());
   ds_config.set_enable_extra_guardrails(
       tracing_session->config.enable_extra_guardrails());
   ds_config.set_tracing_session_id(tracing_session->id);
@@ -1833,14 +1895,22 @@ TracingServiceImpl::DataSourceInstance* TracingServiceImpl::SetupDataSource(
                 ds_config.name().c_str(), global_id);
   if (!producer->shared_memory()) {
     // Determine the SMB page size. Must be an integer multiple of 4k.
+    // As for the SMB size below, the decision tree is as follows:
+    // 1. Give priority to what is defined in the trace config.
+    // 2. If unset give priority to the hint passed by the producer.
+    // 3. Keep within bounds and ensure it's a multiple of 4k.
     size_t page_size = std::min<size_t>(producer_config.page_size_kb() * 1024,
                                         SharedMemoryABI::kMaxPageSize);
+    if (page_size == 0) {
+      page_size = std::min<size_t>(producer->shmem_page_size_hint_bytes_,
+                                   SharedMemoryABI::kMaxPageSize);
+    }
     if (page_size < base::kPageSize || page_size % base::kPageSize != 0)
       page_size = kDefaultShmPageSize;
     producer->shared_buffer_page_size_kb_ = page_size / 1024;
 
     // Determine the SMB size. Must be an integer multiple of the SMB page size.
-    // The decisional tree is as follows:
+    // The decision tree is as follows:
     // 1. Give priority to what defined in the trace config.
     // 2. If unset give priority to the hint passed by the producer.
     // 3. Keep within bounds and ensure it's a multiple of the page size.
@@ -1941,7 +2011,10 @@ void TracingServiceImpl::ApplyChunkPatches(
     static_assert(std::numeric_limits<ChunkID>::max() == kMaxChunkID,
                   "Add a '|| chunk_id > kMaxChunkID' below if this fails");
     if (!writer_id || writer_id > kMaxWriterID || !buf) {
-      PERFETTO_ELOG(
+      // This can genuinely happen when the trace is stopped. The producers
+      // might see the stop signal with some delay and try to keep sending
+      // patches left soon after.
+      PERFETTO_DLOG(
           "Received invalid chunks_to_patch request from Producer: %" PRIu16
           ", BufferID: %" PRIu32 " ChunkdID: %" PRIu32 " WriterID: %" PRIu16,
           producer_id_trusted, chunk.target_buffer(), chunk_id, writer_id);
@@ -2095,7 +2168,7 @@ void TracingServiceImpl::SnapshotSyncMarker(std::vector<TracePacket>* packets) {
     PERFETTO_CHECK(packet.SerializeToArray(dst, size_left));
     sync_marker_packet_size_ += static_cast<size_t>(packet.ByteSize());
     PERFETTO_CHECK(sync_marker_packet_size_ <= sizeof(sync_marker_packet_));
-  };
+  }
   packets->emplace_back();
   packets->back().AddSlice(&sync_marker_packet_[0], sync_marker_packet_size_);
 }
@@ -2109,7 +2182,7 @@ void TracingServiceImpl::SnapshotClocks(std::vector<TracePacket>* packets,
     !PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
   struct {
     clockid_t id;
-    protos::ClockSnapshot::Clock::Type type;
+    protos::ClockSnapshot::Clock::BuiltinClocks type;
     struct timespec ts;
   } clocks[] = {
       {CLOCK_BOOTTIME, protos::ClockSnapshot::Clock::BOOTTIME, {0, 0}},
@@ -2141,9 +2214,9 @@ void TracingServiceImpl::SnapshotClocks(std::vector<TracePacket>* packets,
         clock.type == protos::ClockSnapshot::Clock::BOOTTIME) {
       packet.set_timestamp(
           static_cast<uint64_t>(base::FromPosixTimespec(clock.ts).count()));
-    };
+    }
     protos::ClockSnapshot::Clock* c = clock_snapshot->add_clocks();
-    c->set_type(clock.type);
+    c->set_clock_id(clock.type);
     c->set_timestamp(
         static_cast<uint64_t>(base::FromPosixTimespec(clock.ts).count()));
   }
@@ -2152,7 +2225,7 @@ void TracingServiceImpl::SnapshotClocks(std::vector<TracePacket>* packets,
   if (set_root_timestamp)
     packet.set_timestamp(wall_time_ns);
   protos::ClockSnapshot::Clock* c = clock_snapshot->add_clocks();
-  c->set_type(protos::ClockSnapshot::Clock::MONOTONIC);
+  c->set_clock_id(protos::ClockSnapshot::Clock::MONOTONIC);
   c->set_timestamp(wall_time_ns);
 #endif  // !PERFETTO_BUILDFLAG(PERFETTO_OS_MACOSX)
 
@@ -2190,6 +2263,7 @@ TraceStats TracingServiceImpl::GetTraceStats(TracingSession* tracing_session) {
   trace_stats.set_total_buffers(static_cast<uint32_t>(buffers_.size()));
   trace_stats.set_chunks_discarded(chunks_discarded_);
   trace_stats.set_patches_discarded(patches_discarded_);
+  trace_stats.set_invalid_packets(tracing_session->invalid_packets);
 
   for (BufferID buf_id : tracing_session->buffers_index) {
     TraceBuffer* buf = GetBufferByID(buf_id);
@@ -2340,9 +2414,12 @@ void TracingServiceImpl::ConsumerEndpointImpl::ReadBuffers() {
   PERFETTO_DCHECK_THREAD(thread_checker_);
   if (!tracing_session_id_) {
     PERFETTO_LOG("Consumer called ReadBuffers() but tracing was not active");
+    consumer_->OnTraceData({}, /* has_more = */ false);
     return;
   }
-  service_->ReadBuffers(tracing_session_id_, this);
+  if (!service_->ReadBuffers(tracing_session_id_, this)) {
+    consumer_->OnTraceData({}, /* has_more = */ false);
+  }
 }
 
 void TracingServiceImpl::ConsumerEndpointImpl::FreeBuffers() {
@@ -2483,6 +2560,36 @@ TracingServiceImpl::ConsumerEndpointImpl::AddObservableEvents() {
   return observable_events_.get();
 }
 
+void TracingServiceImpl::ConsumerEndpointImpl::QueryServiceState(
+    QueryServiceStateCallback callback) {
+  PERFETTO_DCHECK_THREAD(thread_checker_);
+  TracingServiceState svc_state;
+
+  const auto& sessions = service_->tracing_sessions_;
+  svc_state.set_num_sessions(static_cast<int>(sessions.size()));
+
+  int num_started = 0;
+  for (const auto& kv : sessions)
+    num_started += kv.second.state == TracingSession::State::STARTED ? 1 : 0;
+  svc_state.set_num_sessions_started(static_cast<int>(num_started));
+
+  for (const auto& kv : service_->producers_) {
+    auto* producer = svc_state.add_producers();
+    producer->set_id(static_cast<int>(kv.first));
+    producer->set_name(kv.second->name_);
+    producer->set_uid(static_cast<int32_t>(producer->uid()));
+  }
+
+  for (const auto& kv : service_->data_sources_) {
+    const auto& registered_data_source = kv.second;
+    auto* data_source = svc_state.add_data_sources();
+    *data_source->mutable_ds_descriptor() = registered_data_source.descriptor;
+    data_source->set_producer_id(
+        static_cast<int>(registered_data_source.producer_id));
+  }
+  callback(/*success=*/true, svc_state);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // TracingServiceImpl::ProducerEndpointImpl implementation
 ////////////////////////////////////////////////////////////////////////////////
@@ -2548,6 +2655,11 @@ void TracingServiceImpl::ProducerEndpointImpl::CommitData(
     const CommitDataRequest& req_untrusted,
     CommitDataCallback callback) {
   PERFETTO_DCHECK_THREAD(thread_checker_);
+
+  if (metatrace::IsEnabled(metatrace::TAG_TRACE_SERVICE)) {
+    PERFETTO_METATRACE_COUNTER(TAG_TRACE_SERVICE, TRACE_SERVICE_COMMIT_DATA,
+                               EncodeCommitDataRequest(id_, req_untrusted));
+  }
 
   if (!shared_memory_) {
     PERFETTO_DLOG(
@@ -2659,8 +2771,11 @@ TracingServiceImpl::ProducerEndpointImpl::GetInProcessShmemArbiter() {
 
 // Can be called on any thread.
 std::unique_ptr<TraceWriter>
-TracingServiceImpl::ProducerEndpointImpl::CreateTraceWriter(BufferID buf_id) {
-  return GetInProcessShmemArbiter()->CreateTraceWriter(buf_id);
+TracingServiceImpl::ProducerEndpointImpl::CreateTraceWriter(
+    BufferID buf_id,
+    BufferExhaustedPolicy buffer_exhausted_policy) {
+  return GetInProcessShmemArbiter()->CreateTraceWriter(buf_id,
+                                                       buffer_exhausted_policy);
 }
 
 void TracingServiceImpl::ProducerEndpointImpl::NotifyFlushComplete(

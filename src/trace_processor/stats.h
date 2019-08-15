@@ -30,7 +30,6 @@ namespace stats {
   F(android_log_num_skipped,                  kSingle,  kError,    kTrace),    \
   F(android_log_num_total,                    kSingle,  kInfo,     kTrace),    \
   F(atrace_tgid_mismatch,                     kSingle,  kError,    kTrace),    \
-  F(clock_snapshot_not_monotonic,             kSingle,  kError,    kTrace),    \
   F(counter_events_out_of_order,              kSingle,  kError,    kAnalysis), \
   F(ftrace_bundle_tokenizer_errors,           kSingle,  kError,    kAnalysis), \
   F(ftrace_cpu_bytes_read_begin,              kIndexed, kInfo,     kTrace),    \
@@ -49,6 +48,10 @@ namespace stats {
   F(ftrace_cpu_overrun_end,                   kIndexed, kDataLoss, kTrace),    \
   F(ftrace_cpu_read_events_begin,             kIndexed, kInfo,     kTrace),    \
   F(ftrace_cpu_read_events_end,               kIndexed, kInfo,     kTrace),    \
+  F(fuchsia_non_numeric_counters,             kSingle,  kError,    kAnalysis), \
+  F(fuchsia_timestamp_overflow,               kSingle,  kError,    kAnalysis), \
+  F(gpu_counters_invalid_spec,                kSingle,  kError,    kAnalysis), \
+  F(gpu_counters_missing_spec,                kSingle,  kError,    kAnalysis), \
   F(guess_trace_type_duration_ns,             kSingle,  kInfo,     kAnalysis), \
   F(interned_data_tokenizer_errors,           kSingle,  kInfo,     kAnalysis), \
   F(invalid_clock_snapshots,                  kSingle,  kError,    kAnalysis), \
@@ -81,6 +84,7 @@ namespace stats {
   F(traced_buf_patches_succeeded,             kIndexed, kInfo,     kTrace),    \
   F(traced_buf_readaheads_failed,             kIndexed, kInfo,     kTrace),    \
   F(traced_buf_readaheads_succeeded,          kIndexed, kInfo,     kTrace),    \
+  F(traced_buf_trace_writer_packet_loss,      kIndexed, kInfo,     kTrace),    \
   F(traced_buf_write_wrap_count,              kIndexed, kInfo,     kTrace),    \
   F(traced_chunks_discarded,                  kSingle,  kInfo,     kTrace),    \
   F(traced_data_sources_registered,           kSingle,  kInfo,     kTrace),    \
@@ -90,6 +94,7 @@ namespace stats {
   F(traced_producers_seen,                    kSingle,  kInfo,     kTrace),    \
   F(traced_total_buffers,                     kSingle,  kInfo,     kTrace),    \
   F(traced_tracing_sessions,                  kSingle,  kInfo,     kTrace),    \
+  F(track_event_parser_errors,                kSingle,  kInfo,     kAnalysis), \
   F(track_event_tokenizer_errors,             kSingle,  kInfo,     kAnalysis), \
   F(track_event_tokenizer_skipped_packets,    kSingle,  kInfo,     kAnalysis), \
   F(vmstat_unknown_keys,                      kSingle,  kError,    kAnalysis), \
@@ -102,7 +107,10 @@ namespace stats {
   F(heapprofd_invalid_string_id,              kSingle,  kError,    kTrace),    \
   F(heapprofd_invalid_mapping_id,             kSingle,  kError,    kTrace),    \
   F(heapprofd_invalid_frame_id,               kSingle,  kError,    kTrace),    \
-  F(heapprofd_invalid_callstack_id,           kSingle,  kError,    kTrace)
+  F(heapprofd_invalid_callstack_id,           kSingle,  kError,    kTrace),    \
+  F(metatrace_overruns,                       kSingle,  kError,    kTrace),    \
+  F(packages_list_has_parse_errors,           kSingle,  kError,    kTrace),    \
+  F(packages_list_has_read_errors,            kSingle,  kError,    kTrace)
 // clang-format on
 
 enum Type {

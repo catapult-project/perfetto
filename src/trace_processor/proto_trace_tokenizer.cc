@@ -18,10 +18,14 @@
 
 #include <string>
 
+#include <zlib.h>
+
 #include "perfetto/base/logging.h"
-#include "perfetto/base/utils.h"
+#include "perfetto/ext/base/optional.h"
+#include "perfetto/ext/base/utils.h"
 #include "perfetto/protozero/proto_decoder.h"
 #include "perfetto/protozero/proto_utils.h"
+#include "src/trace_processor/clock_tracker.h"
 #include "src/trace_processor/event_tracker.h"
 #include "src/trace_processor/process_tracker.h"
 #include "src/trace_processor/stats.h"
@@ -30,10 +34,13 @@
 #include "src/trace_processor/trace_storage.h"
 
 #include "perfetto/config/trace_config.pbzero.h"
+#include "perfetto/trace/clock_snapshot.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace_event.pbzero.h"
 #include "perfetto/trace/ftrace/ftrace_event_bundle.pbzero.h"
 #include "perfetto/trace/interned_data/interned_data.pbzero.h"
+#include "perfetto/trace/profiling/profile_common.pbzero.h"
 #include "perfetto/trace/trace.pbzero.h"
+#include "perfetto/trace/track_event/source_location.pbzero.h"
 #include "perfetto/trace/track_event/task_execution.pbzero.h"
 #include "perfetto/trace/track_event/thread_descriptor.pbzero.h"
 #include "perfetto/trace/track_event/track_event.pbzero.h"
@@ -48,13 +55,16 @@ using protozero::proto_utils::ParseVarInt;
 
 namespace {
 
+constexpr uint8_t kTracePacketTag =
+    MakeTagLengthDelimited(protos::pbzero::Trace::kPacketFieldNumber);
+
 template <typename MessageType>
 void InternMessage(TraceProcessorContext* context,
                    ProtoIncrementalState::PacketSequenceState* state,
                    TraceBlobView message) {
   constexpr auto kIidFieldNumber = MessageType::kIidFieldNumber;
 
-  uint32_t iid = 0;
+  uint64_t iid = 0;
   auto message_start = message.data();
   auto message_size = message.length();
   protozero::ProtoDecoder decoder(message_start, message_size);
@@ -65,7 +75,7 @@ void InternMessage(TraceProcessorContext* context,
     context->storage->IncrementStats(stats::interned_data_tokenizer_errors);
     return;
   }
-  iid = field.as_uint32();
+  iid = field.as_uint64();
 
   auto res = state->GetInternedDataMap<MessageType>()->emplace(
       iid,
@@ -78,6 +88,33 @@ void InternMessage(TraceProcessorContext* context,
                   (res.first->second.message.length() == message_size &&
                    memcmp(res.first->second.message.data(), message_start,
                           message_size) == 0));
+}
+
+TraceBlobView Decompress(TraceBlobView input) {
+  uint8_t out[4096];
+  std::string s;
+
+  z_stream stream{};
+  stream.next_in = const_cast<uint8_t*>(input.data());
+  stream.avail_in = static_cast<unsigned int>(input.length());
+
+  if (inflateInit(&stream) != Z_OK)
+    return TraceBlobView(nullptr, 0, 0);
+
+  int ret;
+  do {
+    stream.next_out = out;
+    stream.avail_out = sizeof(out);
+    ret = inflate(&stream, Z_NO_FLUSH);
+    if (ret != Z_STREAM_END && ret != Z_OK)
+      return TraceBlobView(nullptr, 0, 0);
+    s.append(reinterpret_cast<char*>(out), sizeof(out) - stream.avail_out);
+  } while (ret != Z_STREAM_END);
+  inflateEnd(&stream);
+
+  std::unique_ptr<uint8_t[]> output(new uint8_t[s.size()]);
+  memcpy(output.get(), s.data(), s.size());
+  return TraceBlobView(std::move(output), 0, s.size());
 }
 
 }  // namespace
@@ -103,8 +140,6 @@ util::Status ProtoTraceTokenizer::Parse(std::unique_ptr<uint8_t[]> owned_buf,
 
     // At this point we have enough data in |partial_buf_| to read at least the
     // field header and know the size of the next TracePacket.
-    constexpr uint8_t kTracePacketTag =
-        MakeTagLengthDelimited(protos::pbzero::Trace::kPacketFieldNumber);
     const uint8_t* pos = &partial_buf_[0];
     uint8_t proto_field_tag = *pos;
     uint64_t field_size = 0;
@@ -188,12 +223,52 @@ util::Status ProtoTraceTokenizer::ParsePacket(TraceBlobView packet) {
   auto timestamp = decoder.has_timestamp()
                        ? static_cast<int64_t>(decoder.timestamp())
                        : latest_timestamp_;
+
+  // If the TracePacket specifies a non-zero clock-id, translate the timestamp
+  // into the trace-time clock domain.
+  if (decoder.timestamp_clock_id()) {
+    PERFETTO_DCHECK(decoder.has_timestamp());
+    ClockTracker::ClockId clock_id = decoder.timestamp_clock_id();
+    const uint32_t seq_id = decoder.trusted_packet_sequence_id();
+    bool is_seq_scoped = ClockTracker::IsReservedSeqScopedClockId(clock_id);
+    if (is_seq_scoped) {
+      if (!seq_id) {
+        return util::ErrStatus(
+            "TracePacket specified a sequence-local clock id (%" PRIu32
+            ") but the TraceWriter's sequence_id is zero (the service is "
+            "probably too old)",
+            seq_id);
+      }
+      clock_id = ClockTracker::SeqScopedClockIdToGlobal(
+          seq_id, decoder.timestamp_clock_id());
+    }
+    auto trace_ts = context_->clock_tracker->ToTraceTime(clock_id, timestamp);
+    if (!trace_ts.has_value()) {
+      // ToTraceTime() will increase the |clock_sync_failure| stat on failure.
+      static const char seq_extra_err[] =
+          " Because the clock id is sequence-scoped, the ClockSnapshot must be "
+          "emitted on the same TraceWriter sequence of the packet that refers "
+          "to that clock id.";
+      return util::ErrStatus(
+          "Failed to convert TracePacket's timestamp from clock_id=%" PRIu32
+          " seq_id=%" PRIu32
+          ". This is usually due to the lack of a prior ClockSnapshot proto.%s",
+          decoder.timestamp_clock_id(), seq_id,
+          is_seq_scoped ? seq_extra_err : "");
+    }
+    timestamp = trace_ts.value();
+  }
   latest_timestamp_ = std::max(timestamp, latest_timestamp_);
 
   if (decoder.incremental_state_cleared()) {
     HandleIncrementalStateCleared(decoder);
   } else if (decoder.previous_packet_dropped()) {
     HandlePreviousPacketDropped(decoder);
+  }
+
+  if (decoder.has_clock_snapshot()) {
+    return ParseClockSnapshot(decoder.clock_snapshot(),
+                              decoder.trusted_packet_sequence_id());
   }
 
   if (decoder.has_interned_data()) {
@@ -216,6 +291,34 @@ util::Status ProtoTraceTokenizer::ParsePacket(TraceBlobView packet) {
 
   if (decoder.has_thread_descriptor()) {
     ParseThreadDescriptorPacket(decoder);
+    return util::OkStatus();
+  }
+
+  if (decoder.has_compressed_packets()) {
+    protozero::ConstBytes field = decoder.compressed_packets();
+    const size_t field_off = packet.offset_of(field.data);
+    TraceBlobView compressed_packets = packet.slice(field_off, field.size);
+    TraceBlobView packets = Decompress(std::move(compressed_packets));
+
+    const uint8_t* start = packets.data();
+    const uint8_t* end = packets.data() + packets.length();
+    const uint8_t* ptr = start;
+    while ((end - ptr) > 2) {
+      const uint8_t* packet_start = ptr;
+      if (PERFETTO_UNLIKELY(*ptr != kTracePacketTag))
+        return util::ErrStatus("Expected TracePacket tag");
+      uint64_t packet_size = 0;
+      ptr = ParseVarInt(++ptr, end, &packet_size);
+      size_t packet_offset = static_cast<size_t>(ptr - start);
+      ptr += packet_size;
+      if (PERFETTO_UNLIKELY((ptr - packet_start) < 2 || ptr > end))
+        return util::ErrStatus("Invalid packet size");
+      util::Status status = ParsePacket(
+          packets.slice(packet_offset, static_cast<size_t>(packet_size)));
+      if (PERFETTO_UNLIKELY(!status.ok()))
+        return status;
+    }
+
     return util::OkStatus();
   }
 
@@ -244,9 +347,12 @@ util::Status ProtoTraceTokenizer::ParsePacket(TraceBlobView packet) {
     }
   }
 
+  auto* state = GetIncrementalStateForPacketSequence(
+      decoder.trusted_packet_sequence_id());
+
   // Use parent data and length because we want to parse this again
   // later to get the exact type of the packet.
-  context_->sorter->PushTracePacket(timestamp, std::move(packet));
+  context_->sorter->PushTracePacket(timestamp, state, std::move(packet));
 
   return util::OkStatus();
 }
@@ -298,9 +404,9 @@ void ProtoTraceTokenizer::ParseInternedData(
         context_, state, interned_data.slice(offset, it->size()));
   }
 
-  for (auto it = interned_data_decoder.legacy_event_names(); it; ++it) {
+  for (auto it = interned_data_decoder.event_names(); it; ++it) {
     size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::LegacyEventName>(
+    InternMessage<protos::pbzero::EventName>(
         context_, state, interned_data.slice(offset, it->size()));
   }
 
@@ -313,6 +419,44 @@ void ProtoTraceTokenizer::ParseInternedData(
   for (auto it = interned_data_decoder.source_locations(); it; ++it) {
     size_t offset = interned_data.offset_of(it->data());
     InternMessage<protos::pbzero::SourceLocation>(
+        context_, state, interned_data.slice(offset, it->size()));
+  }
+
+  for (auto it = interned_data_decoder.build_ids(); it; ++it) {
+    size_t offset = interned_data.offset_of(it->data());
+    InternMessage<protos::pbzero::InternedString>(
+        context_, state, interned_data.slice(offset, it->size()));
+  }
+  for (auto it = interned_data_decoder.mapping_paths(); it; ++it) {
+    size_t offset = interned_data.offset_of(it->data());
+    InternMessage<protos::pbzero::InternedString>(
+        context_, state, interned_data.slice(offset, it->size()));
+  }
+  for (auto it = interned_data_decoder.function_names(); it; ++it) {
+    size_t offset = interned_data.offset_of(it->data());
+    InternMessage<protos::pbzero::InternedString>(
+        context_, state, interned_data.slice(offset, it->size()));
+  }
+
+  for (auto it = interned_data_decoder.mappings(); it; ++it) {
+    size_t offset = interned_data.offset_of(it->data());
+    InternMessage<protos::pbzero::Mapping>(
+        context_, state, interned_data.slice(offset, it->size()));
+  }
+  for (auto it = interned_data_decoder.frames(); it; ++it) {
+    size_t offset = interned_data.offset_of(it->data());
+    InternMessage<protos::pbzero::Frame>(
+        context_, state, interned_data.slice(offset, it->size()));
+  }
+  for (auto it = interned_data_decoder.callstacks(); it; ++it) {
+    size_t offset = interned_data.offset_of(it->data());
+    InternMessage<protos::pbzero::Callstack>(
+        context_, state, interned_data.slice(offset, it->size()));
+  }
+
+  for (auto it = interned_data_decoder.log_message_body(); it; ++it) {
+    size_t offset = interned_data.offset_of(it->data());
+    InternMessage<protos::pbzero::LogMessageBody>(
         context_, state, interned_data.slice(offset, it->size()));
   }
 }
@@ -346,9 +490,88 @@ void ProtoTraceTokenizer::ParseThreadDescriptorPacket(
   state->SetThreadDescriptor(
       thread_descriptor_decoder.pid(), thread_descriptor_decoder.tid(),
       thread_descriptor_decoder.reference_timestamp_us() * 1000,
-      thread_descriptor_decoder.reference_thread_time_us() * 1000);
-  // TODO(eseckler): Handle other thread_descriptor fields (e.g. thread
-  // name/type).
+      thread_descriptor_decoder.reference_thread_time_us() * 1000,
+      thread_descriptor_decoder.reference_thread_instruction_count());
+
+  base::StringView name;
+  if (thread_descriptor_decoder.has_thread_name()) {
+    name = thread_descriptor_decoder.thread_name();
+  } else if (thread_descriptor_decoder.has_chrome_thread_type()) {
+    using protos::pbzero::ThreadDescriptor;
+    switch (thread_descriptor_decoder.chrome_thread_type()) {
+      case ThreadDescriptor::CHROME_THREAD_MAIN:
+        name = "CrProcessMain";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_IO:
+        name = "ChromeIOThread";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_POOL_FG_WORKER:
+        name = "ThreadPoolForegroundWorker&";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_POOL_BG_WORKER:
+        name = "ThreadPoolBackgroundWorker&";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_POOL_FB_BLOCKING:
+        name = "ThreadPoolSingleThreadForegroundBlocking&";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_POOL_BG_BLOCKING:
+        name = "ThreadPoolSingleThreadBackgroundBlocking&";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_POOL_SERVICE:
+        name = "ThreadPoolService";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_COMPOSITOR_WORKER:
+        name = "CompositorTileWorker&";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_COMPOSITOR:
+        name = "Compositor";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_VIZ_COMPOSITOR:
+        name = "VizCompositorThread";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_SERVICE_WORKER:
+        name = "ServiceWorkerThread&";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_MEMORY_INFRA:
+        name = "MemoryInfra";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_SAMPLING_PROFILER:
+        name = "StackSamplingProfiler";
+        break;
+      case ThreadDescriptor::CHROME_THREAD_UNSPECIFIED:
+        name = "ChromeUnspecified";
+        break;
+    }
+  }
+
+  if (!name.empty()) {
+    auto thread_name_id = context_->storage->InternString(name);
+    ProcessTracker* procs = context_->process_tracker.get();
+    procs->UpdateThreadName(
+        static_cast<uint32_t>(thread_descriptor_decoder.tid()), thread_name_id);
+  }
+}
+
+util::Status ProtoTraceTokenizer::ParseClockSnapshot(ConstBytes blob,
+                                                     uint32_t seq_id) {
+  std::map<ClockTracker::ClockId, int64_t> clock_map;
+  protos::pbzero::ClockSnapshot::Decoder evt(blob.data, blob.size);
+  for (auto it = evt.clocks(); it; ++it) {
+    protos::pbzero::ClockSnapshot::Clock::Decoder clk(it->data(), it->size());
+    ClockTracker::ClockId clock_id = clk.clock_id();
+    if (ClockTracker::IsReservedSeqScopedClockId(clk.clock_id())) {
+      if (!seq_id) {
+        return util::ErrStatus(
+            "ClockSnapshot packet is specifying a sequence-scoped clock id "
+            "(%" PRIu64 ") but the TracePacket sequence_id is zero",
+            clock_id);
+      }
+      clock_id = ClockTracker::SeqScopedClockIdToGlobal(seq_id, clk.clock_id());
+    }
+    clock_map[clock_id] = static_cast<int64_t>(clk.timestamp());
+  }
+  context_->clock_tracker->AddSnapshot(clock_map);
+  return util::OkStatus();
 }
 
 void ProtoTraceTokenizer::ParseTrackEventPacket(
@@ -362,6 +585,10 @@ void ProtoTraceTokenizer::ParseTrackEventPacket(
       protos::pbzero::TrackEvent::kThreadTimeDeltaUsFieldNumber;
   constexpr auto kThreadTimeAbsoluteUsFieldNumber =
       protos::pbzero::TrackEvent::kThreadTimeAbsoluteUsFieldNumber;
+  constexpr auto kThreadInstructionCountDeltaFieldNumber =
+      protos::pbzero::TrackEvent::kThreadInstructionCountDeltaFieldNumber;
+  constexpr auto kThreadInstructionCountAbsoluteFieldNumber =
+      protos::pbzero::TrackEvent::kThreadInstructionCountAbsoluteFieldNumber;
 
   if (PERFETTO_UNLIKELY(!packet_decoder.has_trusted_packet_sequence_id())) {
     PERFETTO_ELOG("TrackEvent packet without trusted_packet_sequence_id");
@@ -385,6 +612,7 @@ void ProtoTraceTokenizer::ParseTrackEventPacket(
 
   int64_t timestamp;
   int64_t thread_timestamp = 0;
+  int64_t thread_instructions = 0;
 
   if (auto ts_delta_field =
           event_decoder.FindField(kTimestampDeltaUsFieldNumber)) {
@@ -410,7 +638,19 @@ void ProtoTraceTokenizer::ParseTrackEventPacket(
     thread_timestamp = tt_absolute_field.as_int64() * 1000;
   }
 
-  context_->sorter->PushTrackEventPacket(timestamp, thread_timestamp, state,
+  if (auto ti_delta_field =
+          event_decoder.FindField(kThreadInstructionCountDeltaFieldNumber)) {
+    thread_instructions =
+        state->IncrementAndGetTrackEventThreadInstructionCount(
+            ti_delta_field.as_int64());
+  } else if (auto ti_absolute_field = event_decoder.FindField(
+                 kThreadInstructionCountAbsoluteFieldNumber)) {
+    // One-off absolute timestamps don't affect delta computation.
+    thread_instructions = ti_absolute_field.as_int64();
+  }
+
+  context_->sorter->PushTrackEventPacket(timestamp, thread_timestamp,
+                                         thread_instructions, state,
                                          std::move(packet));
 }
 

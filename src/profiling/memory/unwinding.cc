@@ -44,12 +44,12 @@
 
 #include <procinfo/process_map.h>
 
-#include "perfetto/base/file_utils.h"
 #include "perfetto/base/logging.h"
-#include "perfetto/base/scoped_file.h"
-#include "perfetto/base/string_utils.h"
 #include "perfetto/base/task_runner.h"
-#include "perfetto/base/thread_task_runner.h"
+#include "perfetto/ext/base/file_utils.h"
+#include "perfetto/ext/base/scoped_file.h"
+#include "perfetto/ext/base/string_utils.h"
+#include "perfetto/ext/base/thread_task_runner.h"
 
 #include "src/profiling/memory/utils.h"
 #include "src/profiling/memory/wire_protocol.h"
@@ -240,16 +240,6 @@ void UnwindingWorker::OnDisconnect(base::UnixSocket* self) {
   ClientData& client_data = it->second;
   SharedRingBuffer& shmem = client_data.shmem;
 
-  // Currently, these stats are used to determine whether the application
-  // disconnected due to an error condition (i.e. buffer overflow) or
-  // volutarily. Because a buffer overflow leads to an immediate disconnect, we
-  // do not need these stats when heapprofd tears down the tracing session.
-  //
-  // TODO(fmayer): We should make it that normal disconnects also go through
-  // this code path, so we can write other stats to the result. This will also
-  // allow us to free the bookkeeping data earlier for processes that exit
-  // during the session. See TODO in
-  // HeapprofdProducer::HandleSocketDisconnected.
   SharedRingBuffer::Stats stats = {};
   {
     auto lock = shmem.AcquireLock(ScopedSpinlock::Mode::Try);
@@ -393,7 +383,14 @@ void UnwindingWorker::PostDisconnectSocket(pid_t pid) {
 }
 
 void UnwindingWorker::HandleDisconnectSocket(pid_t pid) {
-  client_data_.erase(pid);
+  auto it = client_data_.find(pid);
+  if (it == client_data_.end()) {
+    PERFETTO_DFATAL_OR_ELOG("Trying to disconnect unknown socket.");
+    return;
+  }
+  ClientData& client_data = it->second;
+  // Shutdown and call OnDisconnect handler.
+  client_data.sock->Shutdown(/* notify= */ true);
 }
 
 UnwindingWorker::Delegate::~Delegate() = default;

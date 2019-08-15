@@ -17,32 +17,24 @@
 #ifndef SRC_TRACE_PROCESSOR_TRACE_PROCESSOR_IMPL_H_
 #define SRC_TRACE_PROCESSOR_TRACE_PROCESSOR_IMPL_H_
 
-#include <sqlite3.h>
 #include <atomic>
 #include <functional>
 #include <memory>
 #include <vector>
 
-#include "perfetto/base/string_view.h"
+#include "perfetto/ext/base/string_view.h"
 #include "perfetto/trace_processor/basic_types.h"
+#include "perfetto/trace_processor/status.h"
 #include "perfetto/trace_processor/trace_processor.h"
 #include "src/trace_processor/metrics/descriptors.h"
 #include "src/trace_processor/metrics/metrics.h"
 #include "src/trace_processor/scoped_db.h"
+#include "src/trace_processor/sqlite.h"
 #include "src/trace_processor/trace_processor_context.h"
 
 namespace perfetto {
 
 namespace trace_processor {
-
-enum TraceType {
-  kUnknownTraceType,
-  kProtoTraceType,
-  kJsonTraceType,
-  kFuchsiaTraceType,
-};
-
-TraceType GuessTraceType(const uint8_t* data, size_t size);
 
 // Coordinates the loading of traces from an arbitrary source and allows
 // execution of SQL queries on the events in these traces.

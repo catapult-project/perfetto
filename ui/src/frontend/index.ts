@@ -15,18 +15,28 @@
 import '../tracks/all_frontend';
 
 import {applyPatches, Patch} from 'immer';
+import * as MicroModal from 'micromodal';
 import * as m from 'mithril';
 
+import {assertExists} from '../base/logging';
 import {forwardRemoteCalls} from '../base/remote';
 import {Actions} from '../common/actions';
-import {LogBoundsKey, LogEntriesKey, LogExistsKey} from '../common/logs';
+import {
+  LogBoundsKey,
+  LogEntriesKey,
+  LogExists,
+  LogExistsKey
+} from '../common/logs';
 
 import {globals, QuantizedLoad, SliceDetails, ThreadDesc} from './globals';
 import {HomePage} from './home_page';
 import {openBufferWithLegacyTraceViewer} from './legacy_trace_viewer';
+import {postMessageHandler} from './post_message_handler';
 import {RecordPage} from './record_page';
 import {Router} from './router';
 import {ViewerPage} from './viewer_page';
+
+const EXTENSION_ID = 'lfmkphfpdbjijhpomgecfikhfohaoine';
 
 /**
  * The API the main thread exposes to the controller.
@@ -35,12 +45,22 @@ class FrontendApi {
   constructor(private router: Router) {}
 
   patchState(patches: Patch[]) {
+    const oldState = globals.state;
     globals.state = applyPatches(globals.state, patches);
+
     // If the visible time in the global state has been updated more recently
     // than the visible time handled by the frontend @ 60fps, update it. This
     // typically happens when restoring the state from a permalink.
     globals.frontendLocalState.mergeState(globals.state.frontendLocalState);
-    this.redraw();
+
+    // Only redraw if something other than the frontendLocalState changed.
+    for (const key in globals.state) {
+      if (key !== 'frontendLocalState' && key !== 'visibleTracks' &&
+          oldState[key] !== globals.state[key]) {
+        this.redraw();
+        return;
+      }
+    }
   }
 
   // TODO: we can't have a publish method for each batch of data that we don't
@@ -64,7 +84,8 @@ class FrontendApi {
   publishTrackData(args: {id: string, data: {}}) {
     globals.setTrackData(args.id, args.data);
     if ([LogExistsKey, LogBoundsKey, LogEntriesKey].includes(args.id)) {
-      globals.rafScheduler.scheduleFullRedraw();
+      const data = globals.trackDataStore.get(LogExistsKey) as LogExists;
+      if (data && data.exists) globals.rafScheduler.scheduleFullRedraw();
     } else {
       globals.rafScheduler.scheduleRedraw();
     }
@@ -88,11 +109,25 @@ class FrontendApi {
     this.redraw();
   }
 
+  publishLoading(loading: boolean) {
+    globals.loading = loading;
+    globals.rafScheduler.scheduleRedraw();
+  }
+
   // For opening JSON/HTML traces with the legacy catapult viewer.
   publishLegacyTrace(args: {data: ArrayBuffer, size: number}) {
     const arr = new Uint8Array(args.data, 0, args.size);
     const str = (new TextDecoder('utf-8')).decode(arr);
     openBufferWithLegacyTraceViewer('trace.json', str, 0);
+  }
+
+  publishBufferUsage(args: {percentage: number}) {
+    globals.setBufferUsage(args.percentage);
+    this.redraw();
+  }
+
+  publishSearch(args: {}) {
+    console.log('publish search results', args);
   }
 
   private redraw(): void {
@@ -105,14 +140,38 @@ class FrontendApi {
   }
 }
 
+function setExtensionAvailability(available: boolean) {
+  globals.dispatch(Actions.setExtensionAvailable({
+    available,
+  }));
+}
+
+
+
 function main() {
   const controller = new Worker('controller_bundle.js');
   controller.onerror = e => {
     console.error(e);
   };
-  const channel = new MessageChannel();
-  controller.postMessage(channel.port1, [channel.port1]);
-  const dispatch = controller.postMessage.bind(controller);
+  const frontendChannel = new MessageChannel();
+  const controllerChannel = new MessageChannel();
+  const extensionLocalChannel = new MessageChannel();
+
+
+  controller.postMessage(
+      {
+        frontendPort: frontendChannel.port1,
+        controllerPort: controllerChannel.port1,
+        extensionPort: extensionLocalChannel.port1
+      },
+      [
+        frontendChannel.port1,
+        controllerChannel.port1,
+        extensionLocalChannel.port1
+      ]);
+
+  const dispatch =
+      controllerChannel.port2.postMessage.bind(controllerChannel.port2);
   const router = new Router(
       '/',
       {
@@ -121,12 +180,40 @@ function main() {
         '/record': RecordPage,
       },
       dispatch);
-  forwardRemoteCalls(channel.port2, new FrontendApi(router));
+  forwardRemoteCalls(frontendChannel.port2, new FrontendApi(router));
   globals.initialize(dispatch, controller);
 
-  globals.rafScheduler.domRedraw = () =>
-      m.render(document.body, m(router.resolve(globals.state.route)));
+  // We proxy messages between the extension and the controller because the
+  // controller's worker can't access chrome.runtime.
+  const extensionPort =
+      chrome.runtime ? chrome.runtime.connect(EXTENSION_ID) : undefined;
 
+  setExtensionAvailability(extensionPort !== undefined);
+
+  if (extensionPort) {
+    extensionPort.onDisconnect.addListener(_ => {
+      setExtensionAvailability(false);
+      // tslint:disable-next-line: no-unused-expression
+      void chrome.runtime.lastError;  // Needed to not receive an error log.
+    });
+    // This forwards the messages from the extension to the controller.
+    extensionPort.onMessage.addListener(
+        (message: object, _port: chrome.runtime.Port) => {
+          extensionLocalChannel.port2.postMessage(message);
+        });
+  }
+
+  // This forwards the messages from the controller to the extension
+  extensionLocalChannel.port2.onmessage = ({data}) => {
+    if (extensionPort) extensionPort.postMessage(data);
+  };
+  const main = assertExists(document.body.querySelector('main'));
+
+  globals.rafScheduler.domRedraw = () =>
+      m.render(main, m(router.resolve(globals.state.route)));
+
+  // Add support for opening traces from postMessage().
+  window.addEventListener('message', postMessageHandler, {passive: true});
 
   // Put these variables in the global scope for better debugging.
   (window as {} as {m: {}}).m = m;
@@ -146,6 +233,8 @@ function main() {
   }, {passive: false});
 
   router.navigateToCurrentHash();
+
+  MicroModal.init();
 }
 
 main();

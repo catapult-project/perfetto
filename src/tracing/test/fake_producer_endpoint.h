@@ -17,8 +17,8 @@
 #ifndef SRC_TRACING_TEST_FAKE_PRODUCER_ENDPOINT_H_
 #define SRC_TRACING_TEST_FAKE_PRODUCER_ENDPOINT_H_
 
-#include "perfetto/tracing/core/commit_data_request.h"
-#include "perfetto/tracing/core/tracing_service.h"
+#include "perfetto/ext/tracing/core/commit_data_request.h"
+#include "perfetto/ext/tracing/core/tracing_service.h"
 
 namespace perfetto {
 
@@ -28,8 +28,10 @@ class FakeProducerEndpoint : public TracingService::ProducerEndpoint {
   void UnregisterDataSource(const std::string&) override {}
   void RegisterTraceWriter(uint32_t, uint32_t) override {}
   void UnregisterTraceWriter(uint32_t) override {}
-  void CommitData(const CommitDataRequest& req, CommitDataCallback) override {
+  void CommitData(const CommitDataRequest& req,
+                  CommitDataCallback callback) override {
     last_commit_data_request = req;
+    last_commit_data_callback = callback;
   }
   void NotifyFlushComplete(FlushRequestID) override {}
   void NotifyDataSourceStarted(DataSourceInstanceID) override {}
@@ -37,12 +39,15 @@ class FakeProducerEndpoint : public TracingService::ProducerEndpoint {
   void ActivateTriggers(const std::vector<std::string>&) override {}
   SharedMemory* shared_memory() const override { return nullptr; }
   size_t shared_buffer_page_size_kb() const override { return 0; }
-  std::unique_ptr<TraceWriter> CreateTraceWriter(BufferID) override {
+  std::unique_ptr<TraceWriter> CreateTraceWriter(
+      BufferID,
+      BufferExhaustedPolicy) override {
     return nullptr;
   }
   SharedMemoryArbiter* GetInProcessShmemArbiter() override { return nullptr; }
 
   CommitDataRequest last_commit_data_request;
+  CommitDataCallback last_commit_data_callback;
 };
 
 }  // namespace perfetto

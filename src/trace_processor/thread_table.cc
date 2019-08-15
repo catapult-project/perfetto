@@ -33,24 +33,25 @@ ThreadTable::ThreadTable(sqlite3*, const TraceStorage* storage)
     : storage_(storage) {}
 
 void ThreadTable::RegisterTable(sqlite3* db, const TraceStorage* storage) {
-  Table::Register<ThreadTable>(db, storage, "thread");
+  SqliteTable::Register<ThreadTable>(db, storage, "thread");
 }
 
 util::Status ThreadTable::Init(int, const char* const*, Schema* schema) {
   *schema = Schema(
       {
-          Table::Column(Column::kUtid, "utid", ColumnType::kInt),
-          Table::Column(Column::kUpid, "upid", ColumnType::kInt),
-          Table::Column(Column::kName, "name", ColumnType::kString),
-          Table::Column(Column::kTid, "tid", ColumnType::kInt),
-          Table::Column(Column::kStartTs, "start_ts", ColumnType::kLong),
+          SqliteTable::Column(Column::kUtid, "utid", ColumnType::kInt),
+          SqliteTable::Column(Column::kUpid, "upid", ColumnType::kInt),
+          SqliteTable::Column(Column::kName, "name", ColumnType::kString),
+          SqliteTable::Column(Column::kTid, "tid", ColumnType::kInt),
+          SqliteTable::Column(Column::kStartTs, "start_ts", ColumnType::kLong),
+          SqliteTable::Column(Column::kEndTs, "end_ts", ColumnType::kLong),
       },
       {Column::kUtid});
   return util::OkStatus();
 }
 
-std::unique_ptr<Table::Cursor> ThreadTable::CreateCursor() {
-  return std::unique_ptr<Table::Cursor>(new Cursor(this));
+std::unique_ptr<SqliteTable::Cursor> ThreadTable::CreateCursor() {
+  return std::unique_ptr<SqliteTable::Cursor>(new Cursor(this));
 }
 
 int ThreadTable::BestIndex(const QueryConstraints& qc, BestIndexInfo* info) {
@@ -68,7 +69,7 @@ int ThreadTable::BestIndex(const QueryConstraints& qc, BestIndexInfo* info) {
 }
 
 ThreadTable::Cursor::Cursor(ThreadTable* table)
-    : Table::Cursor(table), storage_(table->storage_), table_(table) {}
+    : SqliteTable::Cursor(table), storage_(table->storage_), table_(table) {}
 
 int ThreadTable::Cursor::Filter(const QueryConstraints& qc,
                                 sqlite3_value** argv) {
@@ -134,6 +135,14 @@ int ThreadTable::Cursor::Column(sqlite3_context* context, int N) {
     case Column::kStartTs: {
       if (thread.start_ns != 0) {
         sqlite3_result_int64(context, thread.start_ns);
+      } else {
+        sqlite3_result_null(context);
+      }
+      break;
+    }
+    case Column::kEndTs: {
+      if (thread.end_ns != 0) {
+        sqlite3_result_int64(context, thread.end_ns);
       } else {
         sqlite3_result_null(context);
       }

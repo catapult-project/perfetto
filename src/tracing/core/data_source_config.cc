@@ -27,9 +27,13 @@
 
 #include "perfetto/tracing/core/data_source_config.h"
 
-#include "perfetto/config/chrome/chrome_config.pb.h"
 #include "perfetto/config/data_source_config.pb.h"
+
+#include "perfetto/config/chrome/chrome_config.pb.h"
+#include "perfetto/tracing/core/chrome_config.h"
+
 #include "perfetto/config/test_config.pb.h"
+#include "perfetto/tracing/core/test_config.h"
 
 namespace perfetto {
 
@@ -46,6 +50,7 @@ DataSourceConfig& DataSourceConfig::operator=(DataSourceConfig&&) = default;
 bool DataSourceConfig::operator==(const DataSourceConfig& other) const {
   return (name_ == other.name_) && (target_buffer_ == other.target_buffer_) &&
          (trace_duration_ms_ == other.trace_duration_ms_) &&
+         (stop_timeout_ms_ == other.stop_timeout_ms_) &&
          (enable_extra_guardrails_ == other.enable_extra_guardrails_) &&
          (tracing_session_id_ == other.tracing_session_id_) &&
          (ftrace_config_ == other.ftrace_config_) &&
@@ -55,6 +60,8 @@ bool DataSourceConfig::operator==(const DataSourceConfig& other) const {
          (heapprofd_config_ == other.heapprofd_config_) &&
          (android_power_config_ == other.android_power_config_) &&
          (android_log_config_ == other.android_log_config_) &&
+         (gpu_counter_config_ == other.gpu_counter_config_) &&
+         (packages_list_config_ == other.packages_list_config_) &&
          (chrome_config_ == other.chrome_config_) &&
          (legacy_config_ == other.legacy_config_) &&
          (for_testing_ == other.for_testing_);
@@ -80,6 +87,11 @@ void DataSourceConfig::FromProto(
                 "size mismatch");
   trace_duration_ms_ =
       static_cast<decltype(trace_duration_ms_)>(proto.trace_duration_ms());
+
+  static_assert(sizeof(stop_timeout_ms_) == sizeof(proto.stop_timeout_ms()),
+                "size mismatch");
+  stop_timeout_ms_ =
+      static_cast<decltype(stop_timeout_ms_)>(proto.stop_timeout_ms());
 
   static_assert(sizeof(enable_extra_guardrails_) ==
                     sizeof(proto.enable_extra_guardrails()),
@@ -107,13 +119,17 @@ void DataSourceConfig::FromProto(
 
   android_log_config_ = proto.android_log_config().SerializeAsString();
 
-  chrome_config_.FromProto(proto.chrome_config());
+  gpu_counter_config_ = proto.gpu_counter_config().SerializeAsString();
+
+  packages_list_config_ = proto.packages_list_config().SerializeAsString();
+
+  chrome_config_->FromProto(proto.chrome_config());
 
   static_assert(sizeof(legacy_config_) == sizeof(proto.legacy_config()),
                 "size mismatch");
   legacy_config_ = static_cast<decltype(legacy_config_)>(proto.legacy_config());
 
-  for_testing_.FromProto(proto.for_testing());
+  for_testing_->FromProto(proto.for_testing());
   unknown_fields_ = proto.unknown_fields();
 }
 
@@ -134,6 +150,11 @@ void DataSourceConfig::ToProto(
       "size mismatch");
   proto->set_trace_duration_ms(
       static_cast<decltype(proto->trace_duration_ms())>(trace_duration_ms_));
+
+  static_assert(sizeof(stop_timeout_ms_) == sizeof(proto->stop_timeout_ms()),
+                "size mismatch");
+  proto->set_stop_timeout_ms(
+      static_cast<decltype(proto->stop_timeout_ms())>(stop_timeout_ms_));
 
   static_assert(sizeof(enable_extra_guardrails_) ==
                     sizeof(proto->enable_extra_guardrails()),
@@ -162,14 +183,18 @@ void DataSourceConfig::ToProto(
 
   proto->mutable_android_log_config()->ParseFromString(android_log_config_);
 
-  chrome_config_.ToProto(proto->mutable_chrome_config());
+  proto->mutable_gpu_counter_config()->ParseFromString(gpu_counter_config_);
+
+  proto->mutable_packages_list_config()->ParseFromString(packages_list_config_);
+
+  chrome_config_->ToProto(proto->mutable_chrome_config());
 
   static_assert(sizeof(legacy_config_) == sizeof(proto->legacy_config()),
                 "size mismatch");
   proto->set_legacy_config(
       static_cast<decltype(proto->legacy_config())>(legacy_config_));
 
-  for_testing_.ToProto(proto->mutable_for_testing());
+  for_testing_->ToProto(proto->mutable_for_testing());
   *(proto->mutable_unknown_fields()) = unknown_fields_;
 }
 

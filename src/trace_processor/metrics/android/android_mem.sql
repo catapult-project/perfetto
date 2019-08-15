@@ -14,53 +14,107 @@
 -- limitations under the License.
 --
 
--- Create all the views used to generate the Android Memory metrics proto.
-SELECT RUN_METRIC('android/android_mem_lmk.sql');
+SELECT RUN_METRIC('android/process_mem.sql');
 
--- Generate the process counter metrics.
-SELECT RUN_METRIC('android/android_mem_proc_counters.sql',
-                  'table_name',
-                  'file_rss',
-                  'counter_names',
-                  'mem.rss.file');
-SELECT RUN_METRIC('android/android_mem_proc_counters.sql',
-                  'table_name',
-                  'anon_rss',
-                  'counter_names',
-                  'mem.rss.anon');
+SELECT RUN_METRIC('android/span_view_stats.sql', 'table_name', 'anon_rss');
+
+SELECT RUN_METRIC('android/span_view_stats.sql', 'table_name', 'file_rss');
+
+SELECT RUN_METRIC('android/span_view_stats.sql', 'table_name', 'swap');
+
+SELECT RUN_METRIC('android/span_view_stats.sql', 'table_name', 'anon_and_swap');
+
+SELECT RUN_METRIC('android/span_view_stats.sql', 'table_name', 'java_heap');
+
+SELECT RUN_METRIC('android/mem_stats_priority_breakdown.sql', 'table_name', 'anon_rss');
+
+SELECT RUN_METRIC('android/mem_stats_priority_breakdown.sql', 'table_name', 'file_rss');
+
+SELECT RUN_METRIC('android/mem_stats_priority_breakdown.sql', 'table_name', 'swap');
+
+SELECT RUN_METRIC('android/mem_stats_priority_breakdown.sql', 'table_name', 'anon_and_swap');
+
+SELECT RUN_METRIC('android/mem_stats_priority_breakdown.sql', 'table_name', 'java_heap');
+
+-- Find out all process + priority pairs with data to drive the joins (no outer join in sqlite).
+CREATE VIEW mem_all_processes AS
+SELECT DISTINCT process_name
+FROM
+(
+  SELECT process_name FROM anon_rss_stats_proto
+  UNION
+  SELECT process_name FROM file_rss_stats_proto
+  UNION
+  SELECT process_name FROM swap_stats_proto
+  UNION
+  SELECT process_name FROM anon_and_swap_stats_proto
+  UNION
+  SELECT process_name FROM java_heap_stats_proto
+);
+
+CREATE VIEW mem_all_process_priorities AS
+SELECT DISTINCT process_name, priority
+FROM
+(
+  SELECT process_name, priority FROM anon_rss_by_priority_stats_proto
+  UNION
+  SELECT process_name, priority FROM file_rss_by_priority_stats_proto
+  UNION
+  SELECT process_name, priority FROM swap_by_priority_stats_proto
+  UNION
+  SELECT process_name, priority FROM anon_and_swap_by_priority_stats_proto
+  UNION
+  SELECT process_name, priority FROM java_heap_by_priority_stats_proto
+);
+
+CREATE VIEW process_priority_view AS
+SELECT
+  process_name,
+  AndroidMemoryMetric_PriorityBreakdown(
+    'priority', priority,
+    'counters', AndroidMemoryMetric_ProcessMemoryCounters(
+      'anon_rss', anon_rss_by_priority_stats_proto.proto,
+      'file_rss', file_rss_by_priority_stats_proto.proto,
+      'swap', swap_by_priority_stats_proto.proto,
+      'anon_and_swap', anon_and_swap_by_priority_stats_proto.proto,
+      'java_heap', java_heap_by_priority_stats_proto.proto
+    )
+  ) AS priority_breakdown_proto
+FROM mem_all_process_priorities
+LEFT JOIN anon_rss_by_priority_stats_proto USING (process_name, priority)
+LEFT JOIN file_rss_by_priority_stats_proto USING (process_name, priority)
+LEFT JOIN swap_by_priority_stats_proto USING (process_name, priority)
+LEFT JOIN anon_and_swap_by_priority_stats_proto USING (process_name, priority)
+LEFT JOIN java_heap_by_priority_stats_proto USING (process_name, priority);
 
 CREATE VIEW process_metrics_view AS
 SELECT
   AndroidMemoryMetric_ProcessMetrics(
-    'process_name',
-    anon_rss.name,
-    'overall_counters',
-    AndroidMemoryMetric_ProcessMemoryCounters(
-      'anon_rss',
-      AndroidMemoryMetric_Counter(
-        'min',
-        anon_rss.min,
-        'max',
-        anon_rss.max,
-        'avg',
-        anon_rss.avg
-      )
+    'process_name', process_name,
+    'total_counters', AndroidMemoryMetric_ProcessMemoryCounters(
+      'anon_rss', anon_rss_stats_proto.proto,
+      'file_rss', file_rss_stats_proto.proto,
+      'swap', swap_stats_proto.proto,
+      'anon_and_swap', anon_and_swap_stats_proto.proto,
+      'java_heap', java_heap_stats_proto.proto
+    ),
+    'priority_breakdown', (
+      SELECT RepeatedField(priority_breakdown_proto)
+      FROM process_priority_view AS ppv
+      WHERE mem_all_processes.process_name = ppv.process_name
     )
-  ) as metric
+  ) AS metric
 FROM
-  anon_rss;
+  mem_all_processes
+  LEFT JOIN anon_rss_stats_proto USING (process_name)
+  LEFT JOIN file_rss_stats_proto USING (process_name)
+  LEFT JOIN swap_stats_proto USING (process_name)
+  LEFT JOIN anon_and_swap_stats_proto USING (process_name)
+  LEFT JOIN java_heap_stats_proto USING (process_name);
 
 CREATE VIEW android_mem_output AS
 SELECT
   AndroidMemoryMetric(
-    'system_metrics',
-    AndroidMemoryMetric_SystemMetrics(
-      'lmks',
-      AndroidMemoryMetric_LowMemoryKills(
-        'total_count',
-        (SELECT COUNT(*) FROM lmk_by_score)
-      )
-    ),
     'process_metrics',
     (SELECT RepeatedField(metric) FROM process_metrics_view)
   );

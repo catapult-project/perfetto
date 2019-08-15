@@ -19,6 +19,7 @@ import {LogExists, LogExistsKey} from '../common/logs';
 import {QueryResponse} from '../common/queries';
 import {TimeSpan} from '../common/time';
 
+import {ChromeSliceDetailsPanel} from './chrome_slice_panel';
 import {copyToClipboard} from './clipboard';
 import {DragGestureHandler} from './drag_gesture_handler';
 import {globals} from './globals';
@@ -37,11 +38,13 @@ import {TimeSelectionPanel} from './time_selection_panel';
 import {TRACK_SHELL_WIDTH} from './track_constants';
 import {TrackGroupPanel} from './track_group_panel';
 import {TrackPanel} from './track_panel';
+import {VideoPanel} from './video_panel';
 
 const DRAG_HANDLE_HEIGHT_PX = 28;
 const DEFAULT_DETAILS_HEIGHT_PX = 230 + DRAG_HANDLE_HEIGHT_PX;
 const UP_ICON = 'keyboard_arrow_up';
 const DOWN_ICON = 'keyboard_arrow_down';
+const SIDEBAR_WIDTH = 256;
 
 function hasLogs(): boolean {
   const data = globals.trackDataStore.get(LogExistsKey) as LogExists;
@@ -208,7 +211,7 @@ class TraceViewer implements m.ClassComponent {
 
     this.zoomContent = new PanAndZoomHandler({
       element: panZoomEl,
-      contentOffsetX: TRACK_SHELL_WIDTH,
+      contentOffsetX: SIDEBAR_WIDTH,
       onPanned: (pannedPx: number) => {
         this.keepCurrentSelection = true;
         const traceTime = globals.state.traceTime;
@@ -295,6 +298,9 @@ class TraceViewer implements m.ClassComponent {
             utid: curSelection.utid,
           }));
           break;
+        case 'CHROME_SLICE':
+          detailsPanels.push(m(ChromeSliceDetailsPanel));
+          break;
         case 'THREAD_STATE':
           detailsPanels.push(m(ThreadStatePanel, {
             key: 'thread_state',
@@ -315,32 +321,39 @@ class TraceViewer implements m.ClassComponent {
 
     return m(
         '.page',
-        m('.pan-and-zoom-content',
-          {
-            onclick: () => {
-              // We don't want to deselect when panning/drag selecting.
-              if (this.keepCurrentSelection) {
-                this.keepCurrentSelection = false;
-                return;
+        m('.split-panel',
+          m('.pan-and-zoom-content',
+            {
+              onclick: () => {
+                // We don't want to deselect when panning/drag selecting.
+                if (this.keepCurrentSelection) {
+                  this.keepCurrentSelection = false;
+                  return;
+                }
+                globals.dispatch(Actions.deselect({}));
               }
-              globals.dispatch(Actions.deselect({}));
-            }
-          },
-          m('.pinned-panel-container', m(PanelContainer, {
-              doesScroll: false,
-              panels: [
-                m(OverviewTimelinePanel, {key: 'overview'}),
-                m(TimeAxisPanel, {key: 'timeaxis'}),
-                m(TimeSelectionPanel, {key: 'timeselection'}),
-                m(NotesPanel, {key: 'notes'}),
-                ...globals.state.pinnedTracks.map(
-                    id => m(TrackPanel, {key: id, id})),
-              ],
-            })),
-          m('.scrolling-panel-container', m(PanelContainer, {
-              doesScroll: true,
-              panels: scrollingPanels,
-            }))),
+            },
+            m('.pinned-panel-container', m(PanelContainer, {
+                doesScroll: false,
+                panels: [
+                  m(OverviewTimelinePanel, {key: 'overview'}),
+                  m(TimeAxisPanel, {key: 'timeaxis'}),
+                  m(TimeSelectionPanel, {key: 'timeselection'}),
+                  m(NotesPanel, {key: 'notes'}),
+                  ...globals.state.pinnedTracks.map(
+                      id => m(TrackPanel, {key: id, id})),
+                ],
+                kind: 'OVERVIEW',
+              })),
+            m('.scrolling-panel-container', m(PanelContainer, {
+                doesScroll: true,
+                panels: scrollingPanels,
+                kind: 'TRACKS',
+              }))),
+          m('.video-panel',
+            (globals.state.videoEnabled && globals.state.video != null) ?
+                m(VideoPanel) :
+                null)),
         m('.details-content',
           {
             style: {
@@ -355,7 +368,8 @@ class TraceViewer implements m.ClassComponent {
             height: this.detailsHeight,
           }),
           m('.details-panel-container',
-            m(PanelContainer, {doesScroll: true, panels: detailsPanels}))));
+            m(PanelContainer,
+              {doesScroll: true, panels: detailsPanels, kind: 'DETAILS'}))));
   }
 }
 

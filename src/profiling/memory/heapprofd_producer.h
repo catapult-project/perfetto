@@ -22,18 +22,19 @@
 #include <map>
 #include <vector>
 
-#include "perfetto/base/optional.h"
 #include "perfetto/base/task_runner.h"
-#include "perfetto/base/unix_socket.h"
-#include "perfetto/base/unix_task_runner.h"
+#include "perfetto/ext/base/optional.h"
+#include "perfetto/ext/base/unix_socket.h"
+#include "perfetto/ext/base/unix_task_runner.h"
 
-#include "perfetto/tracing/core/basic_types.h"
+#include "perfetto/ext/tracing/core/basic_types.h"
+#include "perfetto/ext/tracing/core/producer.h"
+#include "perfetto/ext/tracing/core/trace_writer.h"
+#include "perfetto/ext/tracing/core/tracing_service.h"
 #include "perfetto/tracing/core/data_source_config.h"
-#include "perfetto/tracing/core/producer.h"
-#include "perfetto/tracing/core/trace_writer.h"
-#include "perfetto/tracing/core/tracing_service.h"
 
 #include "src/profiling/memory/bookkeeping.h"
+#include "src/profiling/memory/bookkeeping_dump.h"
 #include "src/profiling/memory/heapprofd_config.h"
 #include "src/profiling/memory/page_idle_checker.h"
 #include "src/profiling/memory/proc_utils.h"
@@ -153,6 +154,10 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
   void SetProducerEndpoint(
       std::unique_ptr<TracingService::ProducerEndpoint> endpoint);
 
+  base::UnixSocket::EventListener& socket_delegate() {
+    return socket_delegate_;
+  }
+
  private:
   // State of the connection to tracing service (traced).
   enum State {
@@ -163,7 +168,8 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
   };
 
   struct ProcessState {
-    ProcessState(GlobalCallstackTrie* callsites) : heap_tracker(callsites) {}
+    ProcessState(GlobalCallstackTrie* callsites, bool dump_at_max_mode)
+        : heap_tracker(callsites, dump_at_max_mode) {}
     bool disconnected = false;
     bool buffer_overran = false;
     bool buffer_corrupted = false;
@@ -180,6 +186,8 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
   };
 
   struct DataSource {
+    DataSource(std::unique_ptr<TraceWriter> tw) : trace_writer(std::move(tw)) {}
+
     DataSourceInstanceID id;
     std::unique_ptr<TraceWriter> trace_writer;
     HeapprofdConfig config;
@@ -189,7 +197,9 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
     std::set<pid_t> rejected_pids;
     std::map<pid_t, ProcessState> process_states;
     std::vector<std::string> normalized_cmdlines;
-    uint64_t next_index_ = 0;
+    DumpState::InternState intern_state;
+    bool shutting_down = false;
+    uint32_t stop_timeout_ms;
   };
 
   struct PendingProcess {
@@ -207,9 +217,9 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
   void IncreaseConnectionBackoff();
 
   void FinishDataSourceFlush(FlushRequestID flush_id);
-  bool Dump(DataSourceInstanceID id,
-            FlushRequestID flush_id,
-            bool has_flush_id);
+  bool DumpProcessesInDataSource(DataSourceInstanceID id);
+  void DumpProcessState(DataSource* ds, pid_t pid, ProcessState* process);
+
   void DoContinuousDump(DataSourceInstanceID id, uint32_t dump_interval);
 
   UnwindingWorker& UnwinderForPID(pid_t);
@@ -220,9 +230,6 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
   void SetStartupProperties(DataSource* data_source);
   void SignalRunningProcesses(DataSource* data_source);
 
-  // Specific to mode_ == kCentral
-  std::unique_ptr<base::UnixSocket> MakeListeningSocket();
-
   // Specific to mode_ == kChild
   void TerminateProcess(int exit_status);
   // Specific to mode_ == kChild
@@ -231,6 +238,8 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
   // the on-connection callback.
   // Specific to mode_ == kChild
   void AdoptTargetProcessSocket();
+
+  bool MaybeFinishDataSource(DataSource* ds);
 
   // Class state:
 
@@ -262,9 +271,6 @@ class HeapprofdProducer : public Producer, public UnwindingWorker::Delegate {
   std::map<FlushRequestID, size_t> flushes_in_progress_;
   std::map<DataSourceInstanceID, DataSource> data_sources_;
   std::vector<UnwindingWorker> unwinding_workers_;
-
-  // Specific to mode_ == kCentral
-  std::unique_ptr<base::UnixSocket> listening_socket_;
 
   // Specific to mode_ == kChild
   Process target_process_{base::kInvalidPid, ""};

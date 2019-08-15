@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {fromNs} from '../../common/time';
+import {fromNs, toNs} from '../../common/time';
 import {LIMIT} from '../../common/track_data';
 
 import {
@@ -28,29 +28,23 @@ import {
   SummaryData
 } from './common';
 
+// This summary is displayed for any processes that have CPU scheduling activity
+// associated with them.
+
 class ProcessSchedulingTrackController extends TrackController<Config, Data> {
   static readonly kind = PROCESS_SCHEDULING_TRACK_KIND;
-  private busy = false;
   private setup = false;
   private numCpus = 0;
 
-  onBoundsChange(start: number, end: number, resolution: number): void {
-    this.update(start, end, resolution);
-  }
-
-  private async update(start: number, end: number, resolution: number):
-      Promise<void> {
-    // TODO: we should really call TraceProcessor.Interrupt() at this point.
-    if (this.busy) return;
-
+  async onBoundsChange(start: number, end: number, resolution: number):
+      Promise<Data> {
     if (!this.config.upid) {
-      return;
+      throw new Error('Upid not set.');
     }
 
-    const startNs = Math.round(start * 1e9);
-    const endNs = Math.round(end * 1e9);
+    const startNs = toNs(start);
+    const endNs = toNs(end);
 
-    this.busy = true;
     if (this.setup === false) {
       await this.query(
           `create virtual table ${this.tableName('window')} using window;`);
@@ -81,20 +75,18 @@ class ProcessSchedulingTrackController extends TrackController<Config, Data> {
       where rowid = 0;`);
 
     if (isQuantized) {
-      this.publish(await this.computeSummary(
-          fromNs(windowStartNs), end, resolution, bucketSizeNs));
+      return this.computeSummary(
+          fromNs(windowStartNs), end, resolution, bucketSizeNs);
     } else {
-      this.publish(
-          await this.computeSlices(fromNs(windowStartNs), end, resolution));
+      return this.computeSlices(fromNs(windowStartNs), end, resolution);
     }
-    this.busy = false;
   }
 
   private async computeSummary(
       start: number, end: number, resolution: number,
       bucketSizeNs: number): Promise<SummaryData> {
-    const startNs = Math.round(start * 1e9);
-    const endNs = Math.round(end * 1e9);
+    const startNs = toNs(start);
+    const endNs = toNs(end);
     const numBuckets = Math.ceil((endNs - startNs) / bucketSizeNs);
 
     // cpu < numCpus improves perfomance a lot since the window table can
@@ -169,15 +161,6 @@ class ProcessSchedulingTrackController extends TrackController<Config, Data> {
       slices.end = Math.max(slices.ends[row], slices.end);
     }
     return slices;
-  }
-
-  private async query(query: string) {
-    const result = await this.engine.query(query);
-    if (result.error) {
-      console.error(`Query error "${query}": ${result.error}`);
-      throw new Error(`Query error "${query}": ${result.error}`);
-    }
-    return result;
   }
 
   onDestroy(): void {

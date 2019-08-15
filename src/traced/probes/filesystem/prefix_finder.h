@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "perfetto/base/logging.h"
-#include "perfetto/base/lookup_set.h"
+#include "perfetto/ext/base/lookup_set.h"
 
 namespace perfetto {
 
@@ -57,7 +57,7 @@ class PrefixFinder {
     Node& operator=(const Node&) = delete;
 
     // Return string representation of prefix, e.g. /foo/bar.
-    // Does not enclude a trailing /.
+    // Does not include a trailing /.
     std::string ToString() const;
 
    private:

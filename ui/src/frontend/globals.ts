@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import {assertExists} from '../base/logging';
-import {Actions, DeferredAction} from '../common/actions';
+import {DeferredAction} from '../common/actions';
 import {createEmptyState, State} from '../common/state';
 
 import {FrontendLocalState} from './frontend_local_state';
@@ -30,6 +30,8 @@ export interface SliceDetails {
   wakeupTs?: number;
   wakerUtid?: number;
   wakerCpu?: number;
+  category?: string;
+  name?: string;
 }
 
 export interface QuantizedLoad {
@@ -64,7 +66,8 @@ class Globals {
   private _overviewStore?: OverviewStore = undefined;
   private _threadMap?: ThreadMap = undefined;
   private _sliceDetails?: SliceDetails = undefined;
-  private _pendingTrackRequests?: Set<string> = undefined;
+  private _isLoading = false;
+  private _bufferUsage?: number = undefined;
 
   initialize(dispatch: Dispatch, controllerWorker: Worker) {
     this._dispatch = dispatch;
@@ -79,7 +82,6 @@ class Globals {
     this._overviewStore = new Map<string, QuantizedLoad[]>();
     this._threadMap = new Map<number, ThreadDesc>();
     this._sliceDetails = {};
-    this._pendingTrackRequests = new Set<string>();
   }
 
   get state(): State {
@@ -127,33 +129,31 @@ class Globals {
     this._sliceDetails = assertExists(click);
   }
 
+  set loading(isLoading: boolean) {
+    this._isLoading = isLoading;
+  }
+
+  get isLoading() {
+    return this._isLoading;
+  }
+
+  get bufferUsage() {
+    return this._bufferUsage;
+  }
+
+  setBufferUsage(bufferUsage: number) {
+    this._bufferUsage = bufferUsage;
+  }
+
   setTrackData(id: string, data: {}) {
     this.trackDataStore.set(id, data);
-    assertExists(this._pendingTrackRequests).delete(id);
   }
 
   getCurResolution() {
-    // Truncate the resolution to the closest power of 10.
+    // Truncate the resolution to the closest power of 2.
+    // This effectively means the resolution changes every 6 zoom levels.
     const resolution = this.frontendLocalState.timeScale.deltaPxToDuration(1);
-    return Math.pow(10, Math.floor(Math.log10(resolution)));
-  }
-
-  requestTrackData(trackId: string) {
-    const pending = assertExists(this._pendingTrackRequests);
-    if (pending.has(trackId)) return;
-
-    const {visibleWindowTime} = globals.frontendLocalState;
-    const resolution = this.getCurResolution();
-    const start = visibleWindowTime.start - visibleWindowTime.duration;
-    const end = visibleWindowTime.end + visibleWindowTime.duration;
-
-    pending.add(trackId);
-    globals.dispatch(Actions.reqTrackData({
-      trackId,
-      start,
-      end,
-      resolution,
-    }));
+    return Math.pow(2, Math.floor(Math.log2(resolution)));
   }
 
   resetForTesting() {
@@ -168,7 +168,7 @@ class Globals {
     this._overviewStore = undefined;
     this._threadMap = undefined;
     this._sliceDetails = undefined;
-    this._pendingTrackRequests = undefined;
+    this._isLoading = false;
   }
 
   // Used when switching to the legacy TraceViewer UI.

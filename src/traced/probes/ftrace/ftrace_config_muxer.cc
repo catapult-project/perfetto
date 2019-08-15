@@ -23,17 +23,17 @@
 
 #include <algorithm>
 
-#include "perfetto/base/utils.h"
+#include "perfetto/ext/base/utils.h"
 #include "src/traced/probes/ftrace/atrace_wrapper.h"
 
 namespace perfetto {
 namespace {
 
+constexpr int kDefaultPerCpuBufferSizeKb = 2 * 1024;  // 2mb
+constexpr int kMaxPerCpuBufferSizeKb = 64 * 1024;     // 64mb
+
 // trace_clocks in preference order.
 constexpr const char* kClocks[] = {"boot", "global", "local"};
-
-constexpr int kDefaultPerCpuBufferSizeKb = 2 * 1024;  // 2mb
-constexpr int kMaxPerCpuBufferSizeKb = 64 * 1024;  // 64mb
 
 void AddEventGroup(const ProtoTranslationTable* table,
                    const std::string& group,
@@ -105,8 +105,39 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
     for (const std::string& category : request.atrace_categories()) {
       if (category == "gfx") {
         AddEventGroup(table, "mdss", &events);
-        AddEventGroup(table, "sde", &events);
+        events.insert(GroupAndName("mdss", "rotator_bw_ao_as_context"));
+        events.insert(GroupAndName("mdss", "mdp_trace_counter"));
+        events.insert(GroupAndName("mdss", "tracing_mark_write"));
+        events.insert(GroupAndName("mdss", "mdp_cmd_wait_pingpong"));
+        events.insert(GroupAndName("mdss", "mdp_cmd_kickoff"));
+        events.insert(GroupAndName("mdss", "mdp_cmd_release_bw"));
+        events.insert(GroupAndName("mdss", "mdp_cmd_readptr_done"));
+        events.insert(GroupAndName("mdss", "mdp_cmd_pingpong_done"));
+        events.insert(GroupAndName("mdss", "mdp_misr_crc"));
+        events.insert(GroupAndName("mdss", "mdp_compare_bw"));
+        events.insert(GroupAndName("mdss", "mdp_perf_update_bus"));
+        events.insert(GroupAndName("mdss", "mdp_video_underrun_done"));
+        events.insert(GroupAndName("mdss", "mdp_commit"));
+        events.insert(GroupAndName("mdss", "mdp_mixer_update"));
+        events.insert(GroupAndName("mdss", "mdp_perf_prefill_calc"));
+        events.insert(GroupAndName("mdss", "mdp_perf_set_ot"));
+        events.insert(GroupAndName("mdss", "mdp_perf_set_wm_levels"));
+        events.insert(GroupAndName("mdss", "mdp_perf_set_panic_luts"));
+        events.insert(GroupAndName("mdss", "mdp_perf_set_qos_luts"));
+        events.insert(GroupAndName("mdss", "mdp_sspp_change"));
+        events.insert(GroupAndName("mdss", "mdp_sspp_set"));
         AddEventGroup(table, "mali_systrace", &events);
+        AddEventGroup(table, "sde", &events);
+        events.insert(GroupAndName("sde", "tracing_mark_write"));
+        events.insert(GroupAndName("sde", "sde_perf_update_bus"));
+        events.insert(GroupAndName("sde", "sde_perf_set_qos_luts"));
+        events.insert(GroupAndName("sde", "sde_perf_set_ot"));
+        events.insert(GroupAndName("sde", "sde_perf_set_danger_luts"));
+        events.insert(GroupAndName("sde", "sde_perf_crtc_update"));
+        events.insert(GroupAndName("sde", "sde_perf_calc_crtc"));
+        events.insert(GroupAndName("sde", "sde_evtlog"));
+        events.insert(GroupAndName("sde", "sde_encoder_underrun"));
+        events.insert(GroupAndName("sde", "sde_cmd_release_bw"));
         continue;
       }
 
@@ -124,15 +155,43 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
         events.insert(GroupAndName("sched", "sched_pi_setprio"));
         events.insert(GroupAndName("sched", "sched_process_exit"));
         AddEventGroup(table, "cgroup", &events);
+        events.insert(GroupAndName("cgroup", "cgroup_transfer_tasks"));
+        events.insert(GroupAndName("cgroup", "cgroup_setup_root"));
+        events.insert(GroupAndName("cgroup", "cgroup_rmdir"));
+        events.insert(GroupAndName("cgroup", "cgroup_rename"));
+        events.insert(GroupAndName("cgroup", "cgroup_remount"));
+        events.insert(GroupAndName("cgroup", "cgroup_release"));
+        events.insert(GroupAndName("cgroup", "cgroup_mkdir"));
+        events.insert(GroupAndName("cgroup", "cgroup_destroy_root"));
+        events.insert(GroupAndName("cgroup", "cgroup_attach_task"));
         events.insert(GroupAndName("oom", "oom_score_adj_update"));
         events.insert(GroupAndName("task", "task_rename"));
         events.insert(GroupAndName("task", "task_newtask"));
+
+        AddEventGroup(table, "systrace", &events);
+        events.insert(GroupAndName("systrace", "0"));
+
+        AddEventGroup(table, "scm", &events);
+        events.insert(GroupAndName("scm", "scm_call_start"));
+        events.insert(GroupAndName("scm", "scm_call_end"));
         continue;
       }
 
       if (category == "irq") {
         AddEventGroup(table, "irq", &events);
+        events.insert(GroupAndName("irq", "tasklet_hi_exit"));
+        events.insert(GroupAndName("irq", "tasklet_hi_entry"));
+        events.insert(GroupAndName("irq", "tasklet_exit"));
+        events.insert(GroupAndName("irq", "tasklet_entry"));
+        events.insert(GroupAndName("irq", "softirq_raise"));
+        events.insert(GroupAndName("irq", "softirq_exit"));
+        events.insert(GroupAndName("irq", "softirq_entry"));
+        events.insert(GroupAndName("irq", "irq_handler_exit"));
+        events.insert(GroupAndName("irq", "irq_handler_entry"));
         AddEventGroup(table, "ipi", &events);
+        events.insert(GroupAndName("ipi", "ipi_raise"));
+        events.insert(GroupAndName("ipi", "ipi_exit"));
+        events.insert(GroupAndName("ipi", "ipi_entry"));
         continue;
       }
 
@@ -163,6 +222,7 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
 
       if (category == "freq") {
         events.insert(GroupAndName("power", "cpu_frequency"));
+        events.insert(GroupAndName("power", "gpu_frequency"));
         events.insert(GroupAndName("power", "clock_set_rate"));
         events.insert(GroupAndName("power", "clock_disable"));
         events.insert(GroupAndName("power", "clock_enable"));
@@ -170,6 +230,17 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
         events.insert(GroupAndName("clk", "clk_disable"));
         events.insert(GroupAndName("clk", "clk_enable"));
         events.insert(GroupAndName("power", "cpu_frequency_limits"));
+        events.insert(GroupAndName("power", "suspend_resume"));
+        AddEventGroup(table, "msm_bus", &events);
+        events.insert(GroupAndName("msm_bus", "bus_update_request_end"));
+        events.insert(GroupAndName("msm_bus", "bus_update_request"));
+        events.insert(GroupAndName("msm_bus", "bus_rules_matches"));
+        events.insert(GroupAndName("msm_bus", "bus_max_votes"));
+        events.insert(GroupAndName("msm_bus", "bus_client_status"));
+        events.insert(GroupAndName("msm_bus", "bus_bke_params"));
+        events.insert(GroupAndName("msm_bus", "bus_bimc_config_limiter"));
+        events.insert(GroupAndName("msm_bus", "bus_avail_bw"));
+        events.insert(GroupAndName("msm_bus", "bus_agg_bw"));
         continue;
       }
 
@@ -210,8 +281,19 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
       if (category == "sync") {
         // linux kernel < 4.9
         AddEventGroup(table, "sync", &events);
+        events.insert(GroupAndName("sync", "sync_pt"));
+        events.insert(GroupAndName("sync", "sync_timeline"));
+        events.insert(GroupAndName("sync", "sync_wait"));
         // linux kernel == 4.9.x
         AddEventGroup(table, "fence", &events);
+        events.insert(GroupAndName("fence", "fence_annotate_wait_on"));
+        events.insert(GroupAndName("fence", "fence_destroy"));
+        events.insert(GroupAndName("fence", "fence_emit"));
+        events.insert(GroupAndName("fence", "fence_enable_signal"));
+        events.insert(GroupAndName("fence", "fence_init"));
+        events.insert(GroupAndName("fence", "fence_signaled"));
+        events.insert(GroupAndName("fence", "fence_wait_end"));
+        events.insert(GroupAndName("fence", "fence_wait_start"));
         // linux kernel > 4.9
         AddEventGroup(table, "dma_fence", &events);
         continue;
@@ -219,6 +301,10 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
 
       if (category == "workq") {
         AddEventGroup(table, "workqueue", &events);
+        events.insert(GroupAndName("workqueue", "workqueue_queue_work"));
+        events.insert(GroupAndName("workqueue", "workqueue_execute_start"));
+        events.insert(GroupAndName("workqueue", "workqueue_execute_end"));
+        events.insert(GroupAndName("workqueue", "workqueue_activate_work"));
         continue;
       }
 
@@ -228,11 +314,20 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
         events.insert(GroupAndName("vmscan", "mm_vmscan_kswapd_wake"));
         events.insert(GroupAndName("vmscan", "mm_vmscan_kswapd_sleep"));
         AddEventGroup(table, "lowmemorykiller", &events);
+        events.insert(GroupAndName("lowmemorykiller", "lowmemory_kill"));
         continue;
       }
 
       if (category == "regulators") {
         AddEventGroup(table, "regulator", &events);
+        events.insert(
+            GroupAndName("regulator", "regulator_set_voltage_complete"));
+        events.insert(GroupAndName("regulator", "regulator_set_voltage"));
+        events.insert(GroupAndName("regulator", "regulator_enable_delay"));
+        events.insert(GroupAndName("regulator", "regulator_enable_complete"));
+        events.insert(GroupAndName("regulator", "regulator_enable"));
+        events.insert(GroupAndName("regulator", "regulator_disable_complete"));
+        events.insert(GroupAndName("regulator", "regulator_disable"));
         continue;
       }
 
@@ -253,6 +348,13 @@ std::set<GroupAndName> FtraceConfigMuxer::GetFtraceEvents(
 
       if (category == "pagecache") {
         AddEventGroup(table, "filemap", &events);
+        events.insert(
+            GroupAndName("filemap", "mm_filemap_delete_from_page_cache"));
+        events.insert(
+            GroupAndName("filemap", "mm_filemap_delete_from_page_cache"));
+        events.insert(GroupAndName("filemap", "mm_filemap_add_to_page_cache"));
+        events.insert(GroupAndName("filemap", "filemap_set_wb_err"));
+        events.insert(GroupAndName("filemap", "file_check_and_advance_wb_err"));
         continue;
       }
 
@@ -412,7 +514,8 @@ bool FtraceConfigMuxer::RemoveConfig(FtraceConfigId config_id) {
   // configs around. Tear down the rest of the ftrace config only if all
   // configs are removed.
   if (configs_.empty()) {
-    ftrace_->SetCpuBufferSizeInPages(0);
+    if (ftrace_->SetCpuBufferSizeInPages(1))
+      current_state_.cpu_buffer_size_pages = 1;
     ftrace_->DisableAllEvents();
     ftrace_->ClearTrace();
     if (current_state_.atrace_on)
@@ -453,6 +556,10 @@ void FtraceConfigMuxer::SetupBufferSize(const FtraceConfig& request) {
   size_t pages = ComputeCpuBufferSizeInPages(request.buffer_size_kb());
   ftrace_->SetCpuBufferSizeInPages(pages);
   current_state_.cpu_buffer_size_pages = pages;
+}
+
+size_t FtraceConfigMuxer::GetPerCpuBufferSizePages() {
+  return current_state_.cpu_buffer_size_pages;
 }
 
 void FtraceConfigMuxer::UpdateAtrace(const FtraceConfig& request) {

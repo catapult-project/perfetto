@@ -27,6 +27,7 @@ export interface SelectionControllerArgs {
 // been clicked.
 export class SelectionController extends Controller<'main'> {
   private lastSelectedSlice?: number;
+  private lastSelectedKind?: string;
   constructor(private args: SelectionControllerArgs) {
     super('main');
   }
@@ -34,22 +35,26 @@ export class SelectionController extends Controller<'main'> {
   run() {
     const selection = globals.state.currentSelection;
     if (selection === null ||
-        selection.kind !== 'SLICE' ||
-        selection.id === this.lastSelectedSlice) {
+        (selection.kind !== 'SLICE' && selection.kind !== 'CHROME_SLICE') ||
+        (selection.id === this.lastSelectedSlice &&
+         selection.kind === this.lastSelectedKind)) {
       return;
     }
     const selectedSlice = selection.id;
+    const selectedSliceKind = selection.kind;
     this.lastSelectedSlice = selectedSlice;
+    this.lastSelectedKind = selectedSliceKind;
 
-    if (selectedSlice !== undefined) {
+    if (selectedSlice === undefined) return;
+
+    if (selectedSliceKind === 'SLICE') {
       const sqlQuery = `SELECT ts, dur, priority, end_state, utid FROM sched
                         WHERE row_id = ${selectedSlice}`;
       this.args.engine.query(sqlQuery).then(result => {
         // Check selection is still the same on completion of query.
         const selection = globals.state.currentSelection;
-        if (result.numRecords === 1 &&
-            selection &&
-            selection.kind === 'SLICE' &&
+        if (result.numRecords === 1 && selection &&
+            selection.kind === selectedSliceKind &&
             selection.id === selectedSlice) {
           const ts = result.columns[0].longValues![0] as number;
           const timeFromStart = fromNs(ts) - globals.state.traceTime.startSec;
@@ -65,12 +70,48 @@ export class SelectionController extends Controller<'main'> {
           });
         }
       });
+    } else if (selectedSliceKind === 'CHROME_SLICE') {
+      if (selectedSlice === -1) {
+        globals.publish('SliceDetails', {ts: 0, name: 'Summarized slice'});
+        return;
+      }
+      const sqlQuery = `SELECT ts, dur, name, cat FROM slices
+      WHERE slice_id = ${selectedSlice}`;
+      this.args.engine.query(sqlQuery).then(result => {
+        console.log('query resulted for chrome slices!');
+        // Check selection is still the same on completion of query.
+        const selection = globals.state.currentSelection;
+        if (result.numRecords === 1 && selection &&
+            selection.kind === selectedSliceKind &&
+            selection.id === selectedSlice) {
+          const ts = result.columns[0].longValues![0] as number;
+          const timeFromStart = fromNs(ts) - globals.state.traceTime.startSec;
+          const name = result.columns[2].stringValues![0];
+          const dur = fromNs(result.columns[1].longValues![0] as number);
+          const category = result.columns[3].stringValues![0];
+          // TODO(nicomazz): Add arguments and thread timestamps
+          const selected:
+              SliceDetails = {ts: timeFromStart, dur, category, name};
+          globals.publish('SliceDetails', selected);
+        }
+      });
     }
   }
 
   async schedulingDetails(ts: number, utid: number|Long) {
+    let event = 'sched_waking';
+    const waking = await this.args.engine.query(
+        `select * from instants where name = 'sched_waking' limit 1`);
+    const wakeup = await this.args.engine.query(
+        `select * from instants where name = 'sched_wakeup' limit 1`);
+    if (waking.numRecords === 0) {
+      if (wakeup.numRecords === 0) return undefined;
+      // Only use sched_wakeup if waking is not in the trace.
+      event = 'sched_wakeup';
+    }
+
     // Find the ts of the first sched_wakeup before the current slice.
-    const queryWakeupTs = `select ts from instants where name = 'sched_wakeup'
+    const queryWakeupTs = `select ts from instants where name = '${event}'
     and ref = ${utid} and ts < ${ts} order by ts desc limit 1`;
     const wakeupRow = await this.args.engine.queryOneRow(queryWakeupTs);
     // Find the previous sched slice for the current utid.
@@ -86,7 +127,7 @@ export class SelectionController extends Controller<'main'> {
     // Find the sched slice with the utid of the waker running when the
     // sched wakeup occurred. This is the waker.
     const queryWaker = `select utid, cpu from sched where utid =
-    (select utid from raw where name = 'sched_wakeup' and ts = ${wakeupTs})
+    (select utid from raw where name = '${event}' and ts = ${wakeupTs})
     and ts < ${wakeupTs} and ts + dur >= ${wakeupTs};`;
     const wakerRow = await this.args.engine.queryOneRow(queryWaker);
     if (wakerRow) {

@@ -25,23 +25,11 @@
 #include <string>
 
 #include "perfetto/base/build_config.h"
-#include "perfetto/base/thread_checker.h"
-#include "perfetto/base/unix_task_runner.h"
-
-#if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID) && \
-    !PERFETTO_BUILDFLAG(PERFETTO_EMBEDDER_BUILD)
-#include "perfetto/base/android_task_runner.h"
-#endif
+#include "perfetto/ext/base/thread_checker.h"
+#include "perfetto/ext/base/unix_task_runner.h"
 
 namespace perfetto {
 namespace base {
-
-#if PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID) && \
-    !PERFETTO_BUILDFLAG(PERFETTO_EMBEDDER_BUILD)
-using PlatformTaskRunner = AndroidTaskRunner;
-#else
-using PlatformTaskRunner = UnixTaskRunner;
-#endif
 
 class TestTaskRunner : public TaskRunner {
  public:
@@ -71,7 +59,7 @@ class TestTaskRunner : public TaskRunner {
   std::string pending_checkpoint_;
   std::map<std::string, bool> checkpoints_;
 
-  PlatformTaskRunner task_runner_;
+  base::UnixTaskRunner task_runner_;
   ThreadChecker thread_checker_;
 };
 

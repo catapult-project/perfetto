@@ -63,8 +63,7 @@ class TrackShell implements m.ClassComponent<TrackShellAttrs> {
           {
             title: attrs.trackState.name,
           },
-          attrs.trackState.name,
-          m.trust('&#x200E;')),
+          attrs.trackState.name + '\u200E'),
         m(TrackButton, {
           action: Actions.toggleTrackPinned({trackId: attrs.trackState.id}),
           i: isPinned(attrs.trackState.id) ? 'star' : 'star_border',
@@ -160,10 +159,17 @@ interface TrackComponentAttrs {
 }
 class TrackComponent implements m.ClassComponent<TrackComponentAttrs> {
   view({attrs}: m.CVnode<TrackComponentAttrs>) {
-    return m('.track', [
-      m(TrackShell, {trackState: attrs.trackState}),
-      m(TrackContent, {track: attrs.track})
-    ]);
+    return m(
+        '.track',
+        {
+          style: {
+            height: `${attrs.track.getHeight()}px`,
+          }
+        },
+        [
+          m(TrackShell, {trackState: attrs.trackState}),
+          m(TrackContent, {track: attrs.track})
+        ]);
   }
 }
 
@@ -197,17 +203,6 @@ export class TrackPanel extends Panel<TrackPanelAttrs> {
   }
 
   view() {
-    return m(
-        '.track',
-        {
-          style: {
-            height: `${this.track.getHeight()}px`,
-          }
-        },
-        [
-          m(TrackShell, {trackState: this.trackState}),
-          m(TrackContent, {track: this.track})
-        ]);
     return m(TrackComponent, {trackState: this.trackState, track: this.track});
   }
 
@@ -222,12 +217,12 @@ export class TrackPanel extends Panel<TrackPanelAttrs> {
 
     ctx.translate(TRACK_SHELL_WIDTH, 0);
 
-    this.track.renderCanvas(ctx);
+    this.track.render(ctx);
 
     ctx.restore();
 
     const localState = globals.frontendLocalState;
-    // Draw vertical line when hovering on the the notes panel.
+    // Draw vertical line when hovering on the notes panel.
     if (localState.showNotePreview) {
       drawVerticalLineAtTime(ctx,
                              localState.timeScale,
@@ -254,12 +249,13 @@ export class TrackPanel extends Panel<TrackPanelAttrs> {
                                note.color);
       }
       if (globals.state.currentSelection.kind === 'TIMESPAN') {
-        drawVerticalSelection(ctx,
-                              localState.timeScale,
-                              globals.state.currentSelection.startTs,
-                              globals.state.currentSelection.endTs,
-                              size.height,
-                              `rgba(52,69,150,0.3)`);
+        drawVerticalSelection(
+            ctx,
+            localState.timeScale,
+            globals.state.currentSelection.startTs,
+            globals.state.currentSelection.endTs,
+            size.height,
+            `rgba(0,0,0,0.5)`);
       }
       if (globals.state.currentSelection.kind === 'SLICE' &&
           globals.sliceDetails.wakeupTs !== undefined) {
