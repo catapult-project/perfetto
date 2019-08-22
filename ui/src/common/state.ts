@@ -19,6 +19,15 @@
  */
 export interface ObjectById<Class extends{id: string}> { [id: string]: Class; }
 
+export type Timestamped<T> = {
+  [P in keyof T]: T[P];
+}&{lastUpdate: number};
+
+export type OmniboxState = Timestamped<{omnibox: string;}>;
+
+export type VisibleState =
+    Timestamped<{startSec: number; endSec: number; resolution: number;}>;
+
 export const MAX_TIME = 180;
 
 export const SCROLLING_TRACK_GROUP = 'ScrollingTracks';
@@ -64,9 +73,8 @@ export interface TraceTime {
 }
 
 export interface FrontendLocalState {
-  visibleTraceTime: TraceTime;
-  curResolution: number;
-  lastUpdate: number;  // Epoch in seconds (Date.now() / 1000).
+  omniboxState: OmniboxState;
+  visibleState: VisibleState;
 }
 
 export interface Status {
@@ -169,6 +177,7 @@ export interface State {
    */
   recordingInProgress: boolean;
   extensionInstalled: boolean;
+  serialAndroidDeviceConnected: string|undefined;
 }
 
 export const defaultTraceTime = {
@@ -184,6 +193,10 @@ export declare type TargetOs = 'Q' | 'P' | 'O' | 'C' | 'L';
 
 export function isAndroidTarget(target: TargetOs) {
   return ['Q', 'P', 'O'].includes(target);
+}
+
+export function isChromeTarget(target: TargetOs) {
+  return target === 'C';
 }
 
 export interface RecordConfig {
@@ -207,6 +220,7 @@ export interface RecordConfig {
   screenRecord: boolean;
 
   gpuFreq: boolean;
+  gpuSched: boolean;
 
   ftrace: boolean;
   atrace: boolean;
@@ -254,6 +268,7 @@ export function createEmptyRecordConfig(): RecordConfig {
     screenRecord: false,
 
     gpuFreq: false,
+    gpuSched: false,
 
     ftrace: false,
     atrace: false,
@@ -308,9 +323,16 @@ export function createEmptyState(): State {
     displayConfigAsPbtxt: false,
 
     frontendLocalState: {
-      visibleTraceTime: {...defaultTraceTime},
-      lastUpdate: 0,
-      curResolution: 0,
+      omniboxState: {
+        lastUpdate: 0,
+        omnibox: '',
+      },
+
+      visibleState: {
+        ...defaultTraceTime,
+        lastUpdate: 0,
+        resolution: 0,
+      },
     },
 
     logsPagination: {
@@ -329,5 +351,6 @@ export function createEmptyState(): State {
     flagPauseEnabled: false,
     recordingInProgress: false,
     extensionInstalled: false,
+    serialAndroidDeviceConnected: undefined,
   };
 }

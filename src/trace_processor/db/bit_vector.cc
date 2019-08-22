@@ -14,30 +14,18 @@
  * limitations under the License.
  */
 
-#ifndef SRC_TRACE_PROCESSOR_HEAP_PROFILE_CALLSITE_TABLE_H_
-#define SRC_TRACE_PROCESSOR_HEAP_PROFILE_CALLSITE_TABLE_H_
-
-#include "src/trace_processor/storage_table.h"
+#include "src/trace_processor/db/bit_vector.h"
 
 namespace perfetto {
 namespace trace_processor {
 
-class HeapProfileCallsiteTable : public StorageTable {
- public:
-  static void RegisterTable(sqlite3* db, const TraceStorage* storage);
+BitVector::BitVector(uint32_t count, bool value) : inner_(count, value) {}
 
-  HeapProfileCallsiteTable(sqlite3*, const TraceStorage*);
+BitVector::BitVector(std::vector<bool> inner) : inner_(std::move(inner)) {}
 
-  // StorageTable implementation.
-  StorageSchema CreateStorageSchema() override;
-  uint32_t RowCount() override;
-  int BestIndex(const QueryConstraints&, BestIndexInfo*) override;
-
- private:
-  const TraceStorage* const storage_;
-};
+BitVector BitVector::Copy() const {
+  return BitVector(inner_);
+}
 
 }  // namespace trace_processor
 }  // namespace perfetto
-
-#endif  // SRC_TRACE_PROCESSOR_HEAP_PROFILE_CALLSITE_TABLE_H_
