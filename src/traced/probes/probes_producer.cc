@@ -43,10 +43,10 @@
 #include "src/traced/probes/ps/process_stats_data_source.h"
 #include "src/traced/probes/sys_stats/sys_stats_data_source.h"
 
-#include "perfetto/trace/filesystem/inode_file_map.pbzero.h"
-#include "perfetto/trace/ftrace/ftrace_event_bundle.pbzero.h"
-#include "perfetto/trace/ftrace/ftrace_stats.pbzero.h"
-#include "perfetto/trace/trace_packet.pbzero.h"
+#include "protos/perfetto/trace/filesystem/inode_file_map.pbzero.h"
+#include "protos/perfetto/trace/ftrace/ftrace_event_bundle.pbzero.h"
+#include "protos/perfetto/trace/ftrace/ftrace_stats.pbzero.h"
+#include "protos/perfetto/trace/trace_packet.pbzero.h"
 
 namespace perfetto {
 namespace {
@@ -262,7 +262,7 @@ std::unique_ptr<ProbesDataSource> ProbesProducer::CreateFtraceDataSource(
         "already in use)");
     return nullptr;
   }
-  return std::move(data_source);
+  return std::unique_ptr<ProbesDataSource>(std::move(data_source));
 }
 
 std::unique_ptr<ProbesDataSource> ProbesProducer::CreateInodeFileDataSource(

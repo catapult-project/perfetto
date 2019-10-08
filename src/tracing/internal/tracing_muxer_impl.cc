@@ -26,10 +26,10 @@
 #include "perfetto/base/task_runner.h"
 #include "perfetto/ext/base/thread_checker.h"
 #include "perfetto/ext/base/waitable_event.h"
-#include "perfetto/ext/tracing/core/buffer_exhausted_policy.h"
 #include "perfetto/ext/tracing/core/trace_packet.h"
 #include "perfetto/ext/tracing/core/trace_writer.h"
 #include "perfetto/ext/tracing/core/tracing_service.h"
+#include "perfetto/tracing/buffer_exhausted_policy.h"
 #include "perfetto/tracing/core/data_source_config.h"
 #include "perfetto/tracing/data_source.h"
 #include "perfetto/tracing/internal/data_source_internal.h"
@@ -117,6 +117,8 @@ void TracingMuxerImpl::ProducerImpl::ClearIncrementalState(
     const DataSourceInstanceID*,
     size_t) {
   PERFETTO_DCHECK_THREAD(thread_checker_);
+  // TODO(skyostil): Mark each affected data source's incremental state as
+  // needing to be cleared.
 }
 // ----- End of TracingMuxerImpl::ProducerImpl methods.
 
@@ -390,7 +392,7 @@ TracingMuxerImpl::TracingMuxerImpl(const TracingInitArgs& args)
 void TracingMuxerImpl::Initialize(const TracingInitArgs& args) {
   PERFETTO_DCHECK_THREAD(thread_checker_);  // Rebind the thread checker.
 
-  auto add_backend = [this](TracingBackend* backend, BackendType type) {
+  auto add_backend = [this, &args](TracingBackend* backend, BackendType type) {
     TracingBackendId backend_id = backends_.size();
     backends_.emplace_back();
     RegisteredBackend& rb = backends_.back();
@@ -402,18 +404,13 @@ void TracingMuxerImpl::Initialize(const TracingInitArgs& args) {
     conn_args.producer = rb.producer.get();
     conn_args.producer_name = platform_->GetCurrentProcessName();
     conn_args.task_runner = task_runner_.get();
+    conn_args.shmem_size_hint_bytes = args.shmem_size_hint_kb * 1024;
+    conn_args.shmem_page_size_hint_bytes = args.shmem_page_size_hint_kb * 1024;
     rb.producer->Initialize(rb.backend->ConnectProducer(conn_args));
   };
 
   if (args.backends & kSystemBackend) {
-// These buildflags match the |perfetto_build_with_ipc_layer| condition in
-// the //src/tracing:client_api target.
-#if (PERFETTO_BUILDFLAG(PERFETTO_ANDROID_BUILD) ||     \
-     PERFETTO_BUILDFLAG(PERFETTO_CHROMIUM_BUILD) ||    \
-     PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)) && \
-    (PERFETTO_BUILDFLAG(PERFETTO_OS_LINUX) ||          \
-     PERFETTO_BUILDFLAG(PERFETTO_OS_ANDROID) ||        \
-     PERFETTO_BUILDFLAG(PERFETTO_OS_MACOSX))
+#if (PERFETTO_BUILDFLAG(PERFETTO_IPC))
     add_backend(SystemTracingBackend::GetInstance(), kSystemBackend);
 #else
     PERFETTO_ELOG("System backend not supporteed in the current configuration");
@@ -803,15 +800,11 @@ TracingMuxerImpl::FindDataSourceRes TracingMuxerImpl::FindDataSource(
 
 // Can be called from any thread.
 std::unique_ptr<TraceWriterBase> TracingMuxerImpl::CreateTraceWriter(
-    DataSourceState* data_source) {
+    DataSourceState* data_source,
+    BufferExhaustedPolicy buffer_exhausted_policy) {
   ProducerImpl* producer = backends_[data_source->backend_id].producer.get();
-  // We choose BufferExhaustedPolicy::kDrop to avoid stalls when all SMB chunks
-  // are allocated, ensuring that the app keeps working even when tracing hits
-  // its SMB limit. Note that this means we will lose data in such a case
-  // (tracked in BufferStats::trace_writer_packet_loss). To reduce this data
-  // loss, apps should choose a large enough SMB size.
   return producer->service_->CreateTraceWriter(data_source->buffer_id,
-                                               BufferExhaustedPolicy::kDrop);
+                                               buffer_exhausted_policy);
 }
 
 // This is called via the public API Tracing::NewTrace().

@@ -28,14 +28,29 @@ GROUP BY 1, 2;
 -- For each callsite ID traverse all frames to the root.
 CREATE TABLE flattened_callsite AS
 WITH RECURSIVE callsite_parser(callsite_id, current_id, position) AS (
-  SELECT id, id, 0 FROM heap_profile_callsite
+  SELECT id, id, 0 FROM stack_profile_callsite
   UNION
   SELECT callsite_id, parent_id, position + 1
-  FROM callsite_parser JOIN heap_profile_callsite ON heap_profile_callsite.id = current_id
-  WHERE heap_profile_callsite.depth > 0
+  FROM callsite_parser JOIN stack_profile_callsite ON stack_profile_callsite.id = current_id
+  WHERE stack_profile_callsite.depth > 0
 )
 SELECT *
 FROM callsite_parser;
+
+-- Join frames with symbols
+CREATE TABLE symbolized_frame AS
+SELECT
+  spf.id AS id,
+  spf.mapping AS mapping,
+  IFNULL(
+    (SELECT name FROM stack_profile_symbol symbol
+      WHERE symbol.symbol_set_id = spf.symbol_set_id
+      LIMIT 1),
+    spf.name
+  ) AS name
+FROM stack_profile_frame spf;
+
+CREATE UNIQUE INDEX symbolized_frame_idx ON symbolized_frame(id);
 
 -- Join with the frames table to get the symbol names.
 -- Output order for position matters (as will be the order in the subsequent aggregate operations).
@@ -44,13 +59,18 @@ CREATE VIEW frames_by_callsite_id AS
 SELECT
   callsite_id,
   position,
-  HeapProfileCallsiteStats_Frame('name', heap_profile_frame.name) AS frame_proto
+  HeapProfileCallsiteStats_Frame(
+    'name', spf.name,
+    'mapping_name', stack_profile_mapping.name
+  ) AS frame_proto
 FROM flattened_callsite
-CROSS JOIN heap_profile_callsite
-CROSS JOIN heap_profile_frame
+CROSS JOIN stack_profile_callsite
+CROSS JOIN symbolized_frame spf
+CROSS JOIN stack_profile_mapping
 WHERE
-  flattened_callsite.current_id = heap_profile_callsite.id
-  AND heap_profile_callsite.frame_id = heap_profile_frame.id
+  flattened_callsite.current_id = stack_profile_callsite.id
+  AND stack_profile_callsite.frame_id = spf.id
+  AND spf.mapping = stack_profile_mapping.id
 ORDER BY callsite_id, position;
 
 -- Map callsite ID to proto.

@@ -27,8 +27,7 @@
 #include "src/trace_processor/trace_processor_context.h"
 #include "src/trace_processor/trace_storage.h"
 
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD) || \
-    PERFETTO_BUILD_WITH_CHROMIUM
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
 #include <json/value.h>
 #else
 // Json traces are only supported in standalone and Chromium builds.
@@ -69,6 +68,31 @@ namespace trace_processor {
 // from there to the end.
 class TraceSorter {
  public:
+  struct InlineSchedSwitch {
+    int64_t prev_state;
+    int32_t next_pid;
+    int32_t next_prio;
+    StringId next_comm;
+  };
+
+  // Discriminated union of events that are cannot be easily read from the
+  // mapped trace.
+  struct InlineEvent {
+    enum class Type { kInvalid = 0, kSchedSwitch };
+
+    static InlineEvent SchedSwitch(InlineSchedSwitch content) {
+      InlineEvent evt;
+      evt.type = Type::kSchedSwitch;
+      evt.sched_switch = content;
+      return evt;
+    }
+
+    Type type = Type::kInvalid;
+    union {
+      InlineSchedSwitch sched_switch;
+    };
+  };
+
   struct TimestampedTracePiece {
     TimestampedTracePiece(
         int64_t ts,
@@ -82,7 +106,8 @@ class TraceSorter {
                                 std::move(tbv),
                                 /*value=*/nullptr,
                                 /*fpv=*/nullptr,
-                                /*sequence_state=*/sequence_state) {}
+                                /*sequence_state=*/sequence_state,
+                                InlineEvent{}) {}
 
     TimestampedTracePiece(int64_t ts, uint64_t idx, TraceBlobView tbv)
         : TimestampedTracePiece(ts,
@@ -92,7 +117,8 @@ class TraceSorter {
                                 std::move(tbv),
                                 /*value=*/nullptr,
                                 /*fpv=*/nullptr,
-                                /*sequence_state=*/nullptr) {}
+                                /*sequence_state=*/nullptr,
+                                InlineEvent{}) {}
 
     TimestampedTracePiece(int64_t ts,
                           uint64_t idx,
@@ -106,7 +132,8 @@ class TraceSorter {
                                 TraceBlobView(nullptr, 0, 0),
                                 std::move(value),
                                 /*fpv=*/nullptr,
-                                /*sequence_state=*/nullptr) {}
+                                /*sequence_state=*/nullptr,
+                                InlineEvent{}) {}
 
     TimestampedTracePiece(int64_t ts,
                           uint64_t idx,
@@ -119,7 +146,8 @@ class TraceSorter {
                                 std::move(tbv),
                                 /*value=*/nullptr,
                                 std::move(fpv),
-                                /*sequence_state=*/nullptr) {}
+                                /*sequence_state=*/nullptr,
+                                InlineEvent{}) {}
 
     TimestampedTracePiece(
         int64_t ts,
@@ -135,7 +163,19 @@ class TraceSorter {
                                 std::move(tbv),
                                 /*value=*/nullptr,
                                 /*fpv=*/nullptr,
-                                sequence_state) {}
+                                sequence_state,
+                                InlineEvent{}) {}
+
+    TimestampedTracePiece(int64_t ts, uint64_t idx, InlineEvent inline_evt)
+        : TimestampedTracePiece(ts,
+                                /*thread_ts=*/0,
+                                /*thread_instructions=*/0,
+                                idx,
+                                /*tbv=*/TraceBlobView(nullptr, 0, 0),
+                                /*value=*/nullptr,
+                                /*fpv=*/nullptr,
+                                /*sequence_state=*/nullptr,
+                                inline_evt) {}
 
     TimestampedTracePiece(
         int64_t ts,
@@ -145,7 +185,8 @@ class TraceSorter {
         TraceBlobView tbv,
         std::unique_ptr<Json::Value> value,
         std::unique_ptr<FuchsiaProviderView> fpv,
-        ProtoIncrementalState::PacketSequenceState* sequence_state)
+        ProtoIncrementalState::PacketSequenceState* sequence_state,
+        InlineEvent inline_evt)
         : json_value(std::move(value)),
           fuchsia_provider_view(std::move(fpv)),
           packet_sequence_state(sequence_state),
@@ -153,7 +194,8 @@ class TraceSorter {
           thread_timestamp(thread_ts),
           thread_instruction_count(thread_instructions),
           packet_idx_(idx),
-          blob_view(std::move(tbv)) {}
+          blob_view(std::move(tbv)),
+          inline_event(inline_evt) {}
 
     TimestampedTracePiece(TimestampedTracePiece&&) noexcept = default;
     TimestampedTracePiece& operator=(TimestampedTracePiece&&) = default;
@@ -178,6 +220,7 @@ class TraceSorter {
     int64_t thread_instruction_count;
     uint64_t packet_idx_;
     TraceBlobView blob_view;
+    InlineEvent inline_event;
   };
 
   TraceSorter(TraceProcessorContext*, int64_t window_size_ns);
@@ -222,6 +265,21 @@ class TraceSorter {
     // batch of ftrace events. This is to amortize the overhead of handling
     // global ordering and doing that in batches only after all ftrace events
     // for a bundle are pushed.
+  }
+
+  // As with |PushFtraceEvent|, doesn't immediately sort the affected queues.
+  // TODO(rsavitski): if a trace has a mix of normal & "compact" events (being
+  // pushed through this function), the ftrace batches will no longer be fully
+  // sorted by timestamp. In such situations, we will have to sort at the end of
+  // the batch. We can do better as both sub-sequences are sorted however.
+  // Consider adding extra queues, or pushing them in a merge-sort fashion
+  // instead.
+  inline void PushInlineFtraceEvent(uint32_t cpu,
+                                    int64_t timestamp,
+                                    InlineEvent inline_event) {
+    set_ftrace_batch_cpu_for_DCHECK(cpu);
+    GetQueue(cpu + 1)->Append(
+        TimestampedTracePiece(timestamp, packet_idx_++, inline_event));
   }
 
   inline void PushTrackEventPacket(

@@ -30,12 +30,10 @@
 #include <iterator>
 #include <sstream>
 
-#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
-
 #include "perfetto/base/logging.h"
+#include "perfetto/base/time.h"
 #include "perfetto/ext/base/file_utils.h"
 #include "perfetto/ext/base/string_view.h"
-#include "perfetto/ext/base/time.h"
 #include "perfetto/ext/base/utils.h"
 #include "perfetto/ext/traced/traced.h"
 #include "perfetto/ext/tracing/core/basic_types.h"
@@ -51,8 +49,8 @@
 #include "src/perfetto_cmd/pbtxt_to_pb.h"
 #include "src/perfetto_cmd/trigger_producer.h"
 
-#include "perfetto/common/tracing_service_state.pb.h"
-#include "perfetto/config/trace_config.pb.h"
+#include "protos/perfetto/common/tracing_service_state.pb.h"
+#include "protos/perfetto/config/trace_config.pb.h"
 
 namespace perfetto {
 namespace {

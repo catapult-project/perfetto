@@ -19,6 +19,19 @@
  */
 export interface ObjectById<Class extends{id: string}> { [id: string]: Class; }
 
+export type Timestamped<T> = {
+  [P in keyof T]: T[P];
+}&{lastUpdate: number};
+
+export type OmniboxState =
+    Timestamped<{omnibox: string; mode: 'SEARCH' | 'COMMAND'}>;
+
+export type VisibleState =
+    Timestamped<{startSec: number; endSec: number; resolution: number;}>;
+
+export type SelectedTimeRange =
+    Timestamped<{startSec?: number; endSec?: number;}>;
+
 export const MAX_TIME = 180;
 
 export const SCROLLING_TRACK_GROUP = 'ScrollingTracks';
@@ -64,9 +77,9 @@ export interface TraceTime {
 }
 
 export interface FrontendLocalState {
-  visibleTraceTime: TraceTime;
-  curResolution: number;
-  lastUpdate: number;  // Epoch in seconds (Date.now() / 1000).
+  omniboxState: OmniboxState;
+  visibleState: VisibleState;
+  selectedTimeRange: SelectedTimeRange;
 }
 
 export interface Status {
@@ -89,19 +102,26 @@ export interface NoteSelection {
 
 export interface SliceSelection {
   kind: 'SLICE';
-  utid: number;
   id: number;
+}
+
+export interface CounterSelection {
+  kind: 'COUNTER';
+  leftTs: number;
+  rightTs: number;
+  id: number;
+}
+
+export interface HeapDumpSelection {
+  kind: 'HEAP_DUMP';
+  id: number;
+  upid: number;
+  ts: number;
 }
 
 export interface ChromeSliceSelection {
   kind: 'CHROME_SLICE';
   id: number;
-}
-
-export interface TimeSpanSelection {
-  kind: 'TIMESPAN';
-  startTs: number;
-  endTs: number;
 }
 
 export interface ThreadStateSelection {
@@ -110,14 +130,21 @@ export interface ThreadStateSelection {
   ts: number;
   dur: number;
   state: string;
+  cpu: number;
 }
 
-type Selection = NoteSelection|SliceSelection|ChromeSliceSelection|
-    TimeSpanSelection|ThreadStateSelection;
+type Selection = NoteSelection|SliceSelection|CounterSelection|
+    HeapDumpSelection|ChromeSliceSelection|ThreadStateSelection;
 
 export interface LogsPagination {
   offset: number;
   count: number;
+}
+
+export interface AdbRecordingTarget {
+  serial: string;
+  name: string;
+  os: string;
 }
 
 export interface State {
@@ -164,11 +191,19 @@ export interface State {
   videoNoteIds: string[];
   scrubbingEnabled: boolean;
   flagPauseEnabled: boolean;
+
   /**
    * Trace recording
    */
   recordingInProgress: boolean;
+  recordingCancelled: boolean;
   extensionInstalled: boolean;
+  androidDeviceConnected?: AdbRecordingTarget;
+  availableDevices: AdbRecordingTarget[];
+  lastRecordingError?: string;
+  recordingStatus?: string;
+
+  chromeCategories: string[]|undefined;
 }
 
 export const defaultTraceTime = {
@@ -179,11 +214,26 @@ export const defaultTraceTime = {
 export declare type RecordMode =
     'STOP_WHEN_FULL' | 'RING_BUFFER' | 'LONG_TRACE';
 
+// 'Q','P','O' for Android, 'L' for Linux, 'C' for Chrome.
+export declare type TargetOs = 'Q' | 'P' | 'O' | 'C' | 'L';
+
+export function isAndroidTarget(target: TargetOs) {
+  return ['Q', 'P', 'O'].includes(target);
+}
+
+export function isChromeTarget(target: TargetOs) {
+  return target === 'C';
+}
+
+export function isLinuxTarget(target: TargetOs) {
+  return target === 'L';
+}
+
 export interface RecordConfig {
   [key: string]: null|number|boolean|string|string[];
 
   // Global settings
-  targetOS: string;  // 'Q','P','O' for Android, 'L' for Linux
+  targetOS: TargetOs;
   mode: RecordMode;
   durationMs: number;
   bufferSizeMb: number;
@@ -228,6 +278,8 @@ export interface RecordConfig {
 
   procStats: boolean;
   procStatsPeriodMs: number;
+
+  chromeCategoriesSelected: string[];
 }
 
 export function createEmptyRecordConfig(): RecordConfig {
@@ -279,6 +331,8 @@ export function createEmptyRecordConfig(): RecordConfig {
     memLmk: false,
     procStats: false,
     procStatsPeriodMs: 1000,
+
+    chromeCategoriesSelected: [],
   };
 }
 
@@ -301,9 +355,20 @@ export function createEmptyState(): State {
     displayConfigAsPbtxt: false,
 
     frontendLocalState: {
-      visibleTraceTime: {...defaultTraceTime},
-      lastUpdate: 0,
-      curResolution: 0,
+      omniboxState: {
+        lastUpdate: 0,
+        omnibox: '',
+        mode: 'SEARCH',
+      },
+
+      visibleState: {
+        ...defaultTraceTime,
+        lastUpdate: 0,
+        resolution: 0,
+      },
+      selectedTimeRange: {
+        lastUpdate: 0,
+      },
     },
 
     logsPagination: {
@@ -321,6 +386,24 @@ export function createEmptyState(): State {
     scrubbingEnabled: false,
     flagPauseEnabled: false,
     recordingInProgress: false,
+    recordingCancelled: false,
     extensionInstalled: false,
+    androidDeviceConnected: undefined,
+    availableDevices: [],
+
+    chromeCategories: undefined,
   };
+}
+
+export function getContainingTrackId(state: State, trackId: string): null|
+    string {
+  const track = state.tracks[trackId];
+  if (!track) {
+    return null;
+  }
+  const parentId = track.trackGroup;
+  if (!parentId) {
+    return null;
+  }
+  return parentId;
 }

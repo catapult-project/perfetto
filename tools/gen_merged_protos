@@ -19,10 +19,16 @@ from __future__ import print_function
 import os
 import re
 import sys
+from codecs import open
 
 COMMON_PROTOS = (
   'protos/perfetto/common/android_log_constants.proto',
+  'protos/perfetto/common/data_source_descriptor.proto',
+  'protos/perfetto/common/gpu_counter_descriptor.proto',
   'protos/perfetto/common/sys_stats_counters.proto',
+  'protos/perfetto/common/trace_stats.proto',
+  'protos/perfetto/common/tracing_service_state.proto',
+  'protos/perfetto/common/track_event_descriptor.proto',
 )
 
 CONFIG_PROTOS = (
@@ -37,6 +43,7 @@ CONFIG_PROTOS = (
   'protos/perfetto/config/test_config.proto',
   'protos/perfetto/config/trace_config.proto',
   'protos/perfetto/config/profiling/heapprofd_config.proto',
+  'protos/perfetto/config/profiling/java_hprof_config.proto',
   'protos/perfetto/config/gpu/gpu_counter_config.proto',
   'protos/perfetto/config/android/packages_list_config.proto',
 )
@@ -44,7 +51,6 @@ CONFIG_PROTOS = (
 MERGED_CONFIG_PROTO = 'protos/perfetto/config/perfetto_config.proto'
 
 TRACE_PROTOS = (
-  'protos/perfetto/common/trace_stats.proto', # only referenced by trace protos
   'protos/perfetto/trace/android/android_log.proto',
   'protos/perfetto/trace/android/graphics_frame_event.proto',
   'protos/perfetto/trace/android/packages_list.proto',
@@ -93,11 +99,11 @@ TRACE_PROTOS = (
   'protos/perfetto/trace/track_event/source_location.proto',
   'protos/perfetto/trace/track_event/task_execution.proto',
   'protos/perfetto/trace/track_event/thread_descriptor.proto',
+  'protos/perfetto/trace/track_event/track_descriptor.proto',
   'protos/perfetto/trace/track_event/track_event.proto',
   'protos/perfetto/trace/trigger.proto',
   'protos/perfetto/trace/gpu/gpu_counter_event.proto',
   'protos/perfetto/trace/gpu/gpu_render_stage_event.proto',
-  'protos/perfetto/common/gpu_counter_descriptor.proto',
 )
 
 MERGED_TRACE_PROTO = 'protos/perfetto/trace/perfetto_trace.proto'
@@ -122,7 +128,7 @@ def merge_protos(proto_paths, output_path):
   merged_content = ''
   for proto in proto_paths:
     path = os.path.join(root_dir, proto)
-    with open(path) as f:
+    with open(path, 'r', encoding='utf-8') as f:
       content = f.read()
 
     # Remove header
@@ -161,7 +167,7 @@ def merge_protos(proto_paths, output_path):
 
   prev_content = None
   if os.path.exists(out_path):
-    with open(out_path, 'rb') as fprev:
+    with open(out_path, 'r', encoding='utf-8') as fprev:
       prev_content = fprev.read()
 
   if prev_content == merged_content:
@@ -171,7 +177,7 @@ def merge_protos(proto_paths, output_path):
     return False
 
   print('Updating {}'.format(output_path))
-  with open(out_path, 'wb') as fout:
+  with open(out_path, 'w', encoding='utf-8') as fout:
     fout.write(merged_content)
   return True
 

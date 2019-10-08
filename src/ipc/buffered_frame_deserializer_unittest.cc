@@ -19,11 +19,11 @@
 #include <algorithm>
 #include <string>
 
-#include <gtest/gtest.h>
 #include "perfetto/base/logging.h"
 #include "perfetto/ext/base/utils.h"
+#include "test/gtest_and_gmock.h"
 
-#include "src/ipc/wire_protocol.pb.h"
+#include "protos/perfetto/ipc/wire_protocol.pb.h"
 
 namespace perfetto {
 namespace ipc {

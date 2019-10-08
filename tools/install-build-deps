@@ -21,13 +21,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib
 import zipfile
 
 from collections import namedtuple
 
-# When adding a new git dependency here please also add a corresponding entry in
-# .travis.yml under the "cache:" section.
+from compat import urlretrieve
 
 # The format for the deps below is the following:
 # (target_folder, source_url, sha1, target_platform)
@@ -120,8 +118,8 @@ BUILD_DEPS_HOST = [
   # Keep the revision in sync with Chrome's PACKAGE_VERSION in
   # tools/clang/scripts/update.py.
   ('buildtools/clang.tgz',
-   'https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64/clang-365097-f7e52fbd-1.tgz',
-   '157a09ef43bd47f4e7cb9b5068dcfe5eeba54610',
+   'https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64/clang-365097-f7e52fbd-8.tgz',
+   'fe1b1e5bd7381ae655661cb9658487389561568d',
    'linux2'
   ),
 
@@ -195,8 +193,8 @@ BUILD_DEPS_HOST = [
 
   # Example traces for regression tests.
   ('buildtools/test_data.zip',
-   'https://storage.googleapis.com/perfetto/test-data-20190807-125643.zip',
-   'abd9bc3e9f9e74ec6810b5c9bd1f15713a9a58ec',
+   'https://storage.googleapis.com/perfetto/test-data-20190920-011709.zip',
+   '75fc970bf2778d506c9d77f94a6381b04f10b692',
    'all',
   ),
 
@@ -340,7 +338,7 @@ def ExtractZipfilePreservePermissions(zf, info, path):
   zf.extract(info.filename, path=path)
   target_path = os.path.join(path, info.filename)
   min_acls = 0o755 if info.filename.endswith('/') else 0o644
-  os.chmod(target_path, (info.external_attr >> 16L) | min_acls)
+  os.chmod(target_path, (info.external_attr >> 16) | min_acls)
 
 
 def IsGitRepoCheckoutOutAtRevision(path, revision):
@@ -381,7 +379,7 @@ def CheckHashes():
       logging.info('Downloading %s from %s', rel_path, url)
       with tempfile.NamedTemporaryFile(delete=False) as f:
         f.close()
-        urllib.urlretrieve(url, f.name)
+        urlretrieve(url, f.name)
         actual_sha1 = HashLocalFile(f.name)
         os.unlink(f.name)
         if (actual_sha1 != expected_sha1):
@@ -424,7 +422,7 @@ def Main():
     if HashLocalFile(local_path) != expected_sha1:
       download_path = local_path + '.tmp'
       logging.info('Downloading %s from %s', local_path, url)
-      urllib.urlretrieve(url, download_path)
+      urlretrieve(url, download_path)
       os.chmod(download_path, 0o755)
       actual_sha1 = HashLocalFile(download_path)
       if (actual_sha1 != expected_sha1):
@@ -473,8 +471,8 @@ def Main():
   if deps_updated:
     # Stale binary files may be compiled against old sysroot headers that aren't
     # tracked by gn.
-    logging.warn('Remember to run "gn clean <output_directory>" ' +
-                 'to avoid stale binary files.')
+    logging.warning('Remember to run "gn clean <output_directory>" ' +
+                    'to avoid stale binary files.')
 
 if __name__ == '__main__':
   logging.basicConfig(level=logging.INFO)

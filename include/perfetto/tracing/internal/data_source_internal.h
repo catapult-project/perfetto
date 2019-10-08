@@ -27,6 +27,7 @@
 #include <mutex>
 
 // No perfetto headers (other than tracing/api and protozero) should be here.
+#include "perfetto/tracing/buffer_exhausted_policy.h"
 #include "perfetto/tracing/internal/basic_types.h"
 #include "perfetto/tracing/trace_writer_base.h"
 
@@ -119,13 +120,17 @@ struct DataSourceStaticState {
 
 // Per-DataSource-instance thread-local state.
 struct DataSourceInstanceThreadLocalState {
+  using IncrementalStatePointer = std::unique_ptr<void, void (*)(void*)>;
+
   void Reset() {
     trace_writer.reset();
+    incremental_state.reset();
     backend_id = 0;
     buffer_id = 0;
   }
 
   std::unique_ptr<TraceWriterBase> trace_writer;
+  IncrementalStatePointer incremental_state = {nullptr, [](void*) {}};
   TracingBackendId backend_id;
   BufferId buffer_id;
 };

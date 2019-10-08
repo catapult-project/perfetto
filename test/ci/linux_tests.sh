@@ -15,6 +15,7 @@
 
 set -eux -o pipefail
 
+# cd into the project root (two levels up from /test/ci).
 cd $(dirname ${BASH_SOURCE[0]})/../..
 
 OUT_PATH="out/dist"
@@ -35,13 +36,24 @@ ${OUT_PATH}/perfetto_unittests
 ${OUT_PATH}/perfetto_integrationtests
 BENCHMARK_FUNCTIONAL_TEST_ONLY=true ${OUT_PATH}/perfetto_benchmarks
 
-mkdir -p /ci/artifacts/perf-test-metrics.tmp
+# If this is a split host+target build, use the trace_processoer_shell binary
+# from the host directory. In some cases (e.g. lsan x86 builds) the host binary
+# that is copied into the target directory (OUT_PATH) cannot run because depends
+# on libc++.so within the same folder (which is built using target bitness,
+# not host bitness).
+TP_SHELL=${OUT_PATH}/gcc_like_host/trace_processor_shell
+if [ ! -f ${TP_SHELL} ]; then
+  TP_SHELL=${OUT_PATH}/trace_processor_shell
+fi
+
+mkdir -p /ci/artifacts/perf
+
 tools/diff_test_trace_processor.py \
   --test-type=queries \
-  --perf-file=/ci/artifacts/perf-test-metrics.tmp/tp-perf-queries.json \
-  ${OUT_PATH}/trace_processor_shell
+  --perf-file=/ci/artifacts/perf/tp-perf-queries.json \
+  ${TP_SHELL}
+
 tools/diff_test_trace_processor.py \
   --test-type=metrics \
-  --perf-file=/ci/artifacts/perf-test-metrics.tmp/tp-perf-metrics.json \
-  ${OUT_PATH}/trace_processor_shell
-mv /ci/artifacts/perf-test-metrics.tmp /ci/artifacts/perf-test-metrics
+  --perf-file=/ci/artifacts/perf/tp-perf-metrics.json \
+  ${TP_SHELL}

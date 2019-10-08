@@ -17,8 +17,6 @@
 #include <inttypes.h>
 #include <unistd.h>
 
-#include <gmock/gmock.h>
-#include <gtest/gtest.h>
 #include "perfetto/ext/base/temp_file.h"
 #include "perfetto/ext/tracing/core/consumer.h"
 #include "perfetto/ext/tracing/core/producer.h"
@@ -34,12 +32,13 @@
 #include "src/base/test/test_task_runner.h"
 #include "src/ipc/test/test_socket.h"
 #include "src/tracing/core/tracing_service_impl.h"
+#include "test/gtest_and_gmock.h"
 
-#include "perfetto/config/trace_config.pb.h"
-#include "perfetto/trace/test_event.pbzero.h"
-#include "perfetto/trace/trace.pb.h"
-#include "perfetto/trace/trace_packet.pb.h"
-#include "perfetto/trace/trace_packet.pbzero.h"
+#include "protos/perfetto/config/trace_config.pb.h"
+#include "protos/perfetto/trace/test_event.pbzero.h"
+#include "protos/perfetto/trace/trace.pb.h"
+#include "protos/perfetto/trace/trace_packet.pb.h"
+#include "protos/perfetto/trace/trace_packet.pbzero.h"
 
 namespace perfetto {
 namespace {
@@ -309,7 +308,8 @@ TEST_F(TracingIntegrationTest, WithIPCTransport) {
 
             for (auto& encoded_packet : *packets) {
               protos::TracePacket packet;
-              ASSERT_TRUE(encoded_packet.Decode(&packet));
+              ASSERT_TRUE(packet.ParseFromString(
+                  encoded_packet.GetRawBytesForTesting()));
               if (packet.has_for_testing()) {
                 char buf[8];
                 sprintf(buf, "evt_%zu", num_pack_rx++);
@@ -517,7 +517,8 @@ TEST_F(TracingIntegrationTestWithSMBScrapingProducer, ScrapeOnFlush) {
                      std::vector<TracePacket>* packets, bool has_more) {
             for (auto& encoded_packet : *packets) {
               protos::TracePacket packet;
-              ASSERT_TRUE(encoded_packet.Decode(&packet));
+              ASSERT_TRUE(packet.ParseFromString(
+                  encoded_packet.GetRawBytesForTesting()));
               if (packet.has_for_testing()) {
                 num_test_pack_rx++;
               }

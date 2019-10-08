@@ -12,28 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {stringToUint8Array} from '../base/string_utils';
 import {ChromeTracingController} from './chrome_tracing_controller';
 
 let chromeTraceController: ChromeTracingController|undefined = undefined;
 
-chrome.runtime.onInstalled.addListener(() => {
-  enableOnlyOnPerfettoHost();
-  // Listen for messages from the perfetto ui.
-  chrome.runtime.onConnectExternal.addListener(port => {
-    chromeTraceController = new ChromeTracingController(port);
-    port.onMessage.addListener(onUIMessage);
-  });
+enableOnlyOnPerfettoHost();
+// Listen for messages from the perfetto ui.
+chrome.runtime.onConnectExternal.addListener(port => {
+  chromeTraceController = new ChromeTracingController(port);
+  port.onMessage.addListener(onUIMessage);
 });
 
 function onUIMessage(
-    message: {method: string, traceConfig: Uint8Array},
-    port: chrome.runtime.Port) {
+    message: {method: string, requestData: string}, port: chrome.runtime.Port) {
   if (message.method === 'ExtensionVersion') {
     port.postMessage({version: chrome.runtime.getManifest().version});
     return;
   }
-  // In the future, more targets will be supported.
-  if (chromeTraceController) chromeTraceController.onMessage(message);
+  console.assert(chromeTraceController !== undefined);
+  if (!chromeTraceController) return;
+  // ChromeExtensionConsumerPort sends the request data as string because
+  // chrome.runtime.port doesn't support ArrayBuffers.
+  const requestDataArray: Uint8Array = message.requestData ?
+      stringToUint8Array(message.requestData) :
+      new Uint8Array();
+  chromeTraceController.handleCommand(message.method, requestDataArray);
 }
 
 function enableOnlyOnPerfettoHost() {
@@ -49,7 +53,6 @@ function enableOnlyOnPerfettoHost() {
     chrome.declarativeContent.onPageChanged.addRules([
       enableOnHostWithSuffix('.perfetto.local'),
       enableOnHostWithSuffix('.perfetto.dev'),
-      enableOnHostWithSuffix('-dot-perfetto-ui.appspot.com'),
     ]);
   });
 }

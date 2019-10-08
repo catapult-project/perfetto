@@ -21,8 +21,10 @@ import {TimeSpan} from '../common/time';
 
 import {ChromeSliceDetailsPanel} from './chrome_slice_panel';
 import {copyToClipboard} from './clipboard';
+import {CounterDetailsPanel} from './counter_panel';
 import {DragGestureHandler} from './drag_gesture_handler';
 import {globals} from './globals';
+import {HeapDumpDetailsPanel} from './heap_dump_panel';
 import {LogPanel} from './logs_panel';
 import {NotesEditorPanel, NotesPanel} from './notes_panel';
 import {OverviewTimelinePanel} from './overview_timeline_panel';
@@ -32,6 +34,7 @@ import {Panel} from './panel';
 import {AnyAttrsVnode, PanelContainer} from './panel_container';
 import {SliceDetailsPanel} from './slice_panel';
 import {ThreadStatePanel} from './thread_state_panel';
+import {TickmarkPanel} from './tickmark_panel';
 import {TimeAxisPanel} from './time_axis_panel';
 import {computeZoom} from './time_scale';
 import {TimeSelectionPanel} from './time_selection_panel';
@@ -124,6 +127,7 @@ class DragHandle implements m.ClassComponent<DragHandleAttrs> {
   oncreate({dom, attrs}: m.CVnodeDOM<DragHandleAttrs>) {
     this.resize = attrs.resize;
     this.height = attrs.height;
+    this.isClosed = this.height <= DRAG_HANDLE_HEIGHT_PX;
     const elem = dom as HTMLElement;
     new DragGestureHandler(
         elem,
@@ -135,6 +139,7 @@ class DragHandle implements m.ClassComponent<DragHandleAttrs> {
   onupdate({attrs}: m.CVnodeDOM<DragHandleAttrs>) {
     this.resize = attrs.resize;
     this.height = attrs.height;
+    this.isClosed = this.height <= DRAG_HANDLE_HEIGHT_PX;
   }
 
   onDrag(_x: number, y: number) {
@@ -252,7 +257,7 @@ class TraceViewer implements m.ClassComponent {
                                scale.pxToTime(startPx - TRACK_SHELL_WIDTH));
         const endTs = Math.min(traceTime.endSec,
                                scale.pxToTime(endPx - TRACK_SHELL_WIDTH));
-        globals.dispatch(Actions.selectTimeSpan({startTs, endTs}));
+        globals.frontendLocalState.selectTimeRange(startTs, endTs);
         globals.rafScheduler.scheduleRedraw();
       }
     });
@@ -295,8 +300,15 @@ class TraceViewer implements m.ClassComponent {
         case 'SLICE':
           detailsPanels.push(m(SliceDetailsPanel, {
             key: 'slice',
-            utid: curSelection.utid,
           }));
+          break;
+        case 'COUNTER':
+          detailsPanels.push(m(CounterDetailsPanel, {
+            key: 'counter',
+          }));
+          break;
+        case 'HEAP_DUMP':
+          detailsPanels.push(m(HeapDumpDetailsPanel, {key: 'heap_dump'}));
           break;
         case 'CHROME_SLICE':
           detailsPanels.push(m(ChromeSliceDetailsPanel));
@@ -307,7 +319,8 @@ class TraceViewer implements m.ClassComponent {
             ts: curSelection.ts,
             dur: curSelection.dur,
             utid: curSelection.utid,
-            state: curSelection.state
+            state: curSelection.state,
+            cpu: curSelection.cpu
           }));
           break;
         default:
@@ -317,7 +330,13 @@ class TraceViewer implements m.ClassComponent {
       detailsPanels.push(m(LogPanel, {}));
     }
 
+    const wasShowing = this.showDetailsPanel;
     this.showDetailsPanel = detailsPanels.length > 0;
+    // Pop up details panel on first selection.
+    if (!wasShowing && this.showDetailsPanel &&
+        this.detailsHeight === DRAG_HANDLE_HEIGHT_PX) {
+      this.detailsHeight = DEFAULT_DETAILS_HEIGHT_PX;
+    }
 
     return m(
         '.page',
@@ -330,7 +349,7 @@ class TraceViewer implements m.ClassComponent {
                   this.keepCurrentSelection = false;
                   return;
                 }
-                globals.dispatch(Actions.deselect({}));
+                globals.makeSelection(Actions.deselect({}));
               }
             },
             m('.pinned-panel-container', m(PanelContainer, {
@@ -340,6 +359,7 @@ class TraceViewer implements m.ClassComponent {
                   m(TimeAxisPanel, {key: 'timeaxis'}),
                   m(TimeSelectionPanel, {key: 'timeselection'}),
                   m(NotesPanel, {key: 'notes'}),
+                  m(TickmarkPanel, {key: 'searchTickmarks'}),
                   ...globals.state.pinnedTracks.map(
                       id => m(TrackPanel, {key: id, id})),
                 ],

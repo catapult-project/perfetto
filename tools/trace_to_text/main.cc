@@ -20,33 +20,33 @@
 #include <vector>
 
 #include "perfetto/base/logging.h"
+#include "tools/trace_to_text/symbolize_profile.h"
 #include "tools/trace_to_text/trace_to_profile.h"
 #include "tools/trace_to_text/trace_to_systrace.h"
 #include "tools/trace_to_text/trace_to_text.h"
-#include "tools/trace_to_text/symbolize_profile.h"
 
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
+#if PERFETTO_BUILDFLAG(PERFETTO_VERSION_GEN)
 #include "perfetto_version.gen.h"
 #else
 #define PERFETTO_GET_GIT_REVISION() "unknown"
 #endif
 
+namespace perfetto {
+namespace trace_to_text {
 namespace {
 
 int Usage(const char* argv0) {
   printf(
-      "Usage: %s systrace|json|text|profile [--truncate start|end] [trace.pb] "
+      "Usage: %s systrace|json|ctrace|text|profile [--truncate start|end] "
+      "[trace.pb] "
       "[trace.txt]\n",
       argv0);
   return 1;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int Main(int argc, char** argv) {
   std::vector<const char*> positional_args;
-  perfetto::trace_to_text::Keep truncate_keep =
-      perfetto::trace_to_text::Keep::kAll;
+  Keep truncate_keep = Keep::kAll;
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
       printf("%s\n", PERFETTO_GET_GIT_REVISION());
@@ -55,9 +55,9 @@ int main(int argc, char** argv) {
                strcmp(argv[i], "--truncate") == 0) {
       i++;
       if (i <= argc && strcmp(argv[i], "start") == 0) {
-        truncate_keep = perfetto::trace_to_text::Keep::kStart;
+        truncate_keep = Keep::kStart;
       } else if (i <= argc && strcmp(argv[i], "end") == 0) {
-        truncate_keep = perfetto::trace_to_text::Keep::kEnd;
+        truncate_keep = Keep::kEnd;
       } else {
         PERFETTO_ELOG(
             "--truncate must specify whether to keep the end or the "
@@ -105,28 +105,39 @@ int main(int argc, char** argv) {
   std::string format(positional_args[0]);
 
   if (format == "json")
-    return perfetto::trace_to_text::TraceToSystrace(input_stream, output_stream,
-                                                    truncate_keep,
-                                                    /*wrap_in_json=*/true);
+    return TraceToSystrace(input_stream, output_stream, kSystraceJson,
+                           truncate_keep);
+
   if (format == "systrace")
-    return perfetto::trace_to_text::TraceToSystrace(input_stream, output_stream,
-                                                    truncate_keep,
-                                                    /*wrap_in_json=*/false);
-  if (truncate_keep != perfetto::trace_to_text::Keep::kAll) {
+    return TraceToSystrace(input_stream, output_stream, kSystraceNormal,
+                           truncate_keep);
+
+  if (format == "ctrace")
+    return TraceToSystrace(input_stream, output_stream, kSystraceCompressed,
+                           truncate_keep);
+
+  if (truncate_keep != Keep::kAll) {
     PERFETTO_ELOG(
         "--truncate is unsupported for text|profile|symbolize format.");
     return 1;
   }
 
   if (format == "text")
-    return perfetto::trace_to_text::TraceToText(input_stream, output_stream);
+    return TraceToText(input_stream, output_stream);
 
   if (format == "profile")
-    return perfetto::trace_to_text::TraceToProfile(input_stream, output_stream);
+    return TraceToProfile(input_stream, output_stream);
 
   if (format == "symbolize")
-    return perfetto::trace_to_text::SymbolizeProfile(input_stream,
-                                                     output_stream);
+    return SymbolizeProfile(input_stream, output_stream);
 
   return Usage(argv[0]);
+}
+
+}  // namespace
+}  // namespace trace_to_text
+}  // namespace perfetto
+
+int main(int argc, char** argv) {
+  return perfetto::trace_to_text::Main(argc, argv);
 }

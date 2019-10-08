@@ -18,12 +18,12 @@
 #include <random>
 #include <string>
 
-#include <gtest/gtest.h>
 #include "perfetto/base/logging.h"
 #include "perfetto/ext/base/scoped_file.h"
 #include "perfetto/trace_processor/trace_processor.h"
 #include "src/base/test/utils.h"
 #include "src/trace_processor/json_trace_parser.h"
+#include "test/gtest_and_gmock.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -36,7 +36,8 @@ class TraceProcessorIntegrationTest : public ::testing::Test {
 
  protected:
   util::Status LoadTrace(const char* name, int min_chunk_size = 512) {
-    base::ScopedFstream f(fopen(base::GetTestDataPath(name).c_str(), "rb"));
+    base::ScopedFstream f(fopen(
+        base::GetTestDataPath(std::string("test/data/") + name).c_str(), "rb"));
     std::minstd_rand0 rnd_engine(0);
     std::uniform_int_distribution<> dist(min_chunk_size, 1024);
     while (!feof(*f)) {
@@ -110,6 +111,20 @@ TEST_F(TraceProcessorIntegrationTest, TraceBounds) {
   ASSERT_EQ(it.Get(1).type, SqlValue::kLong);
   ASSERT_EQ(it.Get(1).long_value, 81492700784311);
   ASSERT_FALSE(it.Next());
+}
+
+TEST_F(TraceProcessorIntegrationTest, Hash) {
+  auto it = Query("select HASH()");
+  ASSERT_TRUE(it.Next());
+  ASSERT_EQ(it.Get(0).long_value, static_cast<int64_t>(0xcbf29ce484222325));
+
+  it = Query("select HASH('test')");
+  ASSERT_TRUE(it.Next());
+  ASSERT_EQ(it.Get(0).long_value, static_cast<int64_t>(0xf9e6e6ef197c2b25));
+
+  it = Query("select HASH('test', 1)");
+  ASSERT_TRUE(it.Next());
+  ASSERT_EQ(it.Get(0).long_value, static_cast<int64_t>(0xa9cb070fdc15f7a4));
 }
 
 // TODO(hjd): Add trace to test_data.

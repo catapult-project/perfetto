@@ -27,16 +27,25 @@ import {
   LogExists,
   LogExistsKey
 } from '../common/logs';
+import {CurrentSearchResults, SearchSummary} from '../common/search_data';
 
-import {globals, QuantizedLoad, SliceDetails, ThreadDesc} from './globals';
+import {
+  CounterDetails,
+  globals,
+  HeapDumpDetails,
+  QuantizedLoad,
+  SliceDetails,
+  ThreadDesc
+} from './globals';
 import {HomePage} from './home_page';
 import {openBufferWithLegacyTraceViewer} from './legacy_trace_viewer';
 import {postMessageHandler} from './post_message_handler';
 import {RecordPage} from './record_page';
+import {updateAvailableAdbDevices} from './record_page';
 import {Router} from './router';
 import {ViewerPage} from './viewer_page';
 
-const EXTENSION_ID = 'pebbhcjfokadbgbnlmogdkkaahmamnap';
+const EXTENSION_ID = 'lfmkphfpdbjijhpomgecfikhfohaoine';
 
 /**
  * The API the main thread exposes to the controller.
@@ -109,6 +118,27 @@ class FrontendApi {
     this.redraw();
   }
 
+  publishCounterDetails(click: CounterDetails) {
+    globals.counterDetails = click;
+    this.redraw();
+  }
+
+  publishHeapDumpDetails(click: HeapDumpDetails) {
+    globals.heapDumpDetails = click;
+    this.redraw();
+  }
+
+  publishFileDownload(args: {file: File, name?: string}) {
+    const url = URL.createObjectURL(args.file);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = args.name !== undefined ? args.name : args.file.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   publishLoading(loading: boolean) {
     globals.loading = loading;
     globals.rafScheduler.scheduleRedraw();
@@ -126,6 +156,21 @@ class FrontendApi {
     this.redraw();
   }
 
+  publishSearch(args: SearchSummary) {
+    globals.searchSummary = args;
+    this.redraw();
+  }
+
+  publishSearchResult(args: CurrentSearchResults) {
+    globals.currentSearchResults = args;
+    this.redraw();
+  }
+
+  publishRecordingLog(args: {logs: string}) {
+    globals.setRecordingLog(args.logs);
+    this.redraw();
+  }
+
   private redraw(): void {
     if (globals.state.route &&
         globals.state.route !== this.router.getRouteFromHash()) {
@@ -137,13 +182,24 @@ class FrontendApi {
 }
 
 function setExtensionAvailability(available: boolean) {
-  if (available) console.log('Extension available!');
   globals.dispatch(Actions.setExtensionAvailable({
     available,
   }));
 }
 
+function fetchChromeTracingCategoriesFromExtension(
+    extensionPort: chrome.runtime.Port) {
+  extensionPort.postMessage({method: 'GetCategories'});
+}
 
+function onExtensionMessage(message: object) {
+  const typedObject = message as {type: string};
+  if (typedObject.type === 'GetCategoriesResponse') {
+    const categoriesMessage = message as {categories: string[]};
+    globals.dispatch(Actions.setChromeCategories(
+        {categories: categoriesMessage.categories}));
+  }
+}
 
 function main() {
   const controller = new Worker('controller_bundle.js');
@@ -182,24 +238,37 @@ function main() {
 
   // We proxy messages between the extension and the controller because the
   // controller's worker can't access chrome.runtime.
-  const extensionPort = chrome.runtime !== undefined ?
-      chrome.runtime.connect(EXTENSION_ID) :
-      undefined;  // Will be null if the extension is not installed.
+  const extensionPort =
+      chrome.runtime ? chrome.runtime.connect(EXTENSION_ID) : undefined;
+
   setExtensionAvailability(extensionPort !== undefined);
+
   if (extensionPort) {
+    extensionPort.onDisconnect.addListener(_ => {
+      setExtensionAvailability(false);
+      // tslint:disable-next-line: no-unused-expression
+      void chrome.runtime.lastError;  // Needed to not receive an error log.
+    });
     // This forwards the messages from the extension to the controller.
     extensionPort.onMessage.addListener(
         (message: object, _port: chrome.runtime.Port) => {
+          onExtensionMessage(message);
           extensionLocalChannel.port2.postMessage(message);
         });
+    fetchChromeTracingCategoriesFromExtension(extensionPort);
   }
 
+  updateAvailableAdbDevices();
+  try {
+    navigator.usb.addEventListener('connect', updateAvailableAdbDevices);
+    navigator.usb.addEventListener('disconnect', updateAvailableAdbDevices);
+  } catch (e) {
+    console.error('WebUSB API not supported');
+  }
   // This forwards the messages from the controller to the extension
   extensionLocalChannel.port2.onmessage = ({data}) => {
     if (extensionPort) extensionPort.postMessage(data);
   };
-
-
   const main = assertExists(document.body.querySelector('main'));
 
   globals.rafScheduler.domRedraw = () =>
@@ -211,6 +280,7 @@ function main() {
   // Put these variables in the global scope for better debugging.
   (window as {} as {m: {}}).m = m;
   (window as {} as {globals: {}}).globals = globals;
+  (window as {} as {Actions: {}}).Actions = Actions;
 
   // /?s=xxxx for permalinks.
   const stateHash = Router.param('s');

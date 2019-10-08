@@ -14,6 +14,7 @@
 
 import {assertExists} from '../base/logging';
 import {DeferredAction} from '../common/actions';
+import {CurrentSearchResults, SearchSummary} from '../common/search_data';
 import {createEmptyState, State} from '../common/state';
 
 import {FrontendLocalState} from './frontend_local_state';
@@ -27,11 +28,37 @@ export interface SliceDetails {
   dur?: number;
   priority?: number;
   endState?: string;
+  id?: number;
+  utid?: number;
   wakeupTs?: number;
   wakerUtid?: number;
   wakerCpu?: number;
   category?: string;
   name?: string;
+}
+
+export interface CounterDetails {
+  startTime?: number;
+  value?: number;
+  delta?: number;
+  duration?: number;
+}
+
+export interface CallsiteInfo {
+  hash: number;
+  parentHash: number;
+  depth: number;
+  name?: string;
+  totalSize: number;
+}
+
+export interface HeapDumpDetails {
+  ts?: number;
+  tsNs?: number;
+  allocated?: number;
+  allocatedNotFreed?: number;
+  pid?: number;
+  flamegraphData?: CallsiteInfo[];
 }
 
 export interface QuantizedLoad {
@@ -66,8 +93,24 @@ class Globals {
   private _overviewStore?: OverviewStore = undefined;
   private _threadMap?: ThreadMap = undefined;
   private _sliceDetails?: SliceDetails = undefined;
+  private _counterDetails?: CounterDetails = undefined;
+  private _heapDumpDetails?: HeapDumpDetails = undefined;
   private _isLoading = false;
   private _bufferUsage?: number = undefined;
+  private _recordingLog?: string = undefined;
+  private _currentSearchResults: CurrentSearchResults = {
+    sliceIds: new Float64Array(0),
+    tsStarts: new Float64Array(0),
+    utids: new Float64Array(0),
+    trackIds: [],
+    refTypes: [],
+    totalResults: 0,
+  };
+  searchSummary: SearchSummary = {
+    tsStarts: new Float64Array(0),
+    tsEnds: new Float64Array(0),
+    count: new Uint8Array(0),
+  };
 
   initialize(dispatch: Dispatch, controllerWorker: Worker) {
     this._dispatch = dispatch;
@@ -82,6 +125,8 @@ class Globals {
     this._overviewStore = new Map<string, QuantizedLoad[]>();
     this._threadMap = new Map<number, ThreadDesc>();
     this._sliceDetails = {};
+    this._counterDetails = {};
+    this._heapDumpDetails = {};
   }
 
   get state(): State {
@@ -129,6 +174,22 @@ class Globals {
     this._sliceDetails = assertExists(click);
   }
 
+  get counterDetails() {
+    return assertExists(this._counterDetails);
+  }
+
+  set counterDetails(click: CounterDetails) {
+    this._counterDetails = assertExists(click);
+  }
+
+  get heapDumpDetails() {
+    return assertExists(this._heapDumpDetails);
+  }
+
+  set heapDumpDetails(click: HeapDumpDetails) {
+    this._heapDumpDetails = assertExists(click);
+  }
+
   set loading(isLoading: boolean) {
     this._isLoading = isLoading;
   }
@@ -141,6 +202,18 @@ class Globals {
     return this._bufferUsage;
   }
 
+  get recordingLog() {
+    return this._recordingLog;
+  }
+
+  get currentSearchResults() {
+    return this._currentSearchResults;
+  }
+
+  set currentSearchResults(results: CurrentSearchResults) {
+    this._currentSearchResults = results;
+  }
+
   setBufferUsage(bufferUsage: number) {
     this._bufferUsage = bufferUsage;
   }
@@ -149,11 +222,21 @@ class Globals {
     this.trackDataStore.set(id, data);
   }
 
+  setRecordingLog(recordingLog: string) {
+    this._recordingLog = recordingLog;
+  }
+
   getCurResolution() {
     // Truncate the resolution to the closest power of 2.
     // This effectively means the resolution changes every 6 zoom levels.
     const resolution = this.frontendLocalState.timeScale.deltaPxToDuration(1);
     return Math.pow(2, Math.floor(Math.log2(resolution)));
+  }
+
+  makeSelection(action: DeferredAction<{}>) {
+    // A new selection should cancel the current search selection.
+    globals.frontendLocalState.searchIndex = -1;
+    globals.dispatch(action);
   }
 
   resetForTesting() {
@@ -169,6 +252,14 @@ class Globals {
     this._threadMap = undefined;
     this._sliceDetails = undefined;
     this._isLoading = false;
+    this._currentSearchResults = {
+      sliceIds: new Float64Array(0),
+      tsStarts: new Float64Array(0),
+      utids: new Float64Array(0),
+      trackIds: [],
+      refTypes: [],
+      totalResults: 0,
+    };
   }
 
   // Used when switching to the legacy TraceViewer UI.

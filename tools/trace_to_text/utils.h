@@ -27,6 +27,8 @@
 #include <vector>
 
 #include "perfetto/base/build_config.h"
+#include "perfetto/profiling/symbolizer.h"
+#include "perfetto/trace_processor/trace_processor.h"
 
 namespace perfetto {
 
@@ -53,6 +55,13 @@ void ForEachPacketInTrace(
     const std::function<void(const protos::TracePacket&)>&);
 
 std::vector<std::string> GetPerfettoBinaryPath();
+
+bool ReadTrace(trace_processor::TraceProcessor* tp, std::istream* input);
+
+void SymbolizeDatabase(
+    trace_processor::TraceProcessor* tp,
+    Symbolizer* symbolizer,
+    std::function<void(perfetto::protos::TracePacket)> callback);
 
 }  // namespace trace_to_text
 }  // namespace perfetto
