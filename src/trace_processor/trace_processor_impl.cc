@@ -32,8 +32,10 @@
 #include "src/trace_processor/clock_tracker.h"
 #include "src/trace_processor/counter_definitions_table.h"
 #include "src/trace_processor/counter_values_table.h"
+#include "src/trace_processor/cpu_profile_stack_sample_table.h"
 #include "src/trace_processor/event_tracker.h"
 #include "src/trace_processor/forwarding_trace_parser.h"
+#include "src/trace_processor/heap_graph_tracker.h"
 #include "src/trace_processor/heap_profile_allocation_table.h"
 #include "src/trace_processor/heap_profile_tracker.h"
 #include "src/trace_processor/instants_table.h"
@@ -51,8 +53,9 @@
 #include "src/trace_processor/slice_tracker.h"
 #include "src/trace_processor/span_join_operator_table.h"
 #include "src/trace_processor/sql_stats_table.h"
-#include "src/trace_processor/sqlite3_str_split.h"
-#include "src/trace_processor/sqlite_table.h"
+#include "src/trace_processor/sqlite/db_sqlite_table.h"
+#include "src/trace_processor/sqlite/sqlite3_str_split.h"
+#include "src/trace_processor/sqlite/sqlite_table.h"
 #include "src/trace_processor/stack_profile_callsite_table.h"
 #include "src/trace_processor/stack_profile_frame_table.h"
 #include "src/trace_processor/stack_profile_mapping_table.h"
@@ -64,22 +67,20 @@
 #include "src/trace_processor/thread_table.h"
 #include "src/trace_processor/trace_blob_view.h"
 #include "src/trace_processor/trace_sorter.h"
-#include "src/trace_processor/virtual_track_tracker.h"
+#include "src/trace_processor/track_tracker.h"
+#include "src/trace_processor/vulkan_memory_tracker.h"
 #include "src/trace_processor/window_operator_table.h"
 
-#include "perfetto/metrics/android/mem_metric.pbzero.h"
-#include "perfetto/metrics/metrics.pbzero.h"
+#include "protos/perfetto/metrics/android/mem_metric.pbzero.h"
+#include "protos/perfetto/metrics/metrics.pbzero.h"
 
-// JSON parsing and exporting is only supported in the standalone and
-// Chromium builds.
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD) || \
-    PERFETTO_BUILD_WITH_CHROMIUM
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
 #include "src/trace_processor/export_json.h"
 #endif
 
 // In Android and Chromium tree builds, we don't have the percentile module.
 // Just don't include it.
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_PERCENTILE)
 // defined in sqlite_src/ext/misc/percentile.c
 extern "C" int sqlite3_percentile_init(sqlite3* db,
                                        char** error,
@@ -99,7 +100,7 @@ void InitializeSqlite(sqlite3* db) {
   sqlite3_str_split_init(db);
 // In Android tree builds, we don't have the percentile module.
 // Just don't include it.
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD)
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_PERCENTILE)
   sqlite3_percentile_init(db, &error, nullptr);
   if (error) {
     PERFETTO_ELOG("Error initializing: %s", error);
@@ -177,6 +178,17 @@ void CreateBuiltinViews(sqlite3* db) {
     sqlite3_free(error);
   }
 
+  sqlite3_exec(db,
+               "CREATE VIEW gpu_slice AS "
+               "SELECT "
+               "* "
+               "FROM internal_gpu_slice join internal_slice using(slice_id);",
+               0, 0, &error);
+  if (error) {
+    PERFETTO_ELOG("Error initializing: %s", error);
+    sqlite3_free(error);
+  }
+
   // Legacy view for "slice" table with a deprecated table name.
   // TODO(eseckler): Remove this view when all users have switched to "slice".
   sqlite3_exec(db,
@@ -189,18 +201,25 @@ void CreateBuiltinViews(sqlite3* db) {
   }
 }
 
-// Exporting traces in legacy JSON format is only supported
-// in the standalone and Chromium builds so far.
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD) || \
-    PERFETTO_BUILD_WITH_CHROMIUM
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
 void ExportJson(sqlite3_context* ctx, int /*argc*/, sqlite3_value** argv) {
   TraceStorage* storage = static_cast<TraceStorage*>(sqlite3_user_data(ctx));
-  const char* filename =
-      reinterpret_cast<const char*>(sqlite3_value_text(argv[0]));
-  FILE* output = fopen(filename, "w");
-  if (!output) {
-    sqlite3_result_error(ctx, "Couldn't open output file", -1);
-    return;
+  FILE* output;
+  if (sqlite3_value_type(argv[0]) == SQLITE_INTEGER) {
+    // Assume input is an FD.
+    output = fdopen(sqlite3_value_int(argv[0]), "w");
+    if (!output) {
+      sqlite3_result_error(ctx, "Couldn't open output file from given FD", -1);
+      return;
+    }
+  } else {
+    const char* filename =
+        reinterpret_cast<const char*>(sqlite3_value_text(argv[0]));
+    output = fopen(filename, "w");
+    if (!output) {
+      sqlite3_result_error(ctx, "Couldn't open output file", -1);
+      return;
+    }
   }
 
   json::ResultCode result = json::ExportJson(storage, output);
@@ -223,6 +242,37 @@ void CreateJsonExportFunction(TraceStorage* ts, sqlite3* db) {
   }
 }
 #endif
+
+void Hash(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
+  base::Hash hash;
+  for (int i = 0; i < argc; ++i) {
+    sqlite3_value* value = argv[i];
+    switch (sqlite3_value_type(value)) {
+      case SQLITE_INTEGER:
+        hash.Update(sqlite3_value_int64(value));
+        break;
+      case SQLITE_TEXT: {
+        const char* ptr =
+            reinterpret_cast<const char*>(sqlite3_value_text(value));
+        hash.Update(ptr, strlen(ptr));
+        break;
+      }
+      default:
+        sqlite3_result_error(ctx, "Unsupported type of arg passed to HASH", -1);
+        return;
+    }
+  }
+  sqlite3_result_int64(ctx, static_cast<int64_t>(hash.digest()));
+}
+
+void CreateHashFunction(sqlite3* db) {
+  auto ret = sqlite3_create_function_v2(
+      db, "HASH", -1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, &Hash,
+      nullptr, nullptr, nullptr);
+  if (ret) {
+    PERFETTO_ELOG("Error initializing HASH");
+  }
+}
 
 void SetupMetrics(TraceProcessor* tp,
                   sqlite3* db,
@@ -268,7 +318,7 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg) {
 
   context_.config = cfg;
   context_.storage.reset(new TraceStorage());
-  context_.virtual_track_tracker.reset(new VirtualTrackTracker(&context_));
+  context_.track_tracker.reset(new TrackTracker(&context_));
   context_.args_tracker.reset(new ArgsTracker(&context_));
   context_.slice_tracker.reset(new SliceTracker(&context_));
   context_.event_tracker.reset(new EventTracker(&context_));
@@ -277,12 +327,14 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg) {
   context_.clock_tracker.reset(new ClockTracker(&context_));
   context_.stack_profile_tracker.reset(new StackProfileTracker(&context_));
   context_.heap_profile_tracker.reset(new HeapProfileTracker(&context_));
+  context_.heap_graph_tracker.reset(new HeapGraphTracker(&context_));
   context_.systrace_parser.reset(new SystraceParser(&context_));
+  context_.vulkan_memory_tracker.reset(new VulkanMemoryTracker(&context_));
 
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD) || \
-    PERFETTO_BUILD_WITH_CHROMIUM
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
   CreateJsonExportFunction(this->context_.storage.get(), db);
 #endif
+  CreateHashFunction(db);
 
   SetupMetrics(this, *db_, &sql_metrics_);
 
@@ -301,10 +353,34 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg) {
   AndroidLogsTable::RegisterTable(*db_, context_.storage.get());
   RawTable::RegisterTable(*db_, context_.storage.get());
   HeapProfileAllocationTable::RegisterTable(*db_, context_.storage.get());
+  CpuProfileStackSampleTable::RegisterTable(*db_, context_.storage.get());
   StackProfileCallsiteTable::RegisterTable(*db_, context_.storage.get());
   StackProfileFrameTable::RegisterTable(*db_, context_.storage.get());
   StackProfileMappingTable::RegisterTable(*db_, context_.storage.get());
   MetadataTable::RegisterTable(*db_, context_.storage.get());
+
+  // New style db-backed tables.
+  const TraceStorage* storage = context_.storage.get();
+  DbSqliteTable::RegisterTable(*db_, &storage->track_table(),
+                               storage->track_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->thread_track_table(),
+                               storage->thread_track_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->process_track_table(),
+                               storage->process_track_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->gpu_slice_table(),
+                               storage->gpu_slice_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->gpu_track_table(),
+                               storage->gpu_track_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->symbol_table(),
+                               storage->symbol_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->heap_graph_object_table(),
+                               storage->heap_graph_object_table().table_name());
+  DbSqliteTable::RegisterTable(
+      *db_, &storage->heap_graph_reference_table(),
+      storage->heap_graph_reference_table().table_name());
+  DbSqliteTable::RegisterTable(
+      *db_, &storage->vulkan_memory_allocations_table(),
+      storage->vulkan_memory_allocations_table().table_name());
 }
 
 TraceProcessorImpl::~TraceProcessorImpl() {

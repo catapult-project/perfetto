@@ -27,8 +27,7 @@
 
 // JSON parsing and exporting is only supported in the standalone and
 // Chromium builds.
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD) || \
-    PERFETTO_BUILD_WITH_CHROMIUM
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
 #include "src/trace_processor/json_trace_parser.h"
 #include "src/trace_processor/json_trace_tokenizer.h"
 #endif
@@ -69,8 +68,7 @@ util::Status ForwardingTraceParser::Parse(std::unique_ptr<uint8_t[]> data,
     switch (trace_type) {
       case kJsonTraceType: {
         PERFETTO_DLOG("JSON trace detected");
-#if PERFETTO_BUILDFLAG(PERFETTO_STANDALONE_BUILD) || \
-    PERFETTO_BUILD_WITH_CHROMIUM
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
         reader_.reset(new JsonTraceTokenizer(context_));
         // JSON traces have no guarantees about the order of events in them.
         int64_t window_size_ns = std::numeric_limits<int64_t>::max();
@@ -145,13 +143,13 @@ TraceType GuessTraceType(const uint8_t* data, size_t size) {
       base::StartsWith(start, "<html>"))
     return kSystraceTraceType;
 
+  // Ctrace is deflate'ed systrace.
+  if (start.find("TRACE:") != std::string::npos)
+    return kCtraceTraceType;
+
   // Systrace with no header or leading HTML.
   if (base::StartsWith(start, " "))
     return kSystraceTraceType;
-
-  // Ctrace is deflate'ed systrace.
-  if (base::StartsWith(start, "TRACE:"))
-    return kCtraceTraceType;
 
   // gzip'ed trace containing one of the other formats.
   if (base::StartsWith(start, "\x1f\x8b"))

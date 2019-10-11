@@ -26,7 +26,7 @@
 #include "test/gtest_and_gmock.h"
 #include "test/test_helper.h"
 
-#include "perfetto/config/profiling/heapprofd_config.pb.h"
+#include "protos/perfetto/config/profiling/heapprofd_config.pb.h"
 
 namespace perfetto {
 namespace {
@@ -144,7 +144,7 @@ std::vector<protos::TracePacket> ProfileRuntime(std::string app_name) {
 
   // start tracing
   helper.StartTracing(trace_config);
-  helper.WaitForTracingDisabled(4000 /*ms*/);
+  helper.WaitForTracingDisabled(10000 /*ms*/);
   helper.ReadData();
   helper.WaitForReadData();
 
@@ -231,28 +231,21 @@ void StopApp(std::string app_name) {
   system(stop_cmd.c_str());
 }
 
-// TODO(b/118428762): look into unwinding issues on x86.
-#if defined(__i386__) || defined(__x86_64__)
-#define MAYBE_SKIP(x) DISABLED_##x
-#else
-#define MAYBE_SKIP(x) x
-#endif
-
-TEST(HeapprofdCtsTest, MAYBE_SKIP(DebuggableAppRuntime)) {
+TEST(HeapprofdCtsTest, DebuggableAppRuntime) {
   std::string app_name = "android.perfetto.cts.app.debuggable";
   const auto& packets = ProfileRuntime(app_name);
   AssertExpectedAllocationsPresent(packets);
   StopApp(app_name);
 }
 
-TEST(HeapprofdCtsTest, MAYBE_SKIP(DebuggableAppStartup)) {
+TEST(HeapprofdCtsTest, DebuggableAppStartup) {
   std::string app_name = "android.perfetto.cts.app.debuggable";
   const auto& packets = ProfileStartup(app_name);
   AssertExpectedAllocationsPresent(packets);
   StopApp(app_name);
 }
 
-TEST(HeapprofdCtsTest, MAYBE_SKIP(ReleaseAppRuntime)) {
+TEST(HeapprofdCtsTest, ReleaseAppRuntime) {
   std::string app_name = "android.perfetto.cts.app.release";
   const auto& packets = ProfileRuntime(app_name);
 
@@ -264,7 +257,7 @@ TEST(HeapprofdCtsTest, MAYBE_SKIP(ReleaseAppRuntime)) {
   StopApp(app_name);
 }
 
-TEST(HeapprofdCtsTest, MAYBE_SKIP(ReleaseAppStartup)) {
+TEST(HeapprofdCtsTest, ReleaseAppStartup) {
   std::string app_name = "android.perfetto.cts.app.release";
   const auto& packets = ProfileStartup(app_name);
 

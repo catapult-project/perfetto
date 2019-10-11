@@ -14,12 +14,16 @@
  * limitations under the License.
  */
 
+#include "perfetto/base/build_config.h"
+#if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
+
 #include <inttypes.h>
 #include <json/reader.h>
 #include <json/value.h>
 #include <json/writer.h>
 #include <stdio.h>
 #include <cstring>
+#include <vector>
 
 #include "perfetto/ext/base/string_splitter.h"
 #include "src/trace_processor/export_json.h"
@@ -108,11 +112,24 @@ class TraceFormatWriter {
     system_trace_data_ += data;
   }
 
+  void AddUserTraceData(const std::string& data) { user_trace_data_ += data; }
+
  private:
   void WriteHeader() { fputs("{\"traceEvents\":[\n", output_); }
 
   void WriteFooter() {
     Json::FastWriter writer;
+    if (!user_trace_data_.empty()) {
+      Json::Reader reader;
+      Json::Value result;
+      if (reader.parse(user_trace_data_, result)) {
+        WriteCommonEvent(result);
+      } else {
+        PERFETTO_DLOG(
+            "can't parse legacy user json trace export, skipping. data: %s",
+            user_trace_data_.c_str());
+      }
+    }
     fputs("]", output_);
     if (!system_trace_data_.empty()) {
       fputs(",\"systemTraceEvents\":\n", output_);
@@ -130,6 +147,7 @@ class TraceFormatWriter {
   bool first_event_;
   Json::Value metadata_;
   std::string system_trace_data_;
+  std::string user_trace_data_;
 };
 
 std::string PrintUint64(uint64_t x) {
@@ -254,7 +272,7 @@ ResultCode ExportThreadNames(const TraceStorage* storage,
                              TraceFormatWriter* writer) {
   for (UniqueTid i = 1; i < storage->thread_count(); ++i) {
     auto thread = storage->GetThread(i);
-    if (thread.name_id > 0) {
+    if (!thread.name_id.is_null()) {
       const char* thread_name = storage->GetString(thread.name_id).c_str();
       uint32_t pid = thread.upid ? storage->GetProcess(*thread.upid).pid : 0;
       writer->WriteMetadataEvent("thread_name", thread_name, thread.tid, pid);
@@ -267,7 +285,7 @@ ResultCode ExportProcessNames(const TraceStorage* storage,
                               TraceFormatWriter* writer) {
   for (UniquePid i = 1; i < storage->process_count(); ++i) {
     auto process = storage->GetProcess(i);
-    if (process.name_id > 0) {
+    if (!process.name_id.is_null()) {
       const char* process_name = storage->GetString(process.name_id).c_str();
       writer->WriteMetadataEvent("process_name", process_name, 0, process.pid);
     }
@@ -292,18 +310,19 @@ ResultCode ExportSlices(const TraceStorage* storage,
 
     if (slices.types()[i] == RefType::kRefTrack) {  // Async event.
       TrackId track_id = static_cast<TrackId>(slices.refs()[i]);
-      base::Optional<uint32_t> opt_row =
-          storage->virtual_tracks().FindRowForTrackId(track_id);
-      PERFETTO_DCHECK(opt_row.has_value());
 
-      VirtualTrackScope scope = storage->virtual_tracks().scopes()[*opt_row];
-      UniquePid upid = storage->virtual_tracks().upids()[*opt_row];
+      // TODO(lalitm): add a check here for looking up source_arg_set_id
+      // and checking that this track originated from Chrome.
 
-      if (scope == VirtualTrackScope::kGlobal) {
-        event["id2"]["global"] = PrintUint64(*opt_row);
-      } else {
-        event["id2"]["local"] = PrintUint64(*opt_row);
+      const auto& process_track = storage->process_track_table();
+      auto opt_process_row =
+          process_track.id().IndexOf(SqlValue::Long(track_id));
+      if (opt_process_row.has_value()) {
+        uint32_t upid = process_track.upid()[*opt_process_row];
+        event["id2"]["local"] = PrintUint64(track_id);
         event["pid"] = storage->GetProcess(upid).pid;
+      } else {
+        event["id2"]["global"] = PrintUint64(track_id);
       }
 
       const auto& virtual_track_slices = storage->virtual_track_slices();
@@ -318,8 +337,6 @@ ResultCode ExportSlices(const TraceStorage* storage,
             virtual_track_slices.thread_timestamp_ns()[*vtrack_slice_row];
         thread_duration_ns =
             virtual_track_slices.thread_duration_ns()[*vtrack_slice_row];
-        thread_ts_ns =
-            virtual_track_slices.thread_timestamp_ns()[*vtrack_slice_row];
         thread_instruction_count =
             virtual_track_slices.thread_instruction_counts()[*vtrack_slice_row];
         thread_instruction_delta =
@@ -589,13 +606,83 @@ ResultCode ExportRawEvents(const TraceStorage* storage,
                events.name_ids()[i] == *raw_legacy_user_trace_event_id) {
       Json::Value args = args_builder.GetArgs(events.arg_set_ids()[i]);
       PERFETTO_DCHECK(args.isMember("data"));
-      writer->WriteCommonEvent(args["data"]);
+      writer->AddUserTraceData(args["data"].asString());
     } else if (raw_chrome_metadata_event_id &&
                events.name_ids()[i] == *raw_chrome_metadata_event_id) {
       Json::Value args = args_builder.GetArgs(events.arg_set_ids()[i]);
       writer->MergeMetadata(args);
     }
   }
+  return kResultOk;
+}
+
+ResultCode ExportCpuProfileSamples(const TraceStorage* storage,
+                                   TraceFormatWriter* writer) {
+  const TraceStorage::CpuProfileStackSamples& samples =
+      storage->cpu_profile_stack_samples();
+  for (uint32_t i = 0; i < samples.size(); ++i) {
+    Json::Value event;
+    event["ts"] = Json::Int64(samples.timestamps()[i] / 1000);
+
+    UniqueTid utid = static_cast<UniqueTid>(samples.utids()[i]);
+    auto thread = storage->GetThread(utid);
+    event["tid"] = thread.tid;
+    if (thread.upid)
+      event["pid"] = storage->GetProcess(*thread.upid).pid;
+
+    event["ph"] = "I";
+    event["cat"] = "disabled_by_default-cpu_profiler";
+    event["name"] = "StackCpuSampling";
+    event["scope"] = "t";
+
+    std::vector<std::string> callstack;
+    const TraceStorage::StackProfileCallsites& callsites =
+        storage->stack_profile_callsites();
+    int64_t maybe_callsite_id = samples.callsite_ids()[i];
+    PERFETTO_DCHECK(maybe_callsite_id >= 0 &&
+                    maybe_callsite_id < callsites.size());
+    while (maybe_callsite_id >= 0) {
+      size_t callsite_id = static_cast<size_t>(maybe_callsite_id);
+
+      const TraceStorage::StackProfileFrames& frames =
+          storage->stack_profile_frames();
+      PERFETTO_DCHECK(callsites.frame_ids()[callsite_id] >= 0 &&
+                      callsites.frame_ids()[callsite_id] < frames.size());
+      size_t frame_id = static_cast<size_t>(callsites.frame_ids()[callsite_id]);
+
+      const TraceStorage::StackProfileMappings& mappings =
+          storage->stack_profile_mappings();
+      PERFETTO_DCHECK(frames.mappings()[frame_id] >= 0 &&
+                      frames.mappings()[frame_id] < mappings.size());
+      size_t mapping_id = static_cast<size_t>(frames.mappings()[frame_id]);
+
+      NullTermStringView symbol_name =
+          storage->GetString(frames.names()[frame_id]);
+
+      char frame_entry[1024];
+      snprintf(
+          frame_entry, sizeof(frame_entry), "%s - %s [%s]\n",
+          (symbol_name.empty()
+               ? PrintUint64(static_cast<uint64_t>(frames.rel_pcs()[frame_id]))
+                     .c_str()
+               : symbol_name.c_str()),
+          storage->GetString(mappings.names()[mapping_id]).c_str(),
+          storage->GetString(mappings.build_ids()[mapping_id]).c_str());
+
+      callstack.emplace_back(frame_entry);
+
+      maybe_callsite_id = callsites.parent_callsite_ids()[callsite_id];
+    }
+
+    std::string merged_callstack;
+    for (auto entry = callstack.rbegin(); entry != callstack.rend(); ++entry) {
+      merged_callstack += *entry;
+    }
+
+    event["args"]["frames"] = merged_callstack;
+    writer->WriteCommonEvent(event);
+  }
+
   return kResultOk;
 }
 
@@ -758,6 +845,10 @@ ResultCode ExportJson(const TraceStorage* storage, FILE* output) {
   if (code != kResultOk)
     return code;
 
+  code = ExportCpuProfileSamples(storage, &writer);
+  if (code != kResultOk)
+    return code;
+
   code = ExportMetadata(storage, &writer);
   if (code != kResultOk)
     return code;
@@ -772,3 +863,5 @@ ResultCode ExportJson(const TraceStorage* storage, FILE* output) {
 }  // namespace json
 }  // namespace trace_processor
 }  // namespace perfetto
+
+#endif  // PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)

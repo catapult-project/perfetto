@@ -23,14 +23,17 @@
 #include <mutex>
 #include <vector>
 
-#include "perfetto/trace/test_event.pbzero.h"
-#include "perfetto/trace/trace.pb.h"
-#include "perfetto/trace/trace_packet.pbzero.h"
 #include "perfetto/tracing.h"
+#include "protos/perfetto/trace/test_event.pbzero.h"
+#include "protos/perfetto/trace/trace.pb.h"
+#include "protos/perfetto/trace/trace_packet.pbzero.h"
 #include "test/gtest_and_gmock.h"
 
 // Deliberately not pulling any non-public perfetto header to spot accidental
 // header public -> non-public dependency while building this file.
+
+// This is the only header allowed here, see comments in api_test_support.h.
+#include "src/tracing/test/api_test_support.h"
 
 #include "perfetto/tracing/core/data_source_descriptor.h"
 #include "perfetto/tracing/core/trace_config.h"
@@ -259,17 +262,18 @@ TEST_F(PerfettoApiTest, TrackEvent) {
   bool thread_descriptor_found = false;
   auto now = perfetto::TrackEvent::GetTimeNs();
   uint32_t sequence_id = 0;
+  int32_t cur_pid = perfetto::test::GetCurrentProcessId();
   for (const auto& packet : trace.packet()) {
     if (packet.has_process_descriptor()) {
       EXPECT_FALSE(process_descriptor_found);
       const auto& pd = packet.process_descriptor();
-      EXPECT_EQ(getpid(), pd.pid());
+      EXPECT_EQ(cur_pid, pd.pid());
       process_descriptor_found = true;
     }
     if (packet.has_thread_descriptor()) {
       EXPECT_FALSE(thread_descriptor_found);
       const auto& td = packet.thread_descriptor();
-      EXPECT_EQ(getpid(), td.pid());
+      EXPECT_EQ(cur_pid, td.pid());
       EXPECT_NE(0, td.tid());
       thread_descriptor_found = true;
     }

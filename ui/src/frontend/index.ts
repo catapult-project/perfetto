@@ -27,12 +27,21 @@ import {
   LogExists,
   LogExistsKey
 } from '../common/logs';
+import {CurrentSearchResults, SearchSummary} from '../common/search_data';
 
-import {globals, QuantizedLoad, SliceDetails, ThreadDesc} from './globals';
+import {
+  CounterDetails,
+  globals,
+  HeapDumpDetails,
+  QuantizedLoad,
+  SliceDetails,
+  ThreadDesc
+} from './globals';
 import {HomePage} from './home_page';
 import {openBufferWithLegacyTraceViewer} from './legacy_trace_viewer';
 import {postMessageHandler} from './post_message_handler';
 import {RecordPage} from './record_page';
+import {updateAvailableAdbDevices} from './record_page';
 import {Router} from './router';
 import {ViewerPage} from './viewer_page';
 
@@ -109,6 +118,27 @@ class FrontendApi {
     this.redraw();
   }
 
+  publishCounterDetails(click: CounterDetails) {
+    globals.counterDetails = click;
+    this.redraw();
+  }
+
+  publishHeapDumpDetails(click: HeapDumpDetails) {
+    globals.heapDumpDetails = click;
+    this.redraw();
+  }
+
+  publishFileDownload(args: {file: File, name?: string}) {
+    const url = URL.createObjectURL(args.file);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = args.name !== undefined ? args.name : args.file.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   publishLoading(loading: boolean) {
     globals.loading = loading;
     globals.rafScheduler.scheduleRedraw();
@@ -126,8 +156,14 @@ class FrontendApi {
     this.redraw();
   }
 
-  publishSearch(args: {}) {
-    console.log('publish search results', args);
+  publishSearch(args: SearchSummary) {
+    globals.searchSummary = args;
+    this.redraw();
+  }
+
+  publishSearchResult(args: CurrentSearchResults) {
+    globals.currentSearchResults = args;
+    this.redraw();
   }
 
   publishRecordingLog(args: {logs: string}) {
@@ -151,7 +187,19 @@ function setExtensionAvailability(available: boolean) {
   }));
 }
 
+function fetchChromeTracingCategoriesFromExtension(
+    extensionPort: chrome.runtime.Port) {
+  extensionPort.postMessage({method: 'GetCategories'});
+}
 
+function onExtensionMessage(message: object) {
+  const typedObject = message as {type: string};
+  if (typedObject.type === 'GetCategoriesResponse') {
+    const categoriesMessage = message as {categories: string[]};
+    globals.dispatch(Actions.setChromeCategories(
+        {categories: categoriesMessage.categories}));
+  }
+}
 
 function main() {
   const controller = new Worker('controller_bundle.js');
@@ -204,10 +252,19 @@ function main() {
     // This forwards the messages from the extension to the controller.
     extensionPort.onMessage.addListener(
         (message: object, _port: chrome.runtime.Port) => {
+          onExtensionMessage(message);
           extensionLocalChannel.port2.postMessage(message);
         });
+    fetchChromeTracingCategoriesFromExtension(extensionPort);
   }
 
+  updateAvailableAdbDevices();
+  try {
+    navigator.usb.addEventListener('connect', updateAvailableAdbDevices);
+    navigator.usb.addEventListener('disconnect', updateAvailableAdbDevices);
+  } catch (e) {
+    console.error('WebUSB API not supported');
+  }
   // This forwards the messages from the controller to the extension
   extensionLocalChannel.port2.onmessage = ({data}) => {
     if (extensionPort) extensionPort.postMessage(data);
@@ -223,6 +280,7 @@ function main() {
   // Put these variables in the global scope for better debugging.
   (window as {} as {m: {}}).m = m;
   (window as {} as {globals: {}}).globals = globals;
+  (window as {} as {Actions: {}}).Actions = Actions;
 
   // /?s=xxxx for permalinks.
   const stateHash = Router.param('s');

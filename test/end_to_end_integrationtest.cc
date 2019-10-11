@@ -24,7 +24,6 @@
 
 #include "perfetto/base/build_config.h"
 #include "perfetto/base/logging.h"
-#include "perfetto/config/power/android_power_config.pbzero.h"
 #include "perfetto/ext/base/file_utils.h"
 #include "perfetto/ext/base/pipe.h"
 #include "perfetto/ext/base/temp_file.h"
@@ -32,11 +31,12 @@
 #include "perfetto/ext/tracing/core/trace_packet.h"
 #include "perfetto/ext/tracing/ipc/default_socket.h"
 #include "perfetto/protozero/scattered_heap_buffer.h"
-#include "perfetto/trace/trace.pb.h"
-#include "perfetto/trace/trace_packet.pb.h"
-#include "perfetto/trace/trace_packet.pbzero.h"
 #include "perfetto/tracing/core/test_config.h"
 #include "perfetto/tracing/core/trace_config.h"
+#include "protos/perfetto/config/power/android_power_config.pbzero.h"
+#include "protos/perfetto/trace/trace.pb.h"
+#include "protos/perfetto/trace/trace_packet.pb.h"
+#include "protos/perfetto/trace/trace_packet.pbzero.h"
 #include "src/base/test/test_task_runner.h"
 #include "src/traced/probes/ftrace/ftrace_controller.h"
 #include "src/traced/probes/ftrace/ftrace_procfs.h"
@@ -72,7 +72,7 @@ std::string RandomTraceFileName() {
 // This class is a reference to a child process that has in essence been execv
 // to the requested binary. The process will start and then wait for Run()
 // before proceeding. We use this to fork new processes before starting any
-// additional threads in the parent proces (otherwise you would risk
+// additional threads in the parent process (otherwise you would risk
 // deadlocks), but pause the forked processes until remaining setup (including
 // any necessary threads) in the parent process is complete.
 class Exec {

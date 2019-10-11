@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import("../../../gn/test.gni")
+
 source_set("lib") {
   sources = [
     "bit_vector.cc",
@@ -23,15 +25,18 @@ source_set("lib") {
     "sparse_vector.h",
     "table.cc",
     "table.h",
+    "typed_column.h",
   ]
   deps = [
+    "../:common",
     "../../../gn:default_deps",
     "../../../include/perfetto/base",
     "../../../include/perfetto/ext/base",
+    "../../../include/perfetto/trace_processor",
   ]
 }
 
-source_set("unittests") {
+perfetto_unittest_source_set("unittests") {
   testonly = true
   sources = [
     "bit_vector_unittest.cc",
@@ -43,4 +48,20 @@ source_set("unittests") {
     "../../../gn:default_deps",
     "../../../gn:gtest_and_gmock",
   ]
+}
+
+if (enable_perfetto_benchmarks) {
+  source_set("benchmarks") {
+    testonly = true
+    deps = [
+      ":lib",
+      "../../../gn:benchmark",
+      "../../../gn:default_deps",
+    ]
+    sources = [
+      "bit_vector_benchmark.cc",
+      "row_map_benchmark.cc",
+      "sparse_vector_benchmark.cc",
+    ]
+  }
 }

@@ -55,9 +55,9 @@
 #include "src/tracing/core/shared_memory_arbiter_impl.h"
 #include "src/tracing/core/trace_buffer.h"
 
-#include "perfetto/trace/clock_snapshot.pb.h"
-#include "perfetto/trace/system_info.pb.h"
-#include "perfetto/trace/trusted_packet.pb.h"
+#include "protos/perfetto/trace/clock_snapshot.pb.h"
+#include "protos/perfetto/trace/system_info.pb.h"
+#include "protos/perfetto/trace/trusted_packet.pb.h"
 
 // General note: this class must assume that Producers are malicious and will
 // try to crash / exploit this class. We can trust pointers because they come
@@ -209,7 +209,7 @@ TracingServiceImpl::ConnectProducer(Producer* producer,
   endpoint->shmem_page_size_hint_bytes_ = shared_memory_page_size_hint_bytes;
   task_runner_->PostTask(std::bind(&Producer::OnConnect, endpoint->producer_));
 
-  return std::move(endpoint);
+  return std::unique_ptr<ProducerEndpoint>(std::move(endpoint));
 }
 
 void TracingServiceImpl::DisconnectProducer(ProducerID id) {
@@ -253,7 +253,7 @@ TracingServiceImpl::ConnectConsumer(Consumer* consumer, uid_t uid) {
   auto it_and_inserted = consumers_.emplace(endpoint.get());
   PERFETTO_DCHECK(it_and_inserted.second);
   task_runner_->PostTask(std::bind(&Consumer::OnConnect, endpoint->consumer_));
-  return std::move(endpoint);
+  return std::unique_ptr<ConsumerEndpoint>(std::move(endpoint));
 }
 
 void TracingServiceImpl::DisconnectConsumer(ConsumerEndpointImpl* consumer) {
@@ -2127,8 +2127,7 @@ void TracingServiceImpl::OnStartTriggersTimeout(TracingSessionID tsid) {
 }
 
 void TracingServiceImpl::UpdateMemoryGuardrail() {
-#if !PERFETTO_BUILDFLAG(PERFETTO_EMBEDDER_BUILD) && \
-    !PERFETTO_BUILDFLAG(PERFETTO_OS_MACOSX)
+#if PERFETTO_BUILDFLAG(PERFETTO_WATCHDOG)
   uint64_t total_buffer_bytes = 0;
 
   // Sum up all the shared memory buffers.
@@ -2150,7 +2149,7 @@ void TracingServiceImpl::UpdateMemoryGuardrail() {
 }
 
 void TracingServiceImpl::SnapshotSyncMarker(std::vector<TracePacket>* packets) {
-  // The sync markes is used to tokenize large traces efficiently.
+  // The sync marks are used to tokenize large traces efficiently.
   // See description in trace_packet.proto.
   if (sync_marker_packet_size_ == 0) {
     // Serialize the marker and the uid separately to guarantee that the marker
@@ -2218,7 +2217,7 @@ void TracingServiceImpl::SnapshotClocks(std::vector<TracePacket>* packets,
           static_cast<uint64_t>(base::FromPosixTimespec(clock.ts).count()));
     }
     protos::ClockSnapshot::Clock* c = clock_snapshot->add_clocks();
-    c->set_clock_id(clock.type);
+    c->set_clock_id(static_cast<uint32_t>(clock.type));
     c->set_timestamp(
         static_cast<uint64_t>(base::FromPosixTimespec(clock.ts).count()));
   }

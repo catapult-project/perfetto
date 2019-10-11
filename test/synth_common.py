@@ -237,10 +237,29 @@ class Trace(object):
     if seq_id is not None:
       packet.trusted_packet_sequence_id = seq_id
     snap = self.packet.clock_snapshot
-    for k,v in clocks.iteritems():
+    for k, v in clocks.iteritems():
       clock = snap.clocks.add()
       clock.clock_id = k
       clock.timestamp = v
+
+  def add_gpu_counter_spec(self,
+                           ts,
+                           counter_id,
+                           name,
+                           description=None,
+                           unit_numerators=[],
+                           unit_denominators=[]):
+    packet = self.add_packet()
+    packet.timestamp = ts
+    gpu_counters = packet.gpu_counter_event
+    counter_desc = gpu_counters.counter_descriptor
+    spec = counter_desc.specs.add()
+    spec.counter_id = counter_id
+    spec.name = name
+    if description is not None:
+      spec.description = description
+    spec.numerator_units.extend(unit_numerators)
+    spec.denominator_units.extend(unit_denominators)
 
   def add_gpu_counter(self, ts, counter_id, value, clock_id=None, seq_id=None):
     packet = self.add_packet()
@@ -253,6 +272,27 @@ class Trace(object):
     gpu_counter = gpu_counters.counters.add()
     gpu_counter.counter_id = counter_id
     gpu_counter.int_value = value
+
+  def add_gpu_log(self, ts, severity, tag, message):
+    packet = self.add_packet()
+    packet.timestamp = ts
+    gpu_log = self.packet.gpu_log
+    gpu_log.severity = severity
+    gpu_log.tag = tag
+    gpu_log.log_message = message
+
+  def add_buffer_event_packet(self, ts, buffer_id, layer_name, frame_number,
+                              event_type, duration):
+    packet = self.add_packet()
+    packet.timestamp = ts
+    buffer_event = packet.graphics_frame_event.buffer_event
+    if buffer_id >= 0:
+      buffer_event.buffer_id = buffer_id
+    buffer_event.layer_name = layer_name
+    buffer_event.frame_number = frame_number
+    if event_type >= 0:
+      buffer_event.type = event_type
+    buffer_event.duration_ns = duration
 
 
 def create_trace():

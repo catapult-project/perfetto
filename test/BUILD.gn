@@ -27,6 +27,7 @@ source_set("end_to_end_integrationtests") {
     "../include/perfetto/ext/traced",
     "../include/perfetto/protozero",
     "../protos/perfetto/config:zero",
+    "../protos/perfetto/config/power:zero",
     "../protos/perfetto/trace:lite",
     "../protos/perfetto/trace:zero",
     "../src/base:base",
@@ -145,7 +146,7 @@ source_set("test_helper") {
   }
 }
 
-if (perfetto_build_standalone) {
+if (enable_perfetto_benchmarks) {
   source_set("end_to_end_benchmarks") {
     testonly = true
     deps = [
@@ -178,4 +179,4 @@ if (perfetto_build_standalone) {
       "benchmark_main.cc",
     ]
   }
-}
+}  # if (enable_perfetto_benchmarks)

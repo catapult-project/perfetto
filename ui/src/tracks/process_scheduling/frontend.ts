@@ -31,6 +31,8 @@ import {
 
 const MARGIN_TOP = 5;
 const RECT_HEIGHT = 30;
+const TRACK_HEIGHT = MARGIN_TOP * 2 + RECT_HEIGHT;
+const SUMMARY_HEIGHT = TRACK_HEIGHT - MARGIN_TOP;
 
 class ProcessSchedulingTrack extends Track<Config, Data> {
   static readonly kind = PROCESS_SCHEDULING_TRACK_KIND;
@@ -45,6 +47,10 @@ class ProcessSchedulingTrack extends Track<Config, Data> {
     super(trackState);
   }
 
+  getHeight(): number {
+    return TRACK_HEIGHT;
+  }
+
   renderCanvas(ctx: CanvasRenderingContext2D): void {
     // TODO: fonts and colors should come from the CSS and not hardcoded here.
     const {timeScale, visibleWindowTime} = globals.frontendLocalState;
@@ -56,6 +62,7 @@ class ProcessSchedulingTrack extends Track<Config, Data> {
     // show a gray rectangle with a "Loading..." label.
     checkerboardExcept(
         ctx,
+        this.getHeight(),
         timeScale.timeToPx(visibleWindowTime.start),
         timeScale.timeToPx(visibleWindowTime.end),
         timeScale.timeToPx(data.start),
@@ -71,7 +78,7 @@ class ProcessSchedulingTrack extends Track<Config, Data> {
   renderSummary(ctx: CanvasRenderingContext2D, data: SummaryData): void {
     const {timeScale, visibleWindowTime} = globals.frontendLocalState;
     const startPx = Math.floor(timeScale.timeToPx(visibleWindowTime.start));
-    const bottomY = MARGIN_TOP + RECT_HEIGHT;
+    const bottomY = TRACK_HEIGHT;
 
     let lastX = startPx;
     let lastY = bottomY;
@@ -87,7 +94,7 @@ class ProcessSchedulingTrack extends Track<Config, Data> {
       lastX = Math.floor(timeScale.timeToPx(startTime));
 
       ctx.lineTo(lastX, lastY);
-      lastY = MARGIN_TOP + Math.round(RECT_HEIGHT * (1 - utilization));
+      lastY = MARGIN_TOP + Math.round(SUMMARY_HEIGHT * (1 - utilization));
       ctx.lineTo(lastX, lastY);
     }
     ctx.lineTo(lastX, bottomY);
@@ -100,7 +107,7 @@ class ProcessSchedulingTrack extends Track<Config, Data> {
     assertTrue(data.starts.length === data.ends.length);
     assertTrue(data.starts.length === data.utids.length);
 
-    const cpuTrackHeight = Math.floor(RECT_HEIGHT / data.numCpus);
+    const cpuTrackHeight = Math.floor(RECT_HEIGHT / data.maxCpu);
 
     for (let i = 0; i < data.starts.length; i++) {
       const tStart = data.starts[i];
@@ -174,7 +181,7 @@ class ProcessSchedulingTrack extends Track<Config, Data> {
       return;
     }
 
-    const cpuTrackHeight = Math.floor(RECT_HEIGHT / data.numCpus);
+    const cpuTrackHeight = Math.floor(RECT_HEIGHT / data.maxCpu);
     const cpu = Math.floor((y - MARGIN_TOP) / (cpuTrackHeight + 1));
     const {timeScale} = globals.frontendLocalState;
     const t = timeScale.pxToTime(x);

@@ -21,15 +21,18 @@
 
 #include "perfetto/base/logging.h"
 #include "perfetto/ext/base/optional.h"
+#include "perfetto/trace_processor/basic_types.h"
 #include "src/trace_processor/db/row_map.h"
 #include "src/trace_processor/db/sparse_vector.h"
+#include "src/trace_processor/string_pool.h"
 
 namespace perfetto {
 namespace trace_processor {
 
 // Represents the possible filter operations on a column.
-enum FilterOp {
+enum class FilterOp {
   kEq,
+  kNeq,
   kGt,
   kLt,
 };
@@ -38,7 +41,7 @@ enum FilterOp {
 struct Constraint {
   uint32_t col_idx;
   FilterOp op;
-  int64_t value;
+  SqlValue value;
 };
 
 // Represents an order by operation on a column.
@@ -57,75 +60,138 @@ class Table;
 // Represents a named, strongly typed list of data.
 class Column {
  public:
-  // Create an nullable int64 Column.
-  // Note: |name| must be a long lived string.
+  // Flags which indicate properties of the data in the column. These features
+  // are used to speed up column methods like filtering/sorting.
+  enum Flag : uint32_t {
+    // Indicates that this column has no special properties.
+    kNoFlag = 0,
+
+    // Indiciates that the column is an "id" column. Specifically, this means
+    // the backing data for this column has the property that data[i] = i;
+    //
+    // Note: generally, this flag should not be passed by users of this class.
+    // Instead they should use the Column::IdColumn method to create an id
+    // column.
+    kId = 1 << 0,
+
+    // Indicates the data in the column is sorted. This can be used to speed
+    // up filtering and skip sorting.
+    kSorted = 1 << 1,
+  };
+
+  template <typename T>
   Column(const char* name,
-         const SparseVector<int64_t>* storage,
+         SparseVector<T>* storage,
+         /* Flag */ uint32_t flags,
          Table* table,
          uint32_t col_idx,
          uint32_t row_map_idx)
-      : Column(name, ColumnType::kInt64, table, col_idx, row_map_idx) {
-    data_.int64_sv = storage;
-  }
+      : Column(name,
+               ToColumnType<T>(),
+               flags,
+               table,
+               col_idx,
+               row_map_idx,
+               storage) {}
 
   // Create a Column has the same name and is backed by the same data as
   // |column| but is associated to a different table.
   Column(const Column& column,
          Table* table,
          uint32_t col_idx,
-         uint32_t row_map_idx)
-      : Column(column.name_, column.type_, table, col_idx, row_map_idx) {
-    data_ = column.data_;
-  }
+         uint32_t row_map_idx);
 
+  // Columns are movable but not copyable.
   Column(Column&&) noexcept = default;
   Column& operator=(Column&&) = default;
 
   // Creates a Column which returns the index as the value of the row.
-  static Column IdColumn(Table* table, uint32_t col_idx, uint32_t row_map_idx) {
-    return Column("id", ColumnType::kId, table, col_idx, row_map_idx);
-  }
+  static Column IdColumn(Table* table, uint32_t col_idx, uint32_t row_map_idx);
 
-  // Gets the value of the Column at the given |row|
-  base::Optional<int64_t> Get(uint32_t row) const {
-    auto opt_idx = row_map().Get(row);
+  // Gets the value of the Column at the given |row|.
+  SqlValue Get(uint32_t row) const {
     switch (type_) {
-      case ColumnType::kInt64:
-        return data_.int64_sv->Get(opt_idx);
+      case ColumnType::kInt32: {
+        auto opt_value = GetTyped<int32_t>(row);
+        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
+      }
+      case ColumnType::kUint32: {
+        auto opt_value = GetTyped<uint32_t>(row);
+        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
+      }
+      case ColumnType::kInt64: {
+        auto opt_value = GetTyped<int64_t>(row);
+        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
+      }
+      case ColumnType::kString: {
+        auto str = GetStringPoolString(row).c_str();
+        return str == nullptr ? SqlValue() : SqlValue::String(str);
+      }
       case ColumnType::kId:
-        return opt_idx;
+        return SqlValue::Long(row_map().Get(row));
     }
     PERFETTO_FATAL("For GCC");
   }
 
   // Returns the row containing the given value in the Column.
-  base::Optional<uint32_t> IndexOf(int64_t value) const {
+  base::Optional<uint32_t> IndexOf(SqlValue value) const {
     switch (type_) {
+      // TODO(lalitm): investigate whether we could make this more efficient
+      // by first checking the type of the column and comparing explicitly
+      // based on that type.
+      case ColumnType::kInt32:
+      case ColumnType::kUint32:
       case ColumnType::kInt64:
+      case ColumnType::kString: {
         for (uint32_t i = 0; i < row_map().size(); i++) {
           if (Get(i) == value)
             return i;
         }
         return base::nullopt;
-      case ColumnType::kId:
-        return row_map().IndexOf(static_cast<uint32_t>(value));
+      }
+      case ColumnType::kId: {
+        if (value.type != SqlValue::Type::kLong)
+          return base::nullopt;
+        return row_map().IndexOf(static_cast<uint32_t>(value.long_value));
+      }
     }
     PERFETTO_FATAL("For GCC");
   }
 
   // Updates the given RowMap by only keeping rows where this column meets the
   // given filter constraint.
-  void FilterInto(FilterOp, int64_t value, RowMap*) const;
+  void FilterInto(FilterOp, SqlValue value, RowMap*) const;
+
+  // Returns true if this column is considered an id column.
+  bool IsId() const { return (flags_ & Flag::kId) != 0; }
+
+  const RowMap& row_map() const;
+  const char* name() const { return name_; }
+  SqlValue::Type type() const {
+    switch (type_) {
+      case ColumnType::kInt32:
+      case ColumnType::kUint32:
+      case ColumnType::kInt64:
+      case ColumnType::kId:
+        return SqlValue::Type::kLong;
+      case ColumnType::kString:
+        return SqlValue::Type::kString;
+    }
+    PERFETTO_FATAL("For GCC");
+  }
 
   // Returns a Constraint for each type of filter operation for this Column.
-  Constraint eq(int64_t value) const {
+  Constraint eq(SqlValue value) const {
     return Constraint{col_idx_, FilterOp::kEq, value};
   }
-  Constraint gt(int64_t value) const {
+  Constraint gt(SqlValue value) const {
     return Constraint{col_idx_, FilterOp::kGt, value};
   }
-  Constraint lt(int64_t value) const {
+  Constraint lt(SqlValue value) const {
     return Constraint{col_idx_, FilterOp::kLt, value};
+  }
+  Constraint neq(SqlValue value) const {
+    return Constraint{col_idx_, FilterOp::kNeq, value};
   }
 
   // Returns an Order for each Order type for this Column.
@@ -135,44 +201,75 @@ class Column {
   // Returns the JoinKey for this Column.
   JoinKey join_key() const { return JoinKey{col_idx_}; }
 
-  const RowMap& row_map() const;
-  const char* name() const { return name_; }
-
- private:
-  friend class Table;
-
-  enum ColumnType {
+ protected:
+  enum class ColumnType {
     // Standard primitive types.
+    kInt32,
+    kUint32,
     kInt64,
+    kString,
 
     // Types generated on the fly.
     kId,
   };
 
+  template <typename T>
+  base::Optional<T> GetTyped(uint32_t row) const {
+    PERFETTO_DCHECK(ToColumnType<T>() == type_);
+    auto idx = row_map().Get(row);
+    return static_cast<const SparseVector<T>*>(sparse_vector_)->Get(idx);
+  }
+
+  template <typename T>
+  void SetTyped(uint32_t row, T value) {
+    PERFETTO_DCHECK(ToColumnType<T>() == type_);
+    auto idx = row_map().Get(row);
+    return static_cast<SparseVector<T>*>(sparse_vector_)->Set(idx, value);
+  }
+
+  NullTermStringView GetStringPoolString(uint32_t row) const {
+    return string_pool_->Get(*GetTyped<StringPool::Id>(row));
+  }
+
+  // type_ is used to cast sparse_vector_ to the correct type.
+  ColumnType type_ = ColumnType::kInt64;
+  void* sparse_vector_ = nullptr;
+
+ private:
+  friend class Table;
+
   Column(const char* name,
          ColumnType type,
+         uint32_t flags,
          Table* table,
          uint32_t col_idx,
-         uint32_t row_map_idx)
-      : name_(name),
-        table_(table),
-        col_idx_(col_idx),
-        row_map_idx_(row_map_idx),
-        type_(type) {}
+         uint32_t row_map_idx,
+         void* sparse_vector);
 
   Column(const Column&) = delete;
   Column& operator=(const Column&) = delete;
 
+  template <typename T>
+  static ColumnType ToColumnType() {
+    if (std::is_same<T, uint32_t>::value) {
+      return ColumnType::kUint32;
+    } else if (std::is_same<T, int64_t>::value) {
+      return ColumnType::kInt64;
+    } else if (std::is_same<T, int32_t>::value) {
+      return ColumnType::kInt32;
+    } else if (std::is_same<T, StringPool::Id>::value) {
+      return ColumnType::kString;
+    } else {
+      PERFETTO_FATAL("Unsupported type of column");
+    }
+  }
+
   const char* name_ = nullptr;
-  Table* table_ = nullptr;
+  uint32_t flags_ = Flag::kNoFlag;
+  const Table* table_ = nullptr;
   uint32_t col_idx_ = 0;
   uint32_t row_map_idx_ = 0;
-
-  ColumnType type_ = ColumnType::kInt64;
-  union {
-    // Valid when |type_| == ColumnType::kInt64.
-    const SparseVector<int64_t>* int64_sv = nullptr;
-  } data_;
+  const StringPool* string_pool_ = nullptr;
 };
 
 }  // namespace trace_processor

@@ -19,16 +19,16 @@
 #include <inttypes.h>
 
 #include "src/trace_processor/ftrace_descriptors.h"
-#include "src/trace_processor/sqlite_utils.h"
+#include "src/trace_processor/sqlite/sqlite_utils.h"
 #include "src/trace_processor/variadic.h"
 
-#include "perfetto/trace/ftrace/binder.pbzero.h"
-#include "perfetto/trace/ftrace/clk.pbzero.h"
-#include "perfetto/trace/ftrace/filemap.pbzero.h"
-#include "perfetto/trace/ftrace/ftrace.pbzero.h"
-#include "perfetto/trace/ftrace/ftrace_event.pbzero.h"
-#include "perfetto/trace/ftrace/sched.pbzero.h"
-#include "perfetto/trace/ftrace/workqueue.pbzero.h"
+#include "protos/perfetto/trace/ftrace/binder.pbzero.h"
+#include "protos/perfetto/trace/ftrace/clk.pbzero.h"
+#include "protos/perfetto/trace/ftrace/filemap.pbzero.h"
+#include "protos/perfetto/trace/ftrace/ftrace.pbzero.h"
+#include "protos/perfetto/trace/ftrace/ftrace_event.pbzero.h"
+#include "protos/perfetto/trace/ftrace/sched.pbzero.h"
+#include "protos/perfetto/trace/ftrace/workqueue.pbzero.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -227,7 +227,11 @@ void RawTable::FormatSystraceArgs(NullTermStringView event_name,
           writer->AppendUnsignedInt(value.uint_value & ((1 << 20) - 1));
         });
     writer->AppendString(" ino ");
-    write_value_at_index(MFA::kIInoFieldNumber - 1, write_value);
+    write_value_at_index(MFA::kIInoFieldNumber - 1,
+                         [writer](const Variadic& value) {
+                           PERFETTO_DCHECK(value.type == Variadic::Type::kUint);
+                           writer->AppendHexInt(value.uint_value);
+                         });
     writer->AppendString(" page=0000000000000000");
     writer->AppendString(" pfn=");
     write_value_at_index(MFA::kPfnFieldNumber - 1, write_value);

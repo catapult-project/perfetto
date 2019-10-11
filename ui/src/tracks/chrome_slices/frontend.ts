@@ -34,9 +34,9 @@ function hash(s: string): number {
   return hash & 0xff;
 }
 
-class ChromeSliceTrack extends Track<Config, Data> {
-  static readonly kind = SLICE_TRACK_KIND;
-  static create(trackState: TrackState): ChromeSliceTrack {
+export class ChromeSliceTrack extends Track<Config, Data> {
+  static readonly kind: string = SLICE_TRACK_KIND;
+  static create(trackState: TrackState): Track {
     return new ChromeSliceTrack(trackState);
   }
 
@@ -58,10 +58,12 @@ class ChromeSliceTrack extends Track<Config, Data> {
     // show a gray rectangle with a "Loading..." label.
     checkerboardExcept(
         ctx,
+        this.getHeight(),
         timeScale.timeToPx(visibleWindowTime.start),
         timeScale.timeToPx(visibleWindowTime.end),
         timeScale.timeToPx(data.start),
-        timeScale.timeToPx(data.end), );
+        timeScale.timeToPx(data.end),
+    );
 
     ctx.font = '12px Google Sans';
     ctx.textAlign = 'center';
@@ -70,12 +72,16 @@ class ChromeSliceTrack extends Track<Config, Data> {
     const charWidth = ctx.measureText('ACBDLqsdfg').width / 10;
     const pxEnd = timeScale.timeToPx(visibleWindowTime.end);
 
+    // The draw of the rect on the selected slice must happen after the other
+    // drawings, otherwise it would result under another rect.
+    let drawRectOnSelected = () => {};
+
     for (let i = 0; i < data.starts.length; i++) {
       const tStart = data.starts[i];
       const tEnd = data.ends[i];
       const depth = data.depths[i];
-      const cat = data.strings[data.categories[i]];
       const titleId = data.titles[i];
+      const sliceId = data.sliceIds[i];
       const title = data.strings[titleId];
       if (tEnd <= visibleWindowTime.start || tStart >= visibleWindowTime.end) {
         continue;
@@ -86,10 +92,26 @@ class ChromeSliceTrack extends Track<Config, Data> {
       const rectYStart = TRACK_PADDING + depth * SLICE_HEIGHT;
 
       const hovered = titleId === this.hoveredTitleId;
-      const hue = hash(cat);
-      const saturation = Math.min(20 + depth * 10, 70);
+      const name = title.replace(/( )?\d+/g, '');
+      const hue = title === 'Busy' ? 88 : hash(name);
+      const saturation = 50;
       ctx.fillStyle = `hsl(${hue}, ${saturation}%, ${hovered ? 30 : 65}%)`;
       ctx.fillRect(rectXStart, rectYStart, rectWidth, SLICE_HEIGHT);
+
+      // Selected case
+      const currentSelection = globals.state.currentSelection;
+      if (currentSelection && currentSelection.kind === 'CHROME_SLICE' &&
+          currentSelection.id !== undefined &&
+          currentSelection.id === sliceId) {
+        drawRectOnSelected = () => {
+          ctx.strokeStyle = `hsl(${hue}, ${saturation}%, 30%)`;
+          ctx.beginPath();
+          ctx.lineWidth = 3;
+          ctx.strokeRect(
+              rectXStart, rectYStart - 1.5, rectWidth, SLICE_HEIGHT + 3);
+          ctx.closePath();
+        };
+      }
 
       ctx.fillStyle = 'white';
       const displayText = cropText(title, charWidth, rectWidth);
@@ -97,6 +119,7 @@ class ChromeSliceTrack extends Track<Config, Data> {
       ctx.textBaseline = "middle";
       ctx.fillText(displayText, rectXCenter, rectYStart + SLICE_HEIGHT / 2);
     }
+    drawRectOnSelected();
   }
 
   getSliceIndex({x, y}: {x: number, y: number}): number|void {
@@ -134,9 +157,9 @@ class ChromeSliceTrack extends Track<Config, Data> {
     if (sliceIndex === undefined) return false;
     const data = this.data();
     if (data === undefined) return false;
-    const sliceId = data.slice_ids[sliceIndex];
+    const sliceId = data.sliceIds[sliceIndex];
     if (sliceId) {
-      globals.dispatch(Actions.selectChromeSlice({slice_id: sliceId}));
+      globals.makeSelection(Actions.selectChromeSlice({id: sliceId}));
       return true;
     }
     return false;

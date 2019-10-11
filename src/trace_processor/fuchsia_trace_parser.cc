@@ -20,7 +20,7 @@
 #include "src/trace_processor/event_tracker.h"
 #include "src/trace_processor/process_tracker.h"
 #include "src/trace_processor/slice_tracker.h"
-#include "src/trace_processor/virtual_track_tracker.h"
+#include "src/trace_processor/track_tracker.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -257,7 +257,7 @@ void FuchsiaTraceParser::ParseTracePacket(
                   ts, counter_value,
                   context_->storage->InternString(
                       base::StringView(counter_name_str)),
-                  utid, kRefUtid);
+                  utid, RefType::kRefUtid);
             }
           }
           break;
@@ -266,17 +266,19 @@ void FuchsiaTraceParser::ParseTracePacket(
           UniqueTid utid =
               procs->UpdateThread(static_cast<uint32_t>(tinfo.tid),
                                   static_cast<uint32_t>(tinfo.pid));
-          slices->Begin(ts, utid, RefType::kRefUtid, cat, name);
+          TrackId track_id = context_->track_tracker->InternThreadTrack(utid);
+          slices->Begin(ts, track_id, utid, RefType::kRefUtid, cat, name);
           break;
         }
         case kDurationEnd: {
           UniqueTid utid =
               procs->UpdateThread(static_cast<uint32_t>(tinfo.tid),
                                   static_cast<uint32_t>(tinfo.pid));
+          TrackId track_id = context_->track_tracker->InternThreadTrack(utid);
           // TODO(b/131181693): |cat| and |name| are not passed here so that
           // if two slices end at the same timestep, the slices get closed in
           // the correct order regardless of which end event is processed first.
-          slices->End(ts, utid, RefType::kRefUtid);
+          slices->End(ts, track_id);
           break;
         }
         case kDurationComplete: {
@@ -285,16 +287,16 @@ void FuchsiaTraceParser::ParseTracePacket(
           UniqueTid utid =
               procs->UpdateThread(static_cast<uint32_t>(tinfo.tid),
                                   static_cast<uint32_t>(tinfo.pid));
-          slices->Scoped(ts, utid, RefType::kRefUtid, cat, name, end_ts - ts);
+          TrackId track_id = context_->track_tracker->InternThreadTrack(utid);
+          slices->Scoped(ts, track_id, utid, RefType::kRefUtid, cat, name,
+                         end_ts - ts);
           break;
         }
         case kAsyncBegin: {
           int64_t correlation_id = static_cast<int64_t>(*current++);
-          TrackId track_id = context_->virtual_track_tracker->GetOrCreateTrack(
-              {VirtualTrackScope::kGlobal, /*upid=*/0, correlation_id,
-               /*id_scope=*/0},
-              name);
-          slices->Begin(ts, track_id, RefType::kRefTrack, cat, name);
+          TrackId track_id = context_->track_tracker->InternFuchsiaAsyncTrack(
+              name, correlation_id);
+          slices->Begin(ts, track_id, track_id, RefType::kRefTrack, cat, name);
           break;
         }
         case kAsyncInstant: {
@@ -302,10 +304,8 @@ void FuchsiaTraceParser::ParseTracePacket(
           // slices instead, so that they get nested underneath begin/end
           // slices.
           int64_t correlation_id = static_cast<int64_t>(*current++);
-          TrackId track_id = context_->virtual_track_tracker->GetOrCreateTrack(
-              {VirtualTrackScope::kGlobal, /*upid=*/0, correlation_id,
-               /*id_scope=*/0},
-              name);
+          TrackId track_id = context_->track_tracker->InternFuchsiaAsyncTrack(
+              name, correlation_id);
           RowId row = context_->event_tracker->PushInstant(
               ts, name, 0, track_id, RefType::kRefTrack);
           for (const Arg& arg : args) {
@@ -318,11 +318,9 @@ void FuchsiaTraceParser::ParseTracePacket(
         }
         case kAsyncEnd: {
           int64_t correlation_id = static_cast<int64_t>(*current++);
-          TrackId track_id = context_->virtual_track_tracker->GetOrCreateTrack(
-              {VirtualTrackScope::kGlobal, /*upid=*/0, correlation_id,
-               /*id_scope=*/0},
-              name);
-          slices->End(ts, track_id, RefType::kRefTrack, cat, name);
+          TrackId track_id = context_->track_tracker->InternFuchsiaAsyncTrack(
+              name, correlation_id);
+          slices->End(ts, track_id, cat, name);
           break;
         }
       }

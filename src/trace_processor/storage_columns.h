@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "src/trace_processor/filtered_row_index.h"
-#include "src/trace_processor/sqlite_utils.h"
+#include "src/trace_processor/sqlite/sqlite_utils.h"
 #include "src/trace_processor/trace_storage.h"
 
 namespace perfetto {
@@ -55,7 +55,7 @@ class StorageColumn {
   virtual Comparator Sort(const QueryConstraints::OrderBy& ob) const = 0;
 
   // Returns the type of this column.
-  virtual SqliteTable::ColumnType GetType() const = 0;
+  virtual SqlValue::Type GetType() const = 0;
 
   // Bounds a filter on this column between a minimum and maximum index.
   // Generally this is only possible if the column is sorted.
@@ -113,9 +113,7 @@ class StringColumn final : public StorageColumn {
     };
   }
 
-  SqliteTable::ColumnType GetType() const override {
-    return SqliteTable::ColumnType::kString;
-  }
+  SqlValue::Type GetType() const override { return SqlValue::Type::kString; }
 
   bool HasOrdering() const override { return accessor_.HasOrdering(); }
 
@@ -211,16 +209,14 @@ class NumericStorageColumn : public StorageColumn {
 
   bool HasOrdering() const override { return accessor_.HasOrdering(); }
 
-  SqliteTable::ColumnType GetType() const override {
-    if (std::is_same<NumericType, int32_t>::value) {
-      return SqliteTable::ColumnType::kInt;
-    } else if (std::is_same<NumericType, uint8_t>::value ||
-               std::is_same<NumericType, uint32_t>::value) {
-      return SqliteTable::ColumnType::kUint;
-    } else if (std::is_same<NumericType, int64_t>::value) {
-      return SqliteTable::ColumnType::kLong;
+  SqlValue::Type GetType() const override {
+    if (std::is_same<NumericType, uint8_t>::value ||
+        std::is_same<NumericType, uint32_t>::value ||
+        std::is_same<NumericType, int32_t>::value ||
+        std::is_same<NumericType, int64_t>::value) {
+      return SqlValue::Type::kLong;
     } else if (std::is_same<NumericType, double>::value) {
-      return SqliteTable::ColumnType::kDouble;
+      return SqlValue::Type::kDouble;
     }
     PERFETTO_FATAL("Unexpected column type");
   }
@@ -338,7 +334,7 @@ class StringVectorAccessor : public Accessor<NullTermStringView> {
   }
 
   NullTermStringView Get(uint32_t idx) const override {
-    const char* ptr = (*string_map_)[(*deque_)[idx]];
+    const char* ptr = (*string_map_)[static_cast<size_t>((*deque_)[idx])];
     return ptr ? NullTermStringView(ptr) : NullTermStringView();
   }
 

@@ -28,6 +28,7 @@ class SpanJoinOperatorTableTest : public ::testing::Test {
  public:
   SpanJoinOperatorTableTest() {
     sqlite3* db = nullptr;
+    PERFETTO_CHECK(sqlite3_initialize() == SQLITE_OK);
     PERFETTO_CHECK(sqlite3_open(":memory:", &db) == SQLITE_OK);
     db_.reset(db);
 
@@ -56,8 +57,6 @@ class SpanJoinOperatorTableTest : public ::testing::Test {
                 elements[i]);
     }
   }
-
-  ~SpanJoinOperatorTableTest() override { context_.storage->ResetStorage(); }
 
  protected:
   TraceProcessorContext context_;

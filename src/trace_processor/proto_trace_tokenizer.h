@@ -26,7 +26,8 @@
 #include "src/trace_processor/proto_incremental_state.h"
 #include "src/trace_processor/trace_processor_impl.h"
 
-#include "perfetto/trace/trace_packet.pbzero.h"
+#include "protos/perfetto/trace/trace_packet.pbzero.h"
+#include "protos/perfetto/trace/track_event/thread_descriptor.pbzero.h"
 
 namespace protozero {
 struct ConstBytes;
@@ -64,11 +65,17 @@ class ProtoTraceTokenizer : public ChunkedTraceReader {
   void HandlePreviousPacketDropped(const protos::pbzero::TracePacket::Decoder&);
   void ParseInternedData(const protos::pbzero::TracePacket::Decoder&,
                          TraceBlobView interned_data);
+  void ParseTrackDescriptorPacket(const protos::pbzero::TracePacket::Decoder&);
+  void ParseProcessDescriptorPacket(
+      const protos::pbzero::TracePacket::Decoder&);
   void ParseThreadDescriptorPacket(const protos::pbzero::TracePacket::Decoder&);
+  void ParseThreadDescriptor(const protos::pbzero::ThreadDescriptor::Decoder&);
   void ParseTrackEventPacket(const protos::pbzero::TracePacket::Decoder&,
-                             TraceBlobView packet);
+                             TraceBlobView packet,
+                             int64_t packet_timestamp);
   void ParseFtraceBundle(TraceBlobView);
   void ParseFtraceEvent(uint32_t cpu, TraceBlobView);
+  void ParseFtraceCompactSched(uint32_t cpu, const uint8_t* data, size_t size);
 
   ProtoIncrementalState::PacketSequenceState*
   GetIncrementalStateForPacketSequence(uint32_t sequence_id) {

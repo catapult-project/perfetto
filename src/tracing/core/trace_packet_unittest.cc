@@ -18,33 +18,37 @@
 
 #include <string>
 
-#include "perfetto/trace/trace.pb.h"
-#include "perfetto/trace/trace_packet.pb.h"
-#include "perfetto/trace/trusted_packet.pb.h"
+#include "protos/perfetto/trace/trace.pb.h"
+#include "protos/perfetto/trace/trace_packet.pb.h"
+#include "protos/perfetto/trace/trusted_packet.pb.h"
 #include "test/gtest_and_gmock.h"
 
 namespace perfetto {
 namespace {
 
-static_assert(TracePacket::kPacketFieldNumber ==
-                  protos::Trace::kPacketFieldNumber,
+static_assert(static_cast<int>(TracePacket::kPacketFieldNumber) ==
+                  static_cast<int>(protos::Trace::kPacketFieldNumber),
               "packet field id mismatch");
 
-static_assert(protos::TracePacket::kTrustedUidFieldNumber ==
-                  protos::TrustedPacket::kTrustedUidFieldNumber,
-              "trusted_uid field id mismatch");
+static_assert(
+    static_cast<int>(protos::TracePacket::kTrustedUidFieldNumber) ==
+        static_cast<int>(protos::TrustedPacket::kTrustedUidFieldNumber),
+    "trusted_uid field id mismatch");
 
-static_assert(protos::TracePacket::kTraceConfigFieldNumber ==
-                  protos::TrustedPacket::kTraceConfigFieldNumber,
-              "trace_config field id mismatch");
+static_assert(
+    static_cast<int>(protos::TracePacket::kTraceConfigFieldNumber) ==
+        static_cast<int>(protos::TrustedPacket::kTraceConfigFieldNumber),
+    "trace_config field id mismatch");
 
-static_assert(protos::TracePacket::kTraceStatsFieldNumber ==
-                  protos::TrustedPacket::kTraceStatsFieldNumber,
-              "trace_stats field id mismatch");
+static_assert(
+    static_cast<int>(protos::TracePacket::kTraceStatsFieldNumber) ==
+        static_cast<int>(protos::TrustedPacket::kTraceStatsFieldNumber),
+    "trace_stats field id mismatch");
 
-static_assert(protos::TracePacket::kClockSnapshotFieldNumber ==
-                  protos::TrustedPacket::kClockSnapshotFieldNumber,
-              "clock_snapshot field id mismatch");
+static_assert(
+    static_cast<int>(protos::TracePacket::kClockSnapshotFieldNumber) ==
+        static_cast<int>(protos::TrustedPacket::kClockSnapshotFieldNumber),
+    "clock_snapshot field id mismatch");
 
 TEST(TracePacketTest, Simple) {
   protos::TracePacket proto;
@@ -59,7 +63,7 @@ TEST(TracePacketTest, Simple) {
   ASSERT_EQ(tp.slices().end(), ++slice);
 
   protos::TracePacket decoded_packet;
-  ASSERT_TRUE(tp.Decode(&decoded_packet));
+  ASSERT_TRUE(decoded_packet.ParseFromString(tp.GetRawBytesForTesting()));
   ASSERT_EQ(proto.for_testing().str(), decoded_packet.for_testing().str());
 }
 
@@ -90,7 +94,7 @@ TEST(TracePacketTest, Sliced) {
   ASSERT_EQ(tp.slices().end(), ++slice);
 
   protos::TracePacket decoded_packet;
-  ASSERT_TRUE(tp.Decode(&decoded_packet));
+  ASSERT_TRUE(decoded_packet.ParseFromString(tp.GetRawBytesForTesting()));
   ASSERT_EQ(proto.for_testing().str(), decoded_packet.for_testing().str());
 }
 
@@ -101,7 +105,7 @@ TEST(TracePacketTest, Corrupted) {
   TracePacket tp;
   tp.AddSlice({ser_buf.data(), ser_buf.size() - 2});  // corrupted.
   protos::TracePacket decoded_packet;
-  ASSERT_FALSE(tp.Decode(&decoded_packet));
+  ASSERT_FALSE(decoded_packet.ParseFromString(tp.GetRawBytesForTesting()));
 }
 
 // Tests that the GetProtoPreamble() logic returns a valid preamble that allows

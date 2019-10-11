@@ -29,10 +29,10 @@
 #include "perfetto/ext/base/string_splitter.h"
 #include "perfetto/tracing/core/data_source_config.h"
 
-#include "perfetto/config/process_stats/process_stats_config.pbzero.h"
-#include "perfetto/trace/ps/process_stats.pbzero.h"
-#include "perfetto/trace/ps/process_tree.pbzero.h"
-#include "perfetto/trace/trace_packet.pbzero.h"
+#include "protos/perfetto/config/process_stats/process_stats_config.pbzero.h"
+#include "protos/perfetto/trace/ps/process_stats.pbzero.h"
+#include "protos/perfetto/trace/ps/process_tree.pbzero.h"
+#include "protos/perfetto/trace/trace_packet.pbzero.h"
 
 // TODO(primiano): the code in this file assumes that PIDs are never recycled
 // and that processes/threads never change names. Neither is always true.
@@ -235,6 +235,8 @@ void ProcessStatsDataSource::WriteProcess(int32_t pid,
   auto* proc = GetOrCreatePsTree()->add_processes();
   proc->set_pid(pid);
   proc->set_ppid(ToInt(ReadProcStatusEntry(proc_status, "PPid:")));
+  // Uid will have multiple entries, only return first (real uid).
+  proc->set_uid(ToInt(ReadProcStatusEntry(proc_status, "Uid:")));
 
   std::string cmdline = ReadProcPidFile(pid, "cmdline");
   if (!cmdline.empty()) {

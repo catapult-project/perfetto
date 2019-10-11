@@ -20,7 +20,7 @@
 #include "src/trace_processor/event_tracker.h"
 #include "src/trace_processor/process_table.h"
 #include "src/trace_processor/process_tracker.h"
-#include "src/trace_processor/scoped_db.h"
+#include "src/trace_processor/sqlite/scoped_db.h"
 #include "src/trace_processor/trace_processor_context.h"
 #include "test/gtest_and_gmock.h"
 
@@ -32,6 +32,7 @@ class ThreadTableUnittest : public ::testing::Test {
  public:
   ThreadTableUnittest() {
     sqlite3* db = nullptr;
+    PERFETTO_CHECK(sqlite3_initialize() == SQLITE_OK);
     PERFETTO_CHECK(sqlite3_open(":memory:", &db) == SQLITE_OK);
     db_.reset(db);
 
@@ -54,11 +55,6 @@ class ThreadTableUnittest : public ::testing::Test {
 
   const char* GetColumnAsText(int colId) {
     return reinterpret_cast<const char*>(sqlite3_column_text(*stmt_, colId));
-  }
-
-  ~ThreadTableUnittest() override {
-    context_.args_tracker->Flush();
-    context_.storage->ResetStorage();
   }
 
  protected:

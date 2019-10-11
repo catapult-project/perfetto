@@ -26,6 +26,7 @@
 #include "perfetto/base/logging.h"
 #include "perfetto/ext/base/optional.h"
 #include "src/trace_processor/db/column.h"
+#include "src/trace_processor/string_pool.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -41,7 +42,7 @@ class Table {
     bool Next() { return ++row_ < table_->size(); }
 
     // Returns the value at the current row for column |col_idx|.
-    base::Optional<int64_t> Get(uint32_t col_idx) {
+    SqlValue Get(uint32_t col_idx) {
       return table_->columns_[col_idx].Get(row_);
     }
 
@@ -77,8 +78,19 @@ class Table {
   //  * |left|'s values must exist in |right|
   Table LookupJoin(JoinKey left, const Table& other, JoinKey right);
 
-  // Returns the name of the column at index |idx| in the Table.
-  const char* GetColumnName(uint32_t idx) const { return columns_[idx].name(); }
+  // Returns the column at index |idx| in the Table.
+  const Column& GetColumn(uint32_t idx) const { return columns_[idx]; }
+
+  // Retuns the index of the column with the given name, if one exists, or
+  // nullptr otherwise.
+  base::Optional<uint32_t> FindColumnIdxByName(const char* name) const {
+    auto it = std::find_if(
+        columns_.begin(), columns_.end(),
+        [name](const Column& col) { return strcmp(col.name(), name) == 0; });
+    return it == columns_.end() ? base::nullopt
+                                : base::make_optional(static_cast<uint32_t>(
+                                      std::distance(columns_.begin(), it)));
+  }
 
   // Returns the number of columns in the Table.
   uint32_t GetColumnCount() const {
@@ -92,19 +104,19 @@ class Table {
   const std::vector<RowMap>& row_maps() const { return row_maps_; }
 
  protected:
-  explicit Table(const Table* parent);
+  Table(StringPool* pool, const Table* parent);
 
   std::vector<RowMap> row_maps_;
   std::vector<Column> columns_;
   uint32_t size_ = 0;
 
+  StringPool* string_pool_ = nullptr;
+
  private:
   friend class Column;
 
-  // We explicitly define the copy constructor here because we need to change
-  // the Table pointer in each column to the Table being copied into.
-  Table(const Table& other) { *this = other; }
-  Table& operator=(const Table& other);
+  Table Copy() const;
+  Table CopyExceptRowMaps() const;
 };
 
 }  // namespace trace_processor

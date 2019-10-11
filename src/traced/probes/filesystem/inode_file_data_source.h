@@ -36,7 +36,7 @@
 #include "src/traced/probes/filesystem/lru_inode_cache.h"
 #include "src/traced/probes/probes_data_source.h"
 
-#include "perfetto/trace/filesystem/inode_file_map.pbzero.h"
+#include "protos/perfetto/trace/filesystem/inode_file_map.pbzero.h"
 
 namespace perfetto {
 
@@ -99,7 +99,7 @@ class InodeFileDataSource : public ProbesDataSource,
   bool OnInodeFound(BlockDeviceID block_device_id,
                     Inode inode_number,
                     const std::string& path,
-                    protos::pbzero::InodeFileMap_Entry_Type type) override;
+                    InodeFileMap_Entry_Type type) override;
   void OnInodeScanDone() override;
 
   void AddRootsForBlockDevice(BlockDeviceID block_device_id,

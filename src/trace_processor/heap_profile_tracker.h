@@ -21,8 +21,8 @@
 
 #include "perfetto/ext/base/optional.h"
 
-#include "perfetto/trace/profiling/profile_common.pbzero.h"
-#include "perfetto/trace/profiling/profile_packet.pbzero.h"
+#include "protos/perfetto/trace/profiling/profile_common.pbzero.h"
+#include "protos/perfetto/trace/profiling/profile_packet.pbzero.h"
 #include "src/trace_processor/stack_profile_tracker.h"
 #include "src/trace_processor/trace_storage.h"
 
@@ -44,6 +44,8 @@ class HeapProfileTracker {
     uint64_t alloc_count = 0;
     uint64_t free_count = 0;
   };
+
+  void SetProfilePacketIndex(uint64_t id);
 
   explicit HeapProfileTracker(TraceProcessorContext* context);
 
@@ -75,6 +77,7 @@ class HeapProfileTracker {
       prev_free_;
 
   TraceProcessorContext* const context_;
+  uint64_t last_profile_packet_index_ = 0;
   const StringId empty_;
 };
 

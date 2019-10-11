@@ -19,6 +19,7 @@ import {QueryResponse} from '../common/queries';
 import {EngineConfig} from '../common/state';
 
 import {globals} from './globals';
+import {executeSearch} from './search_handler';
 
 const QUERY_ID = 'quicksearch';
 
@@ -34,6 +35,7 @@ const PLACEHOLDER = {
 let selResult = 0;
 let numResults = 0;
 let mode: Mode = SEARCH;
+let displayStepThrough = false;
 
 function clearOmniboxResults(e: Event) {
   globals.queryResults.delete(QUERY_ID);
@@ -46,8 +48,11 @@ function clearOmniboxResults(e: Event) {
 }
 
 function onKeyDown(e: Event) {
-  e.stopPropagation();
-  const key = (e as KeyboardEvent).key;
+  const event = (e as KeyboardEvent);
+  const key = event.key;
+  if (key !== 'Enter') {
+    e.stopPropagation();
+  }
   const txt = (e.target as HTMLInputElement);
 
   // Avoid that the global 'a', 'd', 'w', 's' handler sees these keystrokes.
@@ -69,11 +74,16 @@ function onKeyDown(e: Event) {
     globals.rafScheduler.scheduleFullRedraw();
     return;
   }
+
+  if (mode === SEARCH && key === 'Enter') {
+    txt.blur();
+  }
 }
 
 function onKeyUp(e: Event) {
   e.stopPropagation();
-  const key = (e as KeyboardEvent).key;
+  const event = (e as KeyboardEvent);
+  const key = event.key;
   const txt = e.target as HTMLInputElement;
   if (key === 'ArrowUp' || key === 'ArrowDown') {
     selResult += (key === 'ArrowUp') ? -1 : 1;
@@ -135,14 +145,61 @@ class Omnibox implements m.ClassComponent {
       }
     }
     const commandMode = mode === COMMAND;
+    const state = globals.frontendLocalState;
     return m(
         `.omnibox${commandMode ? '.command-mode' : ''}`,
         m('input', {
           placeholder: PLACEHOLDER[mode],
-          oninput:
-              m.withAttr('value', v => globals.frontendLocalState.omnibox = v),
+          oninput: m.withAttr(
+              'value',
+              v => {
+                globals.frontendLocalState.setOmnibox(
+                    v, commandMode ? 'COMMAND' : 'SEARCH');
+                if (mode === SEARCH) {
+                  globals.frontendLocalState.setSearchIndex(-1);
+                  displayStepThrough = v.length >= 4;
+                  globals.rafScheduler.scheduleFullRedraw();
+                }
+              }),
           value: globals.frontendLocalState.omnibox,
         }),
+        displayStepThrough ?
+            m(
+                '.stepthrough',
+                m('.current',
+                  `${
+                      globals.currentSearchResults.totalResults === 0 ?
+                          '0 / 0' :
+                          `${state.searchIndex + 1} / ${
+                              globals.currentSearchResults.totalResults}`}`),
+                m('button',
+                  {
+                    disabled: state.searchIndex <= 0,
+                    onclick: () => {
+                      executeSearch(true /* reverse direction */);
+                    }
+                  },
+                  m('i.material-icons.left', 'keyboard_arrow_left')),
+                m('button',
+                  {
+                    disabled: state.searchIndex ===
+                        globals.currentSearchResults.totalResults - 1,
+                    onclick: () => {
+                      executeSearch();
+                    }
+                  },
+                  m('i.material-icons.right', 'keyboard_arrow_right')),
+                ) :
+            '',
+        commandMode ? '' :
+                      m('.help',
+                        {
+                          title: 'Search is in beta. Improvements coming soon!',
+                          onclick: () => {
+                            window.open('http://b/111169965', '_blank');
+                          }
+                        },
+                        m('i.material-icons', 'help')),
         m('.omnibox-results', results));
   }
 }

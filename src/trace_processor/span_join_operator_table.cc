@@ -16,7 +16,9 @@
 
 #include "src/trace_processor/span_join_operator_table.h"
 
+#include <sqlite3.h>
 #include <string.h>
+
 #include <algorithm>
 #include <set>
 #include <utility>
@@ -25,8 +27,7 @@
 #include "perfetto/ext/base/string_splitter.h"
 #include "perfetto/ext/base/string_utils.h"
 #include "perfetto/ext/base/string_view.h"
-#include "src/trace_processor/sqlite.h"
-#include "src/trace_processor/sqlite_utils.h"
+#include "src/trace_processor/sqlite/sqlite_utils.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -125,10 +126,11 @@ util::Status SpanJoinOperatorTable::Init(int argc,
   std::vector<SqliteTable::Column> cols;
   // Ensure the shared columns are consistently ordered and are not
   // present twice in the final schema
-  cols.emplace_back(Column::kTimestamp, kTsColumnName, ColumnType::kLong);
-  cols.emplace_back(Column::kDuration, kDurColumnName, ColumnType::kLong);
+  cols.emplace_back(Column::kTimestamp, kTsColumnName, SqlValue::Type::kLong);
+  cols.emplace_back(Column::kDuration, kDurColumnName, SqlValue::Type::kLong);
   if (partitioning_ != PartitioningType::kNoPartitioning)
-    cols.emplace_back(Column::kPartition, partition_col(), ColumnType::kLong);
+    cols.emplace_back(Column::kPartition, partition_col(),
+                      SqlValue::Type::kLong);
 
   CreateSchemaColsForDefn(t1_defn_, &cols);
   CreateSchemaColsForDefn(t2_defn_, &cols);
@@ -218,8 +220,8 @@ util::Status SpanJoinOperatorTable::CreateTableDefinition(
     auto col = cols[i];
     if (IsRequiredColumn(col.name())) {
       ++required_columns_found;
-      if (col.type() != SqliteTable::ColumnType::kLong &&
-          col.type() != SqliteTable::ColumnType::kUnknown) {
+      if (col.type() != SqlValue::Type::kLong &&
+          col.type() != SqlValue::Type::kNull) {
         return util::ErrStatus(
             "SPAN_JOIN: Invalid type for column %s in table %s",
             col.name().c_str(), desc.name.c_str());
