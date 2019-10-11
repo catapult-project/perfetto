@@ -484,6 +484,10 @@ void ProtoTraceParser::ParseTracePacket(
     ParseTraceConfig(packet.trace_config());
   }
 
+  if (packet.has_gpu_log()) {
+    graphics_event_parser_->ParseGpuLog(ts, packet.gpu_log());
+  }
+
   if (packet.has_packages_list()) {
     ParseAndroidPackagesList(packet.packages_list());
   }
@@ -503,7 +507,7 @@ void ProtoTraceParser::ParseTracePacket(
 
   if (packet.has_vulkan_memory_event()) {
     graphics_event_parser_->ParseVulkanMemoryEvent(
-        packet.graphics_frame_event());
+        packet.vulkan_memory_event());
   }
 
   // TODO(lalitm): maybe move this to the flush method in the trace processor
@@ -2682,25 +2686,28 @@ void ProtoTraceParser::ParseModuleSymbols(ConstBytes blob) {
   protos::pbzero::ModuleSymbols::Decoder module_symbols(blob.data, blob.size);
   std::string hex_build_id = base::ToHex(module_symbols.build_id().data,
                                          module_symbols.build_id().size);
-  ssize_t mapping_row =
+  auto mapping_rows =
       context_->storage->stack_profile_mappings().FindMappingRow(
           context_->storage->InternString(module_symbols.path()),
           context_->storage->InternString(base::StringView(hex_build_id)));
-  if (mapping_row == -1) {
-    PERFETTO_LOG("Could not find mapping %s (%s).",
-                 base::StringView(module_symbols.path()).ToStdString().c_str(),
-                 hex_build_id.c_str());
+  if (mapping_rows.empty()) {
+    context_->storage->IncrementStats(stats::stackprofile_invalid_mapping_id);
     return;
   }
   for (auto addr_it = module_symbols.address_symbols(); addr_it; ++addr_it) {
     protos::pbzero::AddressSymbols::Decoder address_symbols(addr_it->data(),
                                                             addr_it->size());
 
-    ssize_t frame_row = context_->storage->stack_profile_frames().FindFrameRow(
-        static_cast<size_t>(mapping_row), address_symbols.address());
+    ssize_t frame_row = -1;
+    for (int64_t mapping_row : mapping_rows) {
+      frame_row = context_->storage->stack_profile_frames().FindFrameRow(
+          static_cast<size_t>(mapping_row), address_symbols.address());
+      if (frame_row != -1)
+        break;
+    }
     if (frame_row == -1) {
-      PERFETTO_DFATAL_OR_ELOG("Could not find frame.");
-      return;
+      context_->storage->IncrementStats(stats::stackprofile_invalid_frame_id);
+      continue;
     }
     uint32_t symbol_set_id = context_->storage->symbol_table().size();
     context_->storage->mutable_stack_profile_frames()->SetSymbolSetId(
@@ -2726,6 +2733,21 @@ void ProtoTraceParser::ParseHeapGraph(int64_t ts, ConstBytes blob) {
     obj.object_id = object.id();
     obj.self_size = object.self_size();
     obj.type_id = object.type_id();
+    auto ref_field_ids_it = object.reference_field_id();
+    auto ref_object_ids_it = object.reference_object_id();
+    for (; ref_field_ids_it && ref_object_ids_it;
+         ++ref_field_ids_it, ++ref_object_ids_it) {
+      HeapGraphTracker::SourceObject::Reference ref;
+      ref.field_name_id = ref_field_ids_it->as_uint64();
+      ref.owned_object_id = ref_object_ids_it->as_uint64();
+      obj.references.emplace_back(std::move(ref));
+    }
+
+    if (ref_field_ids_it || ref_object_ids_it) {
+      context_->storage->IncrementIndexedStats(stats::heap_graph_missing_packet,
+                                               static_cast<int>(upid));
+      continue;
+    }
     context_->heap_graph_tracker->AddObject(upid, ts, std::move(obj));
   }
   for (auto it = heap_graph.type_names(); it; ++it) {
@@ -2734,6 +2756,14 @@ void ProtoTraceParser::ParseHeapGraph(int64_t ts, ConstBytes blob) {
     auto str_view = base::StringView(str, entry.str().size);
 
     context_->heap_graph_tracker->AddInternedTypeName(
+        entry.iid(), context_->storage->InternString(str_view));
+  }
+  for (auto it = heap_graph.field_names(); it; ++it) {
+    protos::pbzero::InternedString::Decoder entry(it->data(), it->size());
+    const char* str = reinterpret_cast<const char*>(entry.str().data);
+    auto str_view = base::StringView(str, entry.str().size);
+
+    context_->heap_graph_tracker->AddInternedFieldName(
         entry.iid(), context_->storage->InternString(str_view));
   }
   if (!heap_graph.continued()) {

@@ -204,12 +204,22 @@ void CreateBuiltinViews(sqlite3* db) {
 #if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
 void ExportJson(sqlite3_context* ctx, int /*argc*/, sqlite3_value** argv) {
   TraceStorage* storage = static_cast<TraceStorage*>(sqlite3_user_data(ctx));
-  const char* filename =
-      reinterpret_cast<const char*>(sqlite3_value_text(argv[0]));
-  FILE* output = fopen(filename, "w");
-  if (!output) {
-    sqlite3_result_error(ctx, "Couldn't open output file", -1);
-    return;
+  FILE* output;
+  if (sqlite3_value_type(argv[0]) == SQLITE_INTEGER) {
+    // Assume input is an FD.
+    output = fdopen(sqlite3_value_int(argv[0]), "w");
+    if (!output) {
+      sqlite3_result_error(ctx, "Couldn't open output file from given FD", -1);
+      return;
+    }
+  } else {
+    const char* filename =
+        reinterpret_cast<const char*>(sqlite3_value_text(argv[0]));
+    output = fopen(filename, "w");
+    if (!output) {
+      sqlite3_result_error(ctx, "Couldn't open output file", -1);
+      return;
+    }
   }
 
   json::ResultCode result = json::ExportJson(storage, output);
@@ -365,6 +375,9 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg) {
                                storage->symbol_table().table_name());
   DbSqliteTable::RegisterTable(*db_, &storage->heap_graph_object_table(),
                                storage->heap_graph_object_table().table_name());
+  DbSqliteTable::RegisterTable(
+      *db_, &storage->heap_graph_reference_table(),
+      storage->heap_graph_reference_table().table_name());
   DbSqliteTable::RegisterTable(
       *db_, &storage->vulkan_memory_allocations_table(),
       storage->vulkan_memory_allocations_table().table_name());

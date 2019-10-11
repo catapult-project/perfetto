@@ -54,11 +54,22 @@ packet {
       mapping_id: 1
       rel_pc: 0x3000
     }
+    frames {
+      iid: 4
+      function_name_id: 2
+      mapping_id: 1
+      rel_pc: 0x4000
+    }
     callstacks {
       iid: 1
       frame_ids: 1
       frame_ids: 2
       frame_ids: 3
+    }
+    callstacks {
+      iid: 2
+      frame_ids: 1
+      frame_ids: 4
     }
     mappings {
       iid: 1
@@ -72,6 +83,13 @@ packet {
         self_allocated: 2000
         self_freed: 1000
         alloc_count: 2
+        free_count: 1
+      }
+      samples {
+        callstack_id: 2
+        self_allocated: 100
+        self_freed: 10
+        alloc_count: 10
         free_count: 1
       }
     }

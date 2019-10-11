@@ -39,10 +39,10 @@ def _check_command_output(cmd, cwd):
     print(
         'Command "{}" failed in {}:'.format(' '.join(cmd), cwd),
         file=sys.stderr)
-    print(e.output, file=sys.stderr)
+    print(e.output.decode(), file=sys.stderr)
     sys.exit(1)
   else:
-    return output
+    return output.decode()
 
 
 def repo_root():
@@ -114,7 +114,7 @@ def compute_source_dependencies(out):
   deps = {}
   current_source = None
   for line in ninja_deps.split('\n'):
-    filename = os.path.relpath(os.path.join(out, line.strip()))
+    filename = os.path.relpath(os.path.join(out, line.strip()), repo_root())
     if not line or line[0] != ' ':
       current_source = None
       continue
