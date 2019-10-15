@@ -195,6 +195,8 @@ class ArgsBuilder {
       case Variadic::kUint:
         return Json::UInt64(variadic.uint_value);
       case Variadic::kString:
+        if (variadic.string_value == kNullStringId)
+          return "";
         return storage_->GetString(variadic.string_value).c_str();
       case Variadic::kReal:
         return variadic.real_value;
@@ -744,7 +746,7 @@ ResultCode ExportMetadata(const TraceStorage* storage,
         break;
 
       default:
-        PERFETTO_DFATAL("unexpected metadata key");
+        PERFETTO_DLOG("Ignoring metadata key %zu", static_cast<size_t>(keys[pos]));
         break;
     }
   }
