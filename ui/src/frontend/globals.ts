@@ -28,6 +28,7 @@ export interface SliceDetails {
   dur?: number;
   priority?: number;
   endState?: string;
+  cpu?: number;
   id?: number;
   utid?: number;
   wakeupTs?: number;
@@ -52,13 +53,12 @@ export interface CallsiteInfo {
   totalSize: number;
 }
 
-export interface HeapDumpDetails {
+export interface HeapProfileDetails {
   ts?: number;
   tsNs?: number;
   allocated?: number;
   allocatedNotFreed?: number;
   pid?: number;
-  flamegraphData?: CallsiteInfo[];
 }
 
 export interface QuantizedLoad {
@@ -94,7 +94,7 @@ class Globals {
   private _threadMap?: ThreadMap = undefined;
   private _sliceDetails?: SliceDetails = undefined;
   private _counterDetails?: CounterDetails = undefined;
-  private _heapDumpDetails?: HeapDumpDetails = undefined;
+  private _heapDumpDetails?: HeapProfileDetails = undefined;
   private _isLoading = false;
   private _bufferUsage?: number = undefined;
   private _recordingLog?: string = undefined;
@@ -186,7 +186,7 @@ class Globals {
     return assertExists(this._heapDumpDetails);
   }
 
-  set heapDumpDetails(click: HeapDumpDetails) {
+  set heapDumpDetails(click: HeapProfileDetails) {
     this._heapDumpDetails = assertExists(click);
   }
 

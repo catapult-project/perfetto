@@ -205,6 +205,43 @@ constexpr int64_t kPendingThreadDuration = -1;
 constexpr int64_t kPendingThreadInstructionDelta = -1;
 }  // namespace
 
+const char* HeapGraphRootTypeToString(int32_t type) {
+  switch (type) {
+    case protos::pbzero::HeapGraphRoot::ROOT_UNKNOWN:
+      return "ROOT_UNKNOWN";
+    case protos::pbzero::HeapGraphRoot::ROOT_JNI_GLOBAL:
+      return "ROOT_JNI_GLOBAL";
+    case protos::pbzero::HeapGraphRoot::ROOT_JNI_LOCAL:
+      return "ROOT_JNI_LOCAL";
+    case protos::pbzero::HeapGraphRoot::ROOT_JAVA_FRAME:
+      return "ROOT_JAVA_FRAME";
+    case protos::pbzero::HeapGraphRoot::ROOT_NATIVE_STACK:
+      return "ROOT_NATIVE_STACK";
+    case protos::pbzero::HeapGraphRoot::ROOT_STICKY_CLASS:
+      return "ROOT_STICKY_CLASS";
+    case protos::pbzero::HeapGraphRoot::ROOT_THREAD_BLOCK:
+      return "ROOT_THREAD_BLOCK";
+    case protos::pbzero::HeapGraphRoot::ROOT_MONITOR_USED:
+      return "ROOT_MONITOR_USED";
+    case protos::pbzero::HeapGraphRoot::ROOT_THREAD_OBJECT:
+      return "ROOT_THREAD_OBJECT";
+    case protos::pbzero::HeapGraphRoot::ROOT_INTERNED_STRING:
+      return "ROOT_INTERNED_STRING";
+    case protos::pbzero::HeapGraphRoot::ROOT_FINALIZING:
+      return "ROOT_FINALIZING";
+    case protos::pbzero::HeapGraphRoot::ROOT_DEBUGGER:
+      return "ROOT_DEBUGGER";
+    case protos::pbzero::HeapGraphRoot::ROOT_REFERENCE_CLEANUP:
+      return "ROOT_REFERENCE_CLEANUP";
+    case protos::pbzero::HeapGraphRoot::ROOT_VM_INTERNAL:
+      return "ROOT_VM_INTERNAL";
+    case protos::pbzero::HeapGraphRoot::ROOT_JNI_MONITOR:
+      return "ROOT_JNI_MONITOR";
+    default:
+      return "ROOT_UNKNOWN";
+  }
+}
+
 }  // namespace
 
 ProtoTraceParser::ProtoTraceParser(TraceProcessorContext* context)
@@ -1852,7 +1889,7 @@ void ProtoTraceParser::ParseTrackEvent(
     }
   }
 
-  auto args_callback = [this, &event, &sequence_state,
+  auto args_callback = [this, &event, &legacy_event, &sequence_state,
                         sequence_state_generation, ts,
                         utid](ArgsTracker* args_tracker, RowId row_id) {
     for (auto it = event.debug_annotations(); it; ++it) {
@@ -1869,6 +1906,42 @@ void ProtoTraceParser::ParseTrackEvent(
       ParseLogMessage(event.log_message(), sequence_state,
                       sequence_state_generation, ts, utid, args_tracker,
                       row_id);
+    }
+
+    // TODO(eseckler): Parse legacy flow events into flow events table once we
+    // have a design for it.
+    if (legacy_event.has_bind_id()) {
+      args_tracker->AddArg(row_id, legacy_event_bind_id_key_id_,
+                           legacy_event_bind_id_key_id_,
+                           Variadic::UnsignedInteger(legacy_event.bind_id()));
+    }
+
+    if (legacy_event.bind_to_enclosing()) {
+      args_tracker->AddArg(row_id, legacy_event_bind_to_enclosing_key_id_,
+                           legacy_event_bind_to_enclosing_key_id_,
+                           Variadic::Boolean(true));
+    }
+
+    if (legacy_event.flow_direction()) {
+      StringId value;
+      switch (legacy_event.flow_direction()) {
+        case protos::pbzero::TrackEvent::LegacyEvent::FLOW_IN:
+          value = flow_direction_value_in_id_;
+          break;
+        case protos::pbzero::TrackEvent::LegacyEvent::FLOW_OUT:
+          value = flow_direction_value_out_id_;
+          break;
+        case protos::pbzero::TrackEvent::LegacyEvent::FLOW_INOUT:
+          value = flow_direction_value_inout_id_;
+          break;
+        default:
+          PERFETTO_FATAL("Unknown flow direction: %d",
+                         legacy_event.flow_direction());
+          break;
+      }
+      args_tracker->AddArg(row_id, legacy_event_flow_direction_key_id_,
+                           legacy_event_flow_direction_key_id_,
+                           Variadic::String(value));
     }
   };
 
@@ -2091,8 +2164,6 @@ void ProtoTraceParser::ParseLegacyEventAsRawEvent(
     StringId name_id,
     const protos::pbzero::TrackEvent::LegacyEvent::Decoder& legacy_event,
     SliceTracker::SetArgsCallback args_callback) {
-  using LegacyEvent = protos::pbzero::TrackEvent::LegacyEvent;
-
   if (!utid) {
     context_->storage->IncrementStats(stats::track_event_parser_errors);
     PERFETTO_DLOG("raw legacy event without thread association");
@@ -2168,41 +2239,6 @@ void ProtoTraceParser::ParseLegacyEventAsRawEvent(
                 legacy_event_id_scope_key_id_,
                 Variadic::String(
                     context_->storage->InternString(legacy_event.id_scope())));
-  }
-
-  // TODO(eseckler): Parse legacy flow events into flow events table once we
-  // have a design for it.
-  if (legacy_event.has_bind_id()) {
-    args.AddArg(row_id, legacy_event_bind_id_key_id_,
-                legacy_event_bind_id_key_id_,
-                Variadic::UnsignedInteger(legacy_event.bind_id()));
-  }
-
-  if (legacy_event.bind_to_enclosing()) {
-    args.AddArg(row_id, legacy_event_bind_to_enclosing_key_id_,
-                legacy_event_bind_to_enclosing_key_id_,
-                Variadic::Boolean(true));
-  }
-
-  if (legacy_event.flow_direction()) {
-    StringId value;
-    switch (legacy_event.flow_direction()) {
-      case LegacyEvent::FLOW_IN:
-        value = flow_direction_value_in_id_;
-        break;
-      case LegacyEvent::FLOW_OUT:
-        value = flow_direction_value_out_id_;
-        break;
-      case LegacyEvent::FLOW_INOUT:
-        value = flow_direction_value_inout_id_;
-        break;
-      default:
-        PERFETTO_FATAL("Unknown flow direction: %d",
-                       legacy_event.flow_direction());
-        break;
-    }
-    args.AddArg(row_id, legacy_event_flow_direction_key_id_,
-                legacy_event_flow_direction_key_id_, Variadic::String(value));
   }
 
   // No need to parse legacy_event.instant_event_scope() because we import
@@ -2686,6 +2722,17 @@ void ProtoTraceParser::ParseHeapGraph(int64_t ts, ConstBytes blob) {
 
     context_->heap_graph_tracker->AddInternedFieldName(
         entry.iid(), context_->storage->InternString(str_view));
+  }
+  for (auto it = heap_graph.roots(); it; ++it) {
+    protos::pbzero::HeapGraphRoot::Decoder entry(it->data(), it->size());
+    const char* str = HeapGraphRootTypeToString(entry.root_type());
+    auto str_view = base::StringView(str);
+
+    HeapGraphTracker::SourceRoot src_root;
+    src_root.root_type = context_->storage->InternString(str_view);
+    for (auto obj_it = entry.object_ids(); obj_it; ++obj_it)
+      src_root.object_ids.emplace_back(obj_it->as_uint64());
+    context_->heap_graph_tracker->AddRoot(upid, ts, std::move(src_root));
   }
   if (!heap_graph.continued()) {
     context_->heap_graph_tracker->FinalizeProfile();
