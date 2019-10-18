@@ -35,6 +35,9 @@ import {CPU_SLICE_TRACK_KIND} from '../tracks/cpu_slices/common';
 import {GPU_FREQ_TRACK_KIND} from '../tracks/gpu_freq/common';
 import {HEAP_PROFILE_TRACK_KIND} from '../tracks/heap_profile/common';
 import {
+  HEAP_PROFILE_FLAMEGRAPH_TRACK_KIND
+} from '../tracks/heap_profile_flamegraph/common';
+import {
   PROCESS_SCHEDULING_TRACK_KIND
 } from '../tracks/process_scheduling/common';
 import {PROCESS_SUMMARY_TRACK} from '../tracks/process_summary/common';
@@ -315,7 +318,7 @@ export class TraceController extends Controller<States> {
 
     const upidToProcessTracks = new Map();
     const rawProcessTracks = await engine.query(`
-      select id, upid, name, max(depth) as maxDepth
+      select id, upid, process_track.name, max(depth) as maxDepth
       from process_track
       inner join slice on slice.track_id = process_track.id
       group by track_id
@@ -492,7 +495,8 @@ export class TraceController extends Controller<States> {
           utid === null ? undefined : utidToThreadTrack.get(utid);
       if (threadTrack === undefined &&
           (upid === null || counterUpids[upid] === undefined) &&
-          counterUtids[utid] === undefined && !threadHasSched) {
+          counterUtids[utid] === undefined && !threadHasSched &&
+          (upid === null || upid !== null && !heapUpids.has(upid))) {
         continue;
       }
 
@@ -520,11 +524,16 @@ export class TraceController extends Controller<States> {
           config: {pidForColor, upid, utid},
         });
 
+        const name = upid === null ?
+            `${threadName} ${tid}` :
+            `${
+                processName === null && heapUpids.has(upid) ?
+                    'Heap Profile for' :
+                    processName} ${pid}`;
         addTrackGroupActions.push(Actions.addTrackGroup({
           engineId: this.engineId,
           summaryTrackId,
-          name: upid === null ? `${threadName} ${tid}` :
-                                `${processName} ${pid}`,
+          name,
           id: pUuid,
           collapsed: true,
         }));
@@ -551,6 +560,14 @@ export class TraceController extends Controller<States> {
               engineId: this.engineId,
               kind: HEAP_PROFILE_TRACK_KIND,
               name: `Heap Profile`,
+              trackGroup: pUuid,
+              config: {upid}
+            });
+
+            tracksToAdd.push({
+              engineId: this.engineId,
+              kind: HEAP_PROFILE_FLAMEGRAPH_TRACK_KIND,
+              name: `Heap Profile Flamegraph`,
               trackGroup: pUuid,
               config: {upid}
             });

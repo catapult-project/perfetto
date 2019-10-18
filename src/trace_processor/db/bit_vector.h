@@ -30,10 +30,21 @@
 namespace perfetto {
 namespace trace_processor {
 
+namespace internal {
+
+class BaseIterator;
+class AllBitsIterator;
+class SetBitsIterator;
+
+}  // namespace internal
+
 // A bitvector which compactly stores a vector of bools using a single bit
 // for each bool.
 class BitVector {
  public:
+  using AllBitsIterator = internal::AllBitsIterator;
+  using SetBitsIterator = internal::SetBitsIterator;
+
   // Creates an empty bitvector.
   BitVector();
 
@@ -265,23 +276,29 @@ class BitVector {
   // This will change this to the following:
   // this:  0 1 0 0 1 0 0
   // TODO(lalitm): investigate whether we should just change this to And.
-  void UpdateSetBits(const BitVector& other) {
-    PERFETTO_DCHECK(other.size() == GetNumBitsSet());
+  void UpdateSetBits(const BitVector& other);
 
-    // Go through each set bit and if |other| has it unset, then unset the
-    // bit taking care to update the index we consider to take into account
-    // the bits we just unset.
-    // TODO(lalitm): we add an iterator implementation to remove this
-    // inefficient loop.
-    uint32_t removed = 0;
-    for (uint32_t i = 0, size = other.size(); i < size; ++i) {
-      if (!other.IsSet(i)) {
-        Clear(IndexOfNthSet(i - removed++));
-      }
-    }
-  }
+  // Iterate all the bits in the BitVector.
+  //
+  // Usage:
+  // for (auto it = bv.IterateAllBits(); it; it.Next()) {
+  //   ...
+  // }
+  AllBitsIterator IterateAllBits() const;
+
+  // Iterate all the set bits in the BitVector.
+  //
+  // Usage:
+  // for (auto it = bv.IterateSetBits(); it; it.Next()) {
+  //   ...
+  // }
+  SetBitsIterator IterateSetBits() const;
 
  private:
+  friend class internal::BaseIterator;
+  friend class internal::AllBitsIterator;
+  friend class internal::SetBitsIterator;
+
   // Represents the offset of a bit within a block.
   struct BlockOffset {
     uint16_t word_idx;

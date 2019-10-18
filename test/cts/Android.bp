@@ -4,6 +4,12 @@ cc_test {
     "device_feature_test_cts.cc",
     "end_to_end_integrationtest_cts.cc",
     "heapprofd_test_cts.cc",
+    "heapprofd_java_test_cts.cc",
+    "utils.cc",
+    ":perfetto_protos_perfetto_config_cpp_gen",
+  ],
+  generated_headers: [
+    "perfetto_protos_perfetto_config_cpp_gen_headers",
   ],
   static_libs: [
     "libgmock",

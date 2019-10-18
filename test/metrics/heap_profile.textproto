@@ -14,6 +14,8 @@ packet {
 }
 packet {
   trusted_packet_sequence_id: 999
+  previous_packet_dropped: true
+  incremental_state_cleared: true
   timestamp: 10
   profile_packet {
     strings {
@@ -57,7 +59,7 @@ packet {
     frames {
       iid: 4
       function_name_id: 2
-      mapping_id: 1
+      mapping_id: 2
       rel_pc: 0x4000
     }
     callstacks {
@@ -73,6 +75,11 @@ packet {
     }
     mappings {
       iid: 1
+      path_string_ids: 4
+      build_id: 5
+    }
+    mappings {
+      iid: 2
       path_string_ids: 4
       build_id: 5
     }
@@ -106,6 +113,22 @@ packet {
         function_name: "symbolized f3"
         source_file_name: "f3.cc"
         line_number: 33
+      }
+    }
+    address_symbols {
+      address: 0x2000
+      lines {
+        function_name: "symbolized f2"
+        source_file_name: "f2.cc"
+        line_number: 22
+      }
+    }
+    address_symbols {
+      address: 0x4000
+      lines {
+        function_name: "symbolized f2"
+        source_file_name: "f2.cc"
+        line_number: 23
       }
     }
   }

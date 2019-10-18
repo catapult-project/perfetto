@@ -20,6 +20,7 @@
 #include <memory>
 
 #include "perfetto/trace_processor/basic_types.h"
+#include "src/trace_processor/importers/proto/proto_importer_module.h"
 
 namespace perfetto {
 namespace trace_processor {
@@ -28,18 +29,19 @@ class ArgsTracker;
 class ChunkedTraceReader;
 class ClockTracker;
 class EventTracker;
+class FtraceModule;
+class HeapGraphTracker;
 class HeapProfileTracker;
 class VulkanMemoryTracker;
 class ProcessTracker;
 class SliceTracker;
-class StackProfileTracker;
 class SyscallTracker;
 class SystraceParser;
 class TraceParser;
 class TraceStorage;
 class TraceSorter;
+class TrackEventModule;
 class TrackTracker;
-class HeapGraphTracker;
 
 class TraceProcessorContext {
  public:
@@ -47,6 +49,7 @@ class TraceProcessorContext {
   ~TraceProcessorContext();
 
   Config config;
+
   std::unique_ptr<TraceStorage> storage;
   std::unique_ptr<TrackTracker> track_tracker;
   std::unique_ptr<ArgsTracker> args_tracker;
@@ -58,11 +61,13 @@ class TraceProcessorContext {
   std::unique_ptr<TraceParser> parser;
   std::unique_ptr<TraceSorter> sorter;
   std::unique_ptr<ChunkedTraceReader> chunk_reader;
-  std::unique_ptr<StackProfileTracker> stack_profile_tracker;
   std::unique_ptr<HeapProfileTracker> heap_profile_tracker;
   std::unique_ptr<SystraceParser> systrace_parser;
   std::unique_ptr<HeapGraphTracker> heap_graph_tracker;
   std::unique_ptr<VulkanMemoryTracker> vulkan_memory_tracker;
+
+  ProtoImporterModule<FtraceModule> ftrace_module;
+  ProtoImporterModule<TrackEventModule> track_event_module;
 };
 
 }  // namespace trace_processor

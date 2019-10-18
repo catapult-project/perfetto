@@ -29,6 +29,8 @@
 #include "perfetto/trace_processor/status.h"
 #include "src/trace_processor/clock_tracker.h"
 #include "src/trace_processor/event_tracker.h"
+#include "src/trace_processor/importers/proto/ftrace_module.h"
+#include "src/trace_processor/importers/proto/track_event_module.h"
 #include "src/trace_processor/process_tracker.h"
 #include "src/trace_processor/proto_incremental_state.h"
 #include "src/trace_processor/stats.h"
@@ -41,7 +43,6 @@
 #include "protos/perfetto/trace/clock_snapshot.pbzero.h"
 #include "protos/perfetto/trace/ftrace/ftrace_event.pbzero.h"
 #include "protos/perfetto/trace/ftrace/ftrace_event_bundle.pbzero.h"
-#include "protos/perfetto/trace/interned_data/interned_data.pbzero.h"
 #include "protos/perfetto/trace/profiling/profile_common.pbzero.h"
 #include "protos/perfetto/trace/trace.pbzero.h"
 #include "protos/perfetto/trace/track_event/process_descriptor.pbzero.h"
@@ -63,38 +64,6 @@ namespace {
 
 constexpr uint8_t kTracePacketTag =
     MakeTagLengthDelimited(protos::pbzero::Trace::kPacketFieldNumber);
-
-template <typename MessageType, typename FieldName = DefaultFieldName>
-void InternMessage(TraceProcessorContext* context,
-                   ProtoIncrementalState::PacketSequenceState* state,
-                   TraceBlobView message) {
-  constexpr auto kIidFieldNumber = MessageType::kIidFieldNumber;
-
-  uint64_t iid = 0;
-  auto message_start = message.data();
-  auto message_size = message.length();
-  protozero::ProtoDecoder decoder(message_start, message_size);
-
-  auto field = decoder.FindField(kIidFieldNumber);
-  if (PERFETTO_UNLIKELY(!field)) {
-    PERFETTO_ELOG("Interned message without interning_id");
-    context->storage->IncrementStats(stats::interned_data_tokenizer_errors);
-    return;
-  }
-  iid = field.as_uint64();
-
-  auto res = state->GetInternedDataMap<MessageType, FieldName>()->emplace(
-      iid,
-      ProtoIncrementalState::InternedDataView<MessageType>(std::move(message)));
-  // If a message with this ID is already interned, its data should not have
-  // changed (this is forbidden by the InternedData proto).
-  // TODO(eseckler): This DCHECK assumes that the message is encoded the
-  // same way whenever it is re-emitted.
-  PERFETTO_DCHECK(res.second ||
-                  (res.first->second.message.length() == message_size &&
-                   memcmp(res.first->second.message.data(), message_start,
-                          message_size) == 0));
-}
 
 TraceBlobView Decompress(TraceBlobView input) {
   uint8_t out[4096];
@@ -204,9 +173,10 @@ util::Status ProtoTraceTokenizer::ParseInternal(
 
   protos::pbzero::Trace::Decoder decoder(data, size);
   for (auto it = decoder.packet(); it; ++it) {
-    size_t field_offset = whole_buf.offset_of(it->data());
+    protozero::ConstBytes packet = *it;
+    size_t field_offset = whole_buf.offset_of(packet.data);
     util::Status status =
-        ParsePacket(whole_buf.slice(field_offset, it->size()));
+        ParsePacket(whole_buf.slice(field_offset, packet.size));
     if (PERFETTO_UNLIKELY(!status.ok()))
       return status;
   }
@@ -264,6 +234,14 @@ util::Status ProtoTraceTokenizer::ParsePacket(TraceBlobView packet) {
           is_seq_scoped ? seq_extra_err : "");
     }
     timestamp = trace_ts.value();
+  } else if (decoder.has_chrome_events() || decoder.has_chrome_metadata()) {
+    // Chrome timestamps are in MONOTONIC domain. Adjust to trace time if we
+    // have a clock snapshot.
+    // TODO(eseckler): Set timestamp_clock_id in chrome and then remove this.
+    auto trace_ts = context_->clock_tracker->ToTraceTime(
+        protos::pbzero::ClockSnapshot::Clock::MONOTONIC, timestamp);
+    if (trace_ts.has_value())
+      timestamp = trace_ts.value();
   }
   latest_timestamp_ = std::max(timestamp, latest_timestamp_);
 
@@ -307,6 +285,15 @@ util::Status ProtoTraceTokenizer::ParsePacket(TraceBlobView packet) {
     const size_t offset = packet.offset_of(field.data);
     ParseInternedData(decoder, packet.slice(offset, field.size));
   }
+
+  ModuleResult res = ModuleResult::Ignored();
+  res = context_->ftrace_module.TokenizePacket(decoder);
+  if (!res.ignored())
+    return res.ToStatus();
+
+  res = context_->track_event_module.TokenizePacket(decoder);
+  if (!res.ignored())
+    return res.ToStatus();
 
   if (decoder.has_ftrace_events()) {
     auto ftrace_field = decoder.ftrace_events();
@@ -433,75 +420,20 @@ void ProtoTraceTokenizer::ParseInternedData(
   auto* state = GetIncrementalStateForPacketSequence(
       packet_decoder.trusted_packet_sequence_id());
 
-  protos::pbzero::InternedData::Decoder interned_data_decoder(
-      interned_data.data(), interned_data.length());
+  // Don't parse interned data entries until incremental state is valid, because
+  // they could otherwise be associated with the wrong generation in the state.
+  if (!state->IsIncrementalStateValid()) {
+    context_->storage->IncrementStats(stats::tokenizer_skipped_packets);
+    return;
+  }
 
   // Store references to interned data submessages into the sequence's state.
-  for (auto it = interned_data_decoder.event_categories(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::EventCategory>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-
-  for (auto it = interned_data_decoder.event_names(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::EventName>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-
-  for (auto it = interned_data_decoder.debug_annotation_names(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::DebugAnnotationName>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-
-  for (auto it = interned_data_decoder.source_locations(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::SourceLocation>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-
-  for (auto it = interned_data_decoder.build_ids(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::InternedString, BuildIdFieldName>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-  for (auto it = interned_data_decoder.mapping_paths(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::InternedString, MappingPathsFieldName>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-  for (auto it = interned_data_decoder.function_names(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::InternedString, FunctionNamesFieldName>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-  for (auto it = interned_data_decoder.vulkan_memory_keys(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::InternedString, VulkanAnnotationsFieldName>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-
-  for (auto it = interned_data_decoder.mappings(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::Mapping>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-  for (auto it = interned_data_decoder.frames(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::Frame>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-  for (auto it = interned_data_decoder.callstacks(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::Callstack>(
-        context_, state, interned_data.slice(offset, it->size()));
-  }
-
-  for (auto it = interned_data_decoder.log_message_body(); it; ++it) {
-    size_t offset = interned_data.offset_of(it->data());
-    InternMessage<protos::pbzero::LogMessageBody>(
-        context_, state, interned_data.slice(offset, it->size()));
+  protozero::ProtoDecoder decoder(interned_data.data(), interned_data.length());
+  for (protozero::Field f = decoder.ReadField(); f.valid();
+       f = decoder.ReadField()) {
+    auto bytes = f.as_bytes();
+    auto offset = interned_data.offset_of(bytes.data);
+    state->InternMessage(f.id(), interned_data.slice(offset, bytes.size));
   }
 }
 
@@ -689,7 +621,7 @@ util::Status ProtoTraceTokenizer::ParseClockSnapshot(ConstBytes blob,
   std::map<ClockTracker::ClockId, int64_t> clock_map;
   protos::pbzero::ClockSnapshot::Decoder evt(blob.data, blob.size);
   for (auto it = evt.clocks(); it; ++it) {
-    protos::pbzero::ClockSnapshot::Clock::Decoder clk(it->data(), it->size());
+    protos::pbzero::ClockSnapshot::Clock::Decoder clk(*it);
     ClockTracker::ClockId clock_id = clk.clock_id();
     if (ClockTracker::IsReservedSeqScopedClockId(clk.clock_id())) {
       if (!seq_id) {
@@ -761,10 +693,24 @@ void ProtoTraceTokenizer::ParseTrackEventPacket(
     }
     timestamp = state->IncrementAndGetTrackEventTimeNs(
         ts_delta_field.as_int64() * 1000);
+
+    // Legacy TrackEvent timestamp fields are in MONOTONIC domain. Adjust to
+    // trace time if we have a clock snapshot.
+    auto trace_ts = context_->clock_tracker->ToTraceTime(
+        protos::pbzero::ClockSnapshot::Clock::MONOTONIC, timestamp);
+    if (trace_ts.has_value())
+      timestamp = trace_ts.value();
   } else if (auto ts_absolute_field =
                  event_decoder.FindField(kTimestampAbsoluteUsFieldNumber)) {
     // One-off absolute timestamps don't affect delta computation.
     timestamp = ts_absolute_field.as_int64() * 1000;
+
+    // Legacy TrackEvent timestamp fields are in MONOTONIC domain. Adjust to
+    // trace time if we have a clock snapshot.
+    auto trace_ts = context_->clock_tracker->ToTraceTime(
+        protos::pbzero::ClockSnapshot::Clock::MONOTONIC, timestamp);
+    if (trace_ts.has_value())
+      timestamp = trace_ts.value();
   } else if (packet_decoder.has_timestamp()) {
     timestamp = packet_timestamp;
   } else {
@@ -836,8 +782,9 @@ void ProtoTraceTokenizer::ParseFtraceBundle(TraceBlobView bundle) {
   }
 
   for (auto it = decoder.event(); it; ++it) {
-    size_t off = bundle.offset_of(it->data());
-    ParseFtraceEvent(cpu, bundle.slice(off, it->size()));
+    protozero::ConstBytes event = *it;
+    size_t off = bundle.offset_of(event.data);
+    ParseFtraceEvent(cpu, bundle.slice(off, event.size));
   }
   context_->sorter->FinalizeFtraceEventBatch(cpu);
 }
@@ -851,7 +798,7 @@ void ProtoTraceTokenizer::ParseFtraceCompactSched(uint32_t cpu,
   std::vector<StringId> string_table;
   string_table.reserve(512);
   for (auto it = compact.switch_next_comm_table(); it; it++) {
-    StringId value = context_->storage->InternString(it->as_string());
+    StringId value = context_->storage->InternString(*it);
     string_table.push_back(value);
   }
 
@@ -869,7 +816,7 @@ void ProtoTraceTokenizer::ParseFtraceCompactSched(uint32_t cpu,
   auto comm_it = compact.switch_next_comm_index(&parse_error);
   for (; timestamp_it && pstate_it && npid_it && nprio_it && comm_it;
        ++timestamp_it, ++pstate_it, ++npid_it, ++nprio_it, ++comm_it) {
-    TraceSorter::InlineSchedSwitch event{};
+    InlineSchedSwitch event{};
 
     // delta-encoded timestamp
     timestamp_acc += static_cast<int64_t>(*timestamp_it);
@@ -883,8 +830,8 @@ void ProtoTraceTokenizer::ParseFtraceCompactSched(uint32_t cpu,
     event.next_pid = *npid_it;
     event.next_prio = *nprio_it;
 
-    context_->sorter->PushInlineFtraceEvent(
-        cpu, event_timestamp, TraceSorter::InlineEvent::SchedSwitch(event));
+    context_->sorter->PushInlineFtraceEvent(cpu, event_timestamp,
+                                            InlineEvent::SchedSwitch(event));
   }
 
   // Check that all packed buffers were decoded correctly, and fully.
