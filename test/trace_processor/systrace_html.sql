@@ -1,0 +1,1 @@
+select ts, cpu, dur, ts_end, utid, end_state, priority, upid, name, tid  from sched join thread using(utid) order by ts

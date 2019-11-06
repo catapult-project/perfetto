@@ -20,7 +20,9 @@ import {ConvertTrace, ConvertTraceToPprof} from '../controller/trace_converter';
 import {
   AdbRecordingTarget,
   createEmptyState,
+  EngineMode,
   LogsPagination,
+  NewEngineMode,
   OmniboxState,
   RecordConfig,
   SCROLLING_TRACK_GROUP,
@@ -28,6 +30,7 @@ import {
   State,
   Status,
   TargetOs,
+  TraceSource,
   TraceTime,
   TrackState,
   VisibleState,
@@ -52,6 +55,7 @@ function clearTraceState(state: StateDraft) {
   const extensionInstalled = state.extensionInstalled;
   const availableDevices = state.availableDevices;
   const chromeCategories = state.chromeCategories;
+  const newEngineMode = state.newEngineMode;
 
   Object.assign(state, createEmptyState());
   state.nextId = nextId;
@@ -61,6 +65,7 @@ function clearTraceState(state: StateDraft) {
   state.extensionInstalled = extensionInstalled;
   state.availableDevices = availableDevices;
   state.chromeCategories = chromeCategories;
+  state.newEngineMode = newEngineMode;
 }
 
 export const StateActions = {
@@ -75,7 +80,7 @@ export const StateActions = {
     state.engines[id] = {
       id,
       ready: false,
-      source: args.file,
+      source: {type: 'FILE', file: args.file},
     };
     state.route = `/viewer`;
   },
@@ -86,7 +91,29 @@ export const StateActions = {
     state.engines[id] = {
       id,
       ready: false,
-      source: args.buffer,
+      source: {type: 'ARRAY_BUFFER', buffer: args.buffer},
+    };
+    state.route = `/viewer`;
+  },
+
+  openTraceFromUrl(state: StateDraft, args: {url: string}): void {
+    clearTraceState(state);
+    const id = `${state.nextId++}`;
+    state.engines[id] = {
+      id,
+      ready: false,
+      source: {type: 'URL', url: args.url},
+    };
+    state.route = `/viewer`;
+  },
+
+  openTraceFromHttpRpc(state: StateDraft, _args: {}): void {
+    clearTraceState(state);
+    const id = `${state.nextId++}`;
+    state.engines[id] = {
+      id,
+      ready: false,
+      source: {type: 'HTTP_RPC'},
     };
     state.route = `/viewer`;
   },
@@ -102,24 +129,10 @@ export const StateActions = {
     ConvertTrace(args.file, args.truncate);
   },
 
-  convertTraceToPprof(_: StateDraft, args: {
-    pid: number,
-    src: string|File|ArrayBuffer,
-    ts1: number,
-    ts2?: number
-  }): void {
+  convertTraceToPprof(
+      _: StateDraft,
+      args: {pid: number, src: TraceSource, ts1: number, ts2?: number}): void {
     ConvertTraceToPprof(args.pid, args.src, args.ts1, args.ts2);
-  },
-
-  openTraceFromUrl(state: StateDraft, args: {url: string}): void {
-    clearTraceState(state);
-    const id = `${state.nextId++}`;
-    state.engines[id] = {
-      id,
-      ready: false,
-      source: args.url,
-    };
-    state.route = `/viewer`;
   },
 
   addTracks(state: StateDraft, args: {tracks: AddTrackArgs[]}) {
@@ -244,9 +257,23 @@ export const StateActions = {
         trackGroup.collapsed = !trackGroup.collapsed;
       },
 
-  setEngineReady(state: StateDraft, args: {engineId: string; ready: boolean}):
+  setEngineReady(
+      state: StateDraft,
+      args: {engineId: string; ready: boolean, mode: EngineMode}): void {
+    state.engines[args.engineId].ready = args.ready;
+    state.engines[args.engineId].mode = args.mode;
+  },
+
+  setNewEngineMode(state: StateDraft, args: {mode: NewEngineMode}): void {
+    state.newEngineMode = args.mode;
+  },
+
+  // Marks all engines matching the given |mode| as failed.
+  setEngineFailed(state: StateDraft, args: {mode: EngineMode; failure: string}):
       void {
-        state.engines[args.engineId].ready = args.ready;
+        for (const engine of Object.values(state.engines)) {
+          if (engine.mode === args.mode) engine.failed = args.failure;
+        }
       },
 
   createPermalink(state: StateDraft, _: {}): void {
@@ -376,21 +403,24 @@ export const StateActions = {
     }
   },
 
-  selectSlice(state: StateDraft, args: {id: number}): void {
+  selectSlice(state: StateDraft, args: {id: number, trackId: string}): void {
     state.currentSelection = {
       kind: 'SLICE',
       id: args.id,
+      trackId: args.trackId,
     };
   },
 
   selectCounter(
-      state: StateDraft, args: {leftTs: number, rightTs: number, id: number}):
+      state: StateDraft,
+      args: {leftTs: number, rightTs: number, id: number, trackId: string}):
       void {
         state.currentSelection = {
           kind: 'COUNTER',
           leftTs: args.leftTs,
           rightTs: args.rightTs,
-          id: args.id
+          id: args.id,
+          trackId: args.trackId,
         };
       },
 
@@ -410,24 +440,33 @@ export const StateActions = {
     };
   },
 
-  selectChromeSlice(state: StateDraft, args: {id: number}): void {
-    state.currentSelection = {kind: 'CHROME_SLICE', id: args.id};
-  },
-
-  selectThreadState(
-      state: StateDraft,
-      args:
-          {utid: number, ts: number, dur: number, state: string, cpu: number}):
+  selectChromeSlice(state: StateDraft, args: {id: number, trackId: string}):
       void {
         state.currentSelection = {
-          kind: 'THREAD_STATE',
-          utid: args.utid,
-          ts: args.ts,
-          dur: args.dur,
-          state: args.state,
-          cpu: args.cpu
+          kind: 'CHROME_SLICE',
+          id: args.id,
+          trackId: args.trackId
         };
       },
+
+  selectThreadState(state: StateDraft, args: {
+    utid: number,
+    ts: number,
+    dur: number,
+    state: string,
+    cpu: number,
+    trackId: string
+  }): void {
+    state.currentSelection = {
+      kind: 'THREAD_STATE',
+      utid: args.utid,
+      ts: args.ts,
+      dur: args.dur,
+      state: args.state,
+      cpu: args.cpu,
+      trackId: args.trackId,
+    };
+  },
 
   deselect(state: StateDraft, _: {}): void {
     state.currentSelection = null;

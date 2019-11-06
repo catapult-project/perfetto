@@ -171,18 +171,24 @@ bool CppObjGenerator::Generate(const google::protobuf::FileDescriptor* file,
 
   // Compute all nested types to generate forward declarations later.
 
-  std::set<const Descriptor*> local_types;  // Cur .proto file only.
-  std::set<const Descriptor*> all_types;    // All deps
-  std::set<const EnumDescriptor*> local_enums;
-  std::set<const EnumDescriptor*> all_enums;
+  std::set<const Descriptor*> all_types_seen;  // All deps
+  std::set<const EnumDescriptor*> all_enums_seen;
 
-  auto add_enum = [&local_enums, &all_enums,
+  // We track the types additionally in vectors to guarantee a stable order in
+  // the generated output.
+  std::vector<const Descriptor*> local_types;  // Cur .proto file only.
+  std::vector<const Descriptor*> all_types;    // All deps
+  std::vector<const EnumDescriptor*> local_enums;
+  std::vector<const EnumDescriptor*> all_enums;
+
+  auto add_enum = [&local_enums, &all_enums, &all_enums_seen,
                    &file](const EnumDescriptor* enum_desc) {
-    if (all_enums.count(enum_desc))
+    if (all_enums_seen.count(enum_desc))
       return;
-    all_enums.insert(enum_desc);
+    all_enums_seen.insert(enum_desc);
+    all_enums.push_back(enum_desc);
     if (enum_desc->file() == file)
-      local_enums.insert(enum_desc);
+      local_enums.push_back(enum_desc);
   };
 
   std::stack<const Descriptor*> recursion_stack;
@@ -192,11 +198,12 @@ bool CppObjGenerator::Generate(const google::protobuf::FileDescriptor* file,
   while (!recursion_stack.empty()) {
     const Descriptor* msg = recursion_stack.top();
     recursion_stack.pop();
-    if (all_types.count(msg))
+    if (all_types_seen.count(msg))
       continue;
-    all_types.insert(msg);
+    all_types_seen.insert(msg);
+    all_types.push_back(msg);
     if (msg->file() == file)
-      local_types.insert(msg);
+      local_types.push_back(msg);
 
     for (int i = 0; i < msg->nested_type_count(); i++)
       recursion_stack.push(msg->nested_type(i));
@@ -402,17 +409,8 @@ void CppObjGenerator::GenClassDecl(const Descriptor* msg, Printer* p) const {
                GetCppType(field, false), "n", field->lowercase_name());
       p->Print("void clear_$n$() { $n$_.clear(); }\n", "n",
                field->lowercase_name());
-
-      if (field->type() == TYPE_MESSAGE && !field->options().lazy()) {
-        p->Print(
-            "$t$* add_$n$() { $n$_.emplace_back(); return &$n$_.back(); "
-            "}\n",
-            "t", GetCppType(field, false), "n", field->lowercase_name());
-      } else {
-        p->Print(
-            "$t$* add_$n$() { $n$_.emplace_back(); return &$n$_.back(); }\n",
-            "t", GetCppType(field, false), "n", field->lowercase_name());
-      }
+      p->Print("$t$* add_$n$() { $n$_.emplace_back(); return &$n$_.back(); }\n",
+               "t", GetCppType(field, false), "n", field->lowercase_name());
     }
   }
   p->Outdent();

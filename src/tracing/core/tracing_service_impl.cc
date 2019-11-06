@@ -76,7 +76,7 @@ constexpr uint32_t kMillisPerHour = 3600000;
 constexpr uint32_t kMaxTracingDurationMillis = 7 * 24 * kMillisPerHour;
 
 // These apply only if enable_extra_guardrails is true.
-constexpr uint32_t kGuardrailsMaxTracingBufferSizeKb = 32 * 1024;
+constexpr uint32_t kGuardrailsMaxTracingBufferSizeKb = 128 * 1024;
 constexpr uint32_t kGuardrailsMaxTracingDurationMillis = 24 * kMillisPerHour;
 
 #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
@@ -252,7 +252,15 @@ TracingServiceImpl::ConnectConsumer(Consumer* consumer, uid_t uid) {
       new ConsumerEndpointImpl(this, task_runner_, consumer, uid));
   auto it_and_inserted = consumers_.emplace(endpoint.get());
   PERFETTO_DCHECK(it_and_inserted.second);
-  task_runner_->PostTask(std::bind(&Consumer::OnConnect, endpoint->consumer_));
+  // Consumer might go away before we're able to send the connect notification,
+  // if that is the case just bail out.
+  auto weak_ptr = endpoint->GetWeakPtr();
+  task_runner_->PostTask([weak_ptr] {
+    if (!weak_ptr) {
+      return;
+    }
+    weak_ptr->consumer_->OnConnect();
+  });
   return std::unique_ptr<ConsumerEndpoint>(std::move(endpoint));
 }
 

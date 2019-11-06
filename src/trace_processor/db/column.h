@@ -39,6 +39,7 @@ enum class FilterOp {
   kLe,
   kIsNull,
   kIsNotNull,
+  kLike,
 };
 
 // Represents a constraint on a column.
@@ -81,6 +82,15 @@ class Column {
     // Indicates the data in the column is sorted. This can be used to speed
     // up filtering and skip sorting.
     kSorted = 1 << 1,
+
+    // Indicates the data in the column is non-null. That is, the SparseVector
+    // passed in will never have any null entries. This is only used for
+    // numeric columns (string columns and id columns both have special
+    // handling which ignores this flag).
+    //
+    // This is used to speed up filters as we can safely index SparseVector
+    // directly if this flag is set.
+    kNonNull = 1 << 2
   };
 
   template <typename T>
@@ -113,29 +123,7 @@ class Column {
   static Column IdColumn(Table* table, uint32_t col_idx, uint32_t row_map_idx);
 
   // Gets the value of the Column at the given |row|.
-  SqlValue Get(uint32_t row) const {
-    switch (type_) {
-      case ColumnType::kInt32: {
-        auto opt_value = GetTyped<int32_t>(row);
-        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
-      }
-      case ColumnType::kUint32: {
-        auto opt_value = GetTyped<uint32_t>(row);
-        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
-      }
-      case ColumnType::kInt64: {
-        auto opt_value = GetTyped<int64_t>(row);
-        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
-      }
-      case ColumnType::kString: {
-        auto str = GetStringPoolString(row).c_str();
-        return str == nullptr ? SqlValue() : SqlValue::String(str);
-      }
-      case ColumnType::kId:
-        return SqlValue::Long(row_map().Get(row));
-    }
-    PERFETTO_FATAL("For GCC");
-  }
+  SqlValue Get(uint32_t row) const { return GetAtIdx(row_map().Get(row)); }
 
   // Returns the row containing the given value in the Column.
   base::Optional<uint32_t> IndexOf(SqlValue value) const {
@@ -164,10 +152,58 @@ class Column {
 
   // Updates the given RowMap by only keeping rows where this column meets the
   // given filter constraint.
-  void FilterInto(FilterOp, SqlValue value, RowMap*) const;
+  void FilterInto(FilterOp op, SqlValue value, RowMap* rm) const {
+    // TODO(lalitm): add special logic here to deal with kId and kSorted flags.
+    if (type_ == ColumnType::kId && op == FilterOp::kEq) {
+      auto opt_idx = IndexOf(value);
+      if (opt_idx) {
+        rm->Intersect(RowMap::SingleRow(*opt_idx));
+      } else {
+        rm->Intersect(RowMap());
+      }
+      return;
+    }
+    switch (type_) {
+      case ColumnType::kInt32: {
+        if (IsNullable()) {
+          FilterIntoLongSlow<int32_t, true /* is_nullable */>(op, value, rm);
+        } else {
+          FilterIntoLongSlow<int32_t, false /* is_nullable */>(op, value, rm);
+        }
+        break;
+      }
+      case ColumnType::kUint32: {
+        if (IsNullable()) {
+          FilterIntoLongSlow<uint32_t, true /* is_nullable */>(op, value, rm);
+        } else {
+          FilterIntoLongSlow<uint32_t, false /* is_nullable */>(op, value, rm);
+        }
+        break;
+      }
+      case ColumnType::kInt64: {
+        if (IsNullable()) {
+          FilterIntoLongSlow<int64_t, true /* is_nullable */>(op, value, rm);
+        } else {
+          FilterIntoLongSlow<int64_t, false /* is_nullable */>(op, value, rm);
+        }
+        break;
+      }
+      case ColumnType::kString: {
+        FilterIntoStringSlow(op, value, rm);
+        break;
+      }
+      case ColumnType::kId: {
+        FilterIntoIdSlow(op, value, rm);
+        break;
+      }
+    }
+  }
 
   // Returns true if this column is considered an id column.
   bool IsId() const { return (flags_ & Flag::kId) != 0; }
+
+  // Returns true if this column is a nullable column.
+  bool IsNullable() const { return (flags_ & Flag::kNonNull) == 0; }
 
   const RowMap& row_map() const;
   const char* name() const { return name_; }
@@ -218,6 +254,23 @@ class Column {
   JoinKey join_key() const { return JoinKey{col_idx_}; }
 
  protected:
+  NullTermStringView GetStringPoolStringAtIdx(uint32_t idx) const {
+    return string_pool_->Get(sparse_vector<StringPool::Id>().GetNonNull(idx));
+  }
+
+  template <typename T>
+  SparseVector<T>* mutable_sparse_vector() {
+    PERFETTO_DCHECK(ToColumnType<T>() == type_);
+    return static_cast<SparseVector<T>*>(sparse_vector_);
+  }
+
+  template <typename T>
+  const SparseVector<T>& sparse_vector() const {
+    PERFETTO_DCHECK(ToColumnType<T>() == type_);
+    return *static_cast<const SparseVector<T>*>(sparse_vector_);
+  }
+
+ private:
   enum class ColumnType {
     // Standard primitive types.
     kInt32,
@@ -229,39 +282,6 @@ class Column {
     kId,
   };
 
-  template <typename T>
-  base::Optional<T> GetTyped(uint32_t row) const {
-    PERFETTO_DCHECK(ToColumnType<T>() == type_);
-    auto idx = row_map().Get(row);
-    return sparse_vector<T>().Get(idx);
-  }
-
-  template <typename T>
-  void SetTyped(uint32_t row, T value) {
-    PERFETTO_DCHECK(ToColumnType<T>() == type_);
-    auto idx = row_map().Get(row);
-    return mutable_sparse_vector<T>()->Set(idx, value);
-  }
-
-  NullTermStringView GetStringPoolString(uint32_t row) const {
-    return string_pool_->Get(*GetTyped<StringPool::Id>(row));
-  }
-
-  template <typename T>
-  const SparseVector<T>& sparse_vector() const {
-    return *static_cast<const SparseVector<T>*>(sparse_vector_);
-  }
-
-  template <typename T>
-  SparseVector<T>* mutable_sparse_vector() {
-    return static_cast<SparseVector<T>*>(sparse_vector_);
-  }
-
-  // type_ is used to cast sparse_vector_ to the correct type.
-  ColumnType type_ = ColumnType::kInt64;
-  void* sparse_vector_ = nullptr;
-
- private:
   friend class Table;
 
   Column(const char* name,
@@ -274,6 +294,210 @@ class Column {
 
   Column(const Column&) = delete;
   Column& operator=(const Column&) = delete;
+
+  // Gets the value of the Column at the given |row|.
+  SqlValue GetAtIdx(uint32_t idx) const {
+    switch (type_) {
+      case ColumnType::kInt32: {
+        auto opt_value = sparse_vector<int32_t>().Get(idx);
+        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
+      }
+      case ColumnType::kUint32: {
+        auto opt_value = sparse_vector<uint32_t>().Get(idx);
+        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
+      }
+      case ColumnType::kInt64: {
+        auto opt_value = sparse_vector<int64_t>().Get(idx);
+        return opt_value ? SqlValue::Long(*opt_value) : SqlValue();
+      }
+      case ColumnType::kString: {
+        auto str = GetStringPoolStringAtIdx(idx).c_str();
+        return str == nullptr ? SqlValue() : SqlValue::String(str);
+      }
+      case ColumnType::kId:
+        return SqlValue::Long(idx);
+    }
+    PERFETTO_FATAL("For GCC");
+  }
+
+  template <typename T, bool is_nullable>
+  void FilterIntoLongSlow(FilterOp op, SqlValue value, RowMap* rm) const {
+    if (op == FilterOp::kIsNull) {
+      PERFETTO_DCHECK(value.is_null());
+      if (is_nullable) {
+        row_map().FilterInto(rm, [this](uint32_t row) {
+          return !sparse_vector<T>().Get(row).has_value();
+        });
+      } else {
+        rm->Intersect(RowMap());
+      }
+      return;
+    } else if (op == FilterOp::kIsNotNull) {
+      PERFETTO_DCHECK(value.is_null());
+      if (is_nullable) {
+        row_map().FilterInto(rm, [this](uint32_t row) {
+          return sparse_vector<T>().Get(row).has_value();
+        });
+      }
+      return;
+    }
+
+    int64_t long_value = value.long_value;
+    switch (op) {
+      case FilterOp::kLt:
+        row_map().FilterInto(rm, [this, long_value](uint32_t idx) {
+          if (is_nullable)
+            return sparse_vector<T>().Get(idx) < long_value;
+          return sparse_vector<T>().GetNonNull(idx) < long_value;
+        });
+        break;
+      case FilterOp::kEq:
+        row_map().FilterInto(rm, [this, long_value](uint32_t idx) {
+          if (is_nullable)
+            return sparse_vector<T>().Get(idx) == long_value;
+          return sparse_vector<T>().GetNonNull(idx) == long_value;
+        });
+        break;
+      case FilterOp::kGt:
+        row_map().FilterInto(rm, [this, long_value](uint32_t idx) {
+          if (is_nullable)
+            return sparse_vector<T>().Get(idx) > long_value;
+          return sparse_vector<T>().GetNonNull(idx) > long_value;
+        });
+        break;
+      case FilterOp::kNe:
+        row_map().FilterInto(rm, [this, long_value](uint32_t idx) {
+          if (is_nullable)
+            return sparse_vector<T>().GetNonNull(idx) != long_value;
+          return sparse_vector<T>().Get(idx) != long_value;
+        });
+        break;
+      case FilterOp::kLe:
+        row_map().FilterInto(rm, [this, long_value](uint32_t idx) {
+          if (is_nullable)
+            return sparse_vector<T>().GetNonNull(idx) <= long_value;
+          return sparse_vector<T>().Get(idx) <= long_value;
+        });
+        break;
+      case FilterOp::kGe:
+        row_map().FilterInto(rm, [this, long_value](uint32_t idx) {
+          if (is_nullable)
+            return sparse_vector<T>().GetNonNull(idx) >= long_value;
+          return sparse_vector<T>().Get(idx) >= long_value;
+        });
+        break;
+      case FilterOp::kLike:
+        rm->Intersect(RowMap());
+        break;
+      case FilterOp::kIsNull:
+      case FilterOp::kIsNotNull:
+        PERFETTO_FATAL("Should be handled above");
+    }
+  }
+
+  void FilterIntoStringSlow(FilterOp op, SqlValue value, RowMap* rm) const {
+    if (op == FilterOp::kIsNull) {
+      PERFETTO_DCHECK(value.is_null());
+      row_map().FilterInto(rm, [this](uint32_t row) {
+        return GetStringPoolStringAtIdx(row).data() == nullptr;
+      });
+      return;
+    } else if (op == FilterOp::kIsNotNull) {
+      PERFETTO_DCHECK(value.is_null());
+      row_map().FilterInto(rm, [this](uint32_t row) {
+        return GetStringPoolStringAtIdx(row).data() == nullptr;
+      });
+      return;
+    }
+
+    NullTermStringView str_value = value.string_value;
+    switch (op) {
+      case FilterOp::kLt:
+        row_map().FilterInto(rm, [this, str_value](uint32_t idx) {
+          return GetStringPoolStringAtIdx(idx) < str_value;
+        });
+        break;
+      case FilterOp::kEq:
+        row_map().FilterInto(rm, [this, str_value](uint32_t idx) {
+          return GetStringPoolStringAtIdx(idx) == str_value;
+        });
+        break;
+      case FilterOp::kGt:
+        row_map().FilterInto(rm, [this, str_value](uint32_t idx) {
+          return GetStringPoolStringAtIdx(idx) > str_value;
+        });
+        break;
+      case FilterOp::kNe:
+        row_map().FilterInto(rm, [this, str_value](uint32_t idx) {
+          return GetStringPoolStringAtIdx(idx) != str_value;
+        });
+        break;
+      case FilterOp::kLe:
+        row_map().FilterInto(rm, [this, str_value](uint32_t idx) {
+          return GetStringPoolStringAtIdx(idx) <= str_value;
+        });
+        break;
+      case FilterOp::kGe:
+        row_map().FilterInto(rm, [this, str_value](uint32_t idx) {
+          return GetStringPoolStringAtIdx(idx) >= str_value;
+        });
+        break;
+      case FilterOp::kLike:
+        // TODO(lalitm): either call through to SQLite or reimplement
+        // like ourselves.
+        PERFETTO_DLOG("Ignoring like constraint on string column");
+        break;
+      case FilterOp::kIsNull:
+      case FilterOp::kIsNotNull:
+        PERFETTO_FATAL("Should be handled above");
+    }
+  }
+
+  void FilterIntoIdSlow(FilterOp op, SqlValue value, RowMap* rm) const {
+    if (op == FilterOp::kIsNull) {
+      PERFETTO_DCHECK(value.is_null());
+      row_map().FilterInto(rm, [](uint32_t) { return false; });
+      return;
+    } else if (op == FilterOp::kIsNotNull) {
+      PERFETTO_DCHECK(value.is_null());
+      row_map().FilterInto(rm, [](uint32_t) { return true; });
+      return;
+    }
+
+    uint32_t id_value = static_cast<uint32_t>(value.long_value);
+    switch (op) {
+      case FilterOp::kLt:
+        row_map().FilterInto(
+            rm, [id_value](uint32_t idx) { return idx < id_value; });
+        break;
+      case FilterOp::kEq:
+        row_map().FilterInto(
+            rm, [id_value](uint32_t idx) { return idx == id_value; });
+        break;
+      case FilterOp::kGt:
+        row_map().FilterInto(
+            rm, [id_value](uint32_t idx) { return idx > id_value; });
+        break;
+      case FilterOp::kNe:
+        row_map().FilterInto(
+            rm, [id_value](uint32_t idx) { return idx != id_value; });
+        break;
+      case FilterOp::kLe:
+        row_map().FilterInto(
+            rm, [id_value](uint32_t idx) { return idx <= id_value; });
+        break;
+      case FilterOp::kGe:
+        row_map().FilterInto(
+            rm, [id_value](uint32_t idx) { return idx >= id_value; });
+        break;
+      case FilterOp::kLike:
+        rm->Intersect(RowMap());
+        break;
+      case FilterOp::kIsNull:
+      case FilterOp::kIsNotNull:
+        PERFETTO_FATAL("Should be handled above");
+    }
+  }
 
   template <typename T>
   static ColumnType ToColumnType() {
@@ -289,6 +513,10 @@ class Column {
       PERFETTO_FATAL("Unsupported type of column");
     }
   }
+
+  // type_ is used to cast sparse_vector_ to the correct type.
+  ColumnType type_ = ColumnType::kInt64;
+  void* sparse_vector_ = nullptr;
 
   const char* name_ = nullptr;
   uint32_t flags_ = Flag::kNoFlag;

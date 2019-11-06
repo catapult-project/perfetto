@@ -83,9 +83,10 @@ TEST(ProtoDecoderTest, SingleRepeatedField) {
   auto used_range = delegate.slices()[0].GetUsedRange();
 
   TypedProtoDecoder<2, true> tpd(used_range.begin, used_range.size());
-  auto it = tpd.GetRepeated(/*field_id=*/2);
+  auto it = tpd.GetRepeated<int32_t>(/*field_id=*/2);
   EXPECT_TRUE(it);
-  EXPECT_EQ(it->as_int32(), 10);
+  EXPECT_EQ(it.field().as_int32(), 10);
+  EXPECT_EQ(*it, 10);
   EXPECT_FALSE(++it);
 }
 
@@ -101,10 +102,10 @@ TEST(ProtoDecoderTest, SingleRepeatedFieldWithExpansion) {
   std::vector<uint8_t> data = delegate.StitchSlices();
 
   TypedProtoDecoder<2, true> tpd(data.data(), data.size());
-  auto it = tpd.GetRepeated(/*field_id=*/2);
+  auto it = tpd.GetRepeated<int32_t>(/*field_id=*/2);
   for (int i = 0; i < 2000; i++) {
     EXPECT_TRUE(it);
-    EXPECT_EQ(it->as_int32(), i);
+    EXPECT_EQ(*it, i);
     ++it;
   }
   EXPECT_FALSE(it);
@@ -113,7 +114,7 @@ TEST(ProtoDecoderTest, SingleRepeatedFieldWithExpansion) {
 TEST(ProtoDecoderTest, NoRepeatedField) {
   uint8_t buf[] = {0x01};
   TypedProtoDecoder<2, true> tpd(buf, 1);
-  auto it = tpd.GetRepeated(/*field_id=*/1);
+  auto it = tpd.GetRepeated<int32_t>(/*field_id=*/1);
   EXPECT_FALSE(it);
   EXPECT_FALSE(tpd.Get(2).valid());
 }
@@ -156,19 +157,19 @@ TEST(ProtoDecoderTest, RepeatedFields) {
   EXPECT_EQ(tpd.Get(3).as_int32(), 30);
 
   // But when iterating we should see values in the original order.
-  auto it = tpd.GetRepeated(1);
-  EXPECT_EQ(it->as_int32(), 10);
-  EXPECT_EQ((++it)->as_int32(), 11);
+  auto it = tpd.GetRepeated<int32_t>(1);
+  EXPECT_EQ(*it, 10);
+  EXPECT_EQ(*++it, 11);
   EXPECT_FALSE(++it);
 
-  it = tpd.GetRepeated(2);
-  EXPECT_EQ((it++)->as_int32(), 20);
-  EXPECT_EQ((it++)->as_int32(), 21);
-  EXPECT_EQ((it++)->as_int32(), 22);
+  it = tpd.GetRepeated<int32_t>(2);
+  EXPECT_EQ(*it++, 20);
+  EXPECT_EQ(*it++, 21);
+  EXPECT_EQ(*it++, 22);
   EXPECT_FALSE(it);
 
-  it = tpd.GetRepeated(3);
-  EXPECT_EQ(it->as_int32(), 30);
+  it = tpd.GetRepeated<int32_t>(3);
+  EXPECT_EQ(*it, 30);
   EXPECT_FALSE(++it);
 }
 
@@ -441,7 +442,7 @@ TEST(ProtoDecoderTest, PackedRepeatedFixed64) {
 
 TEST(ProtoDecoderTest, ZeroLengthPackedRepeatedField) {
   HeapBuffered<pbtest::PackedRepeatedFields> msg;
-  StackAllocated<PackedVarIntBuffer, 8> buf;
+  PackedVarInt buf;
   msg->set_field_int32(buf);
   std::string serialized = msg.SerializeAsString();
 
@@ -460,7 +461,7 @@ TEST(ProtoDecoderTest, ZeroLengthPackedRepeatedField) {
 TEST(ProtoDecoderTest, MalformedPackedFixedBuffer) {
   // Encode a fixed32 field where the length is not a multiple of 4 bytes.
   HeapBuffered<pbtest::PackedRepeatedFields> msg;
-  StackAllocated<PackedFixedSizeBuffer<uint32_t>, 8> buf;
+  PackedFixedSizeInt<uint32_t> buf;
   buf.Append(1);
   buf.Append(2);
   buf.Append(3);
@@ -485,7 +486,7 @@ TEST(ProtoDecoderTest, MalformedPackedFixedBuffer) {
 TEST(ProtoDecoderTest, MalformedPackedVarIntBuffer) {
   // Encode a varint field with the last varint chopped off partway.
   HeapBuffered<pbtest::PackedRepeatedFields> msg;
-  StackAllocated<PackedVarIntBuffer, 8> buf;
+  PackedVarInt buf;
   buf.Append(1024);
   buf.Append(2048);
   buf.Append(4096);

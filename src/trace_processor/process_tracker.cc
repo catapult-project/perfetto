@@ -89,6 +89,13 @@ UniqueTid ProcessTracker::UpdateThreadName(uint32_t tid,
   return utid;
 }
 
+void ProcessTracker::SetThreadNameIfUnset(UniqueTid utid,
+                                          StringId thread_name_id) {
+  TraceStorage::Thread* thread = context_->storage->GetMutableThread(utid);
+  if (thread->name_id == kNullStringId)
+    thread->name_id = thread_name_id;
+}
+
 UniqueTid ProcessTracker::UpdateThread(uint32_t tid, uint32_t pid) {
   auto tids_pair = tids_.equal_range(tid);
 
@@ -185,6 +192,13 @@ UniquePid ProcessTracker::SetProcessMetadata(uint32_t pid,
   process->name_id = proc_name_id;
   process->parent_upid = pupid;
   return upid;
+}
+
+void ProcessTracker::SetProcessNameIfUnset(UniquePid upid,
+                                           StringId process_name_id) {
+  TraceStorage::Process* process = context_->storage->GetMutableProcess(upid);
+  if (process->name_id == kNullStringId)
+    process->name_id = process_name_id;
 }
 
 void ProcessTracker::UpdateProcessNameFromThreadName(uint32_t tid,

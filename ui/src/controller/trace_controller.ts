@@ -23,10 +23,19 @@ import {
   DeferredAction,
 } from '../common/actions';
 import {Engine} from '../common/engine';
+import {HttpRpcEngine} from '../common/http_rpc_engine';
 import {NUM, NUM_NULL, rawQueryToRows, STR_NULL} from '../common/protos';
-import {SCROLLING_TRACK_GROUP} from '../common/state';
+import {
+  EngineMode,
+  SCROLLING_TRACK_GROUP,
+} from '../common/state';
 import {toNs, toNsCeil, toNsFloor} from '../common/time';
 import {TimeSpan} from '../common/time';
+import {
+  createWasmEngine,
+  destroyWasmEngine,
+  WasmEngineProxy
+} from '../common/wasm_engine_proxy';
 import {QuantizedLoad, ThreadDesc} from '../frontend/globals';
 import {ANDROID_LOGS_TRACK_KIND} from '../tracks/android_log/common';
 import {SLICE_TRACK_KIND} from '../tracks/chrome_slices/common';
@@ -45,6 +54,7 @@ import {THREAD_STATE_TRACK_KIND} from '../tracks/thread_state/common';
 
 import {Child, Children, Controller} from './controller';
 import {globals} from './globals';
+import {LoadingManager} from './loading_manager';
 import {LogsController} from './logs_controller';
 import {QueryController, QueryControllerArgs} from './query_controller';
 import {SearchController} from './search_controller';
@@ -52,14 +62,15 @@ import {
   SelectionController,
   SelectionControllerArgs
 } from './selection_controller';
+import {
+  TraceBufferStream,
+  TraceFileStream,
+  TraceHttpStream,
+  TraceStream
+} from './trace_stream';
 import {TrackControllerArgs, trackControllerRegistry} from './track_controller';
 
 type States = 'init'|'loading_trace'|'ready';
-
-declare interface FileReaderSync { readAsArrayBuffer(blob: Blob): ArrayBuffer; }
-
-declare var FileReaderSync:
-    {prototype: FileReaderSync; new (): FileReaderSync;};
 
 interface ThreadSliceTrack {
   maxDepth: number;
@@ -80,23 +91,27 @@ export class TraceController extends Controller<States> {
   }
 
   onDestroy() {
-    if (this.engine !== undefined) globals.destroyEngine(this.engine.id);
+    if (this.engine instanceof WasmEngineProxy) {
+      destroyWasmEngine(this.engine.id);
+    }
   }
 
   run() {
     const engineCfg = assertExists(globals.state.engines[this.engineId]);
     switch (this.state) {
       case 'init':
-        globals.dispatch(Actions.setEngineReady({
-          engineId: this.engineId,
-          ready: false,
-        }));
-        this.loadTrace().then(() => {
-          globals.dispatch(Actions.setEngineReady({
-            engineId: this.engineId,
-            ready: true,
-          }));
-        });
+        this.loadTrace()
+            .then(mode => {
+              globals.dispatch(Actions.setEngineReady({
+                engineId: this.engineId,
+                ready: true,
+                mode,
+              }));
+            })
+            .catch(err => {
+              this.updateStatus(`${err}`);
+              throw err;
+            });
         this.updateStatus('Opening trace');
         this.setState('loading_trace');
         break;
@@ -152,67 +167,81 @@ export class TraceController extends Controller<States> {
     return;
   }
 
-  private async loadTrace() {
+  private async loadTrace(): Promise<EngineMode> {
     this.updateStatus('Creating trace processor');
-    const engineCfg = assertExists(globals.state.engines[this.engineId]);
-    this.engine = globals.createEngine();
-
-    const statusHeader = 'Opening trace';
-    if (engineCfg.source instanceof File) {
-      const blob = engineCfg.source as Blob;
-      const reader = new FileReaderSync();
-      const SLICE_SIZE = 1024 * 1024;
-      for (let off = 0; off < blob.size; off += SLICE_SIZE) {
-        const slice = blob.slice(off, off + SLICE_SIZE);
-        const arrBuf = reader.readAsArrayBuffer(slice);
-        await this.engine.parse(new Uint8Array(arrBuf));
-        const progress = Math.round((off + slice.size) / blob.size * 100);
-        this.updateStatus(`${statusHeader} ${progress} %`);
-      }
-    } else if (engineCfg.source instanceof ArrayBuffer) {
-      this.updateStatus(`${statusHeader} 0 %`);
-      const buffer = new Uint8Array(engineCfg.source);
-      const SLICE_SIZE = 1024 * 1024;
-      for (let off = 0; off < buffer.byteLength; off += SLICE_SIZE) {
-        const slice = buffer.subarray(off, off + SLICE_SIZE);
-        await this.engine.parse(slice);
-        const progress =
-            Math.round((off + slice.byteLength) / buffer.byteLength * 100);
-        this.updateStatus(`${statusHeader} ${progress} %`);
-      }
+    // Check if there is any instance of the trace_processor_shell running in
+    // HTTP RPC mode (i.e. trace_processor_shell -D).
+    let engineMode: EngineMode;
+    let useRpc = false;
+    if (globals.state.newEngineMode === 'USE_HTTP_RPC_IF_AVAILABLE') {
+      useRpc = (await HttpRpcEngine.checkConnection()).connected;
+    }
+    if (useRpc) {
+      console.log('Opening trace using native accelerator over HTTP+RPC');
+      engineMode = 'HTTP_RPC';
+      const engine =
+          new HttpRpcEngine(this.engineId, LoadingManager.getInstance);
+      engine.errorHandler = (err) => {
+        globals.dispatch(
+            Actions.setEngineFailed({mode: 'HTTP_RPC', failure: `${err}`}));
+        throw err;
+      };
+      this.engine = engine;
     } else {
-      const resp = await fetch(engineCfg.source);
-      if (resp.status !== 200) {
-        this.updateStatus(`HTTP error ${resp.status}`);
-        throw new Error(`fetch() failed with HTTP error ${resp.status}`);
-      }
-      // tslint:disable-next-line no-any
-      const rd = (resp.body as any).getReader() as ReadableStreamReader;
-      const tStartMs = performance.now();
-      let tLastUpdateMs = 0;
-      for (let off = 0;;) {
-        const readRes = await rd.read() as {value: Uint8Array, done: boolean};
-        if (readRes.value !== undefined) {
-          off += readRes.value.length;
-          await this.engine.parse(readRes.value);
-        }
-        // For traces loaded from the network there doesn't seem to be a
-        // reliable way to compute the %. The content-length exposed by GCS is
-        // before compression (which is handled transparently by the browser).
-        const nowMs = performance.now();
-        if (nowMs - tLastUpdateMs > 100) {
-          tLastUpdateMs = nowMs;
-          const mb = off / 1e6;
-          const tElapsed = (nowMs - tStartMs) / 1e3;
-          let status = `${statusHeader} ${mb.toFixed(1)} MB `;
-          status += `(${(mb / tElapsed).toFixed(1)} MB/s)`;
-          this.updateStatus(status);
-        }
-        if (readRes.done) break;
-      }
+      console.log('Opening trace using built-in WASM engine');
+      engineMode = 'WASM';
+      this.engine = new WasmEngineProxy(
+          this.engineId,
+          createWasmEngine(this.engineId),
+          LoadingManager.getInstance);
     }
 
-    await this.engine.notifyEof();
+    globals.dispatch(Actions.setEngineReady({
+      engineId: this.engineId,
+      ready: false,
+      mode: engineMode,
+    }));
+    const engineCfg = assertExists(globals.state.engines[this.engineId]);
+    let traceStream: TraceStream|undefined;
+    if (engineCfg.source.type === 'FILE') {
+      traceStream = new TraceFileStream(engineCfg.source.file);
+    } else if (engineCfg.source.type === 'ARRAY_BUFFER') {
+      traceStream = new TraceBufferStream(engineCfg.source.buffer);
+    } else if (engineCfg.source.type === 'URL') {
+      traceStream = new TraceHttpStream(engineCfg.source.url);
+    } else if (engineCfg.source.type === 'HTTP_RPC') {
+      traceStream = undefined;
+    } else {
+      throw new Error(`Unknown source: ${JSON.stringify(engineCfg.source)}`);
+    }
+
+    // |traceStream| can be undefined in the case when we are using the external
+    // HTTP+RPC endpoint and the trace processor instance has already loaded
+    // a trace (because it was passed as a cmdline argument to
+    // trace_processor_shell). In this case we don't want the UI to load any
+    // file/stream and we just want to jump to the loading phase.
+    if (traceStream !== undefined) {
+      const tStart = performance.now();
+      for (;;) {
+        const res = await traceStream.readChunk();
+        await this.engine.parse(res.data);
+        const elapsed = (performance.now() - tStart) / 1000;
+        let status = 'Loading trace ';
+        if (res.bytesTotal > 0) {
+          const progress = Math.round(res.bytesRead / res.bytesTotal * 100);
+          status += `${progress}%`;
+        } else {
+          status += `${Math.round(res.bytesRead / 1e6)} MB`;
+        }
+        status += ` - ${Math.ceil(res.bytesRead / elapsed / 1e6)} MB/s`;
+        this.updateStatus(status);
+        if (res.eof) break;
+      }
+      await this.engine.notifyEof();
+    } else {
+      assertTrue(this.engine instanceof HttpRpcEngine);
+      await this.engine.restoreInitialTables();
+    }
 
     const traceTime = await this.engine.getTraceTimeBounds();
     const traceTimeState = {
@@ -234,14 +263,15 @@ export class TraceController extends Controller<States> {
 
     {
       // When we reload from a permalink don't create extra tracks:
-      const {pinnedTracks, scrollingTracks} = globals.state;
-      if (!pinnedTracks.length && !scrollingTracks.length) {
+      const {pinnedTracks, tracks} = globals.state;
+      if (!pinnedTracks.length && !Object.keys(tracks).length) {
         await this.listTracks();
       }
     }
 
     await this.listThreads();
     await this.loadTimelineOverview(traceTime);
+    return engineMode;
   }
 
   private async listTracks() {
@@ -535,7 +565,7 @@ export class TraceController extends Controller<States> {
           summaryTrackId,
           name,
           id: pUuid,
-          collapsed: true,
+          collapsed: !(upid !== null && heapUpids.has(upid)),
         }));
 
         if (upid !== null) {

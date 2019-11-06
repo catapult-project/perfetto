@@ -27,6 +27,8 @@ constexpr TrackId TrackTracker::kDefaultDescriptorTrackUuid;
 TrackTracker::TrackTracker(TraceProcessorContext* context)
     : source_key_(context->storage->InternString("source")),
       source_id_key_(context->storage->InternString("source_id")),
+      source_id_is_process_scoped_key_(
+          context->storage->InternString("source_id_is_process_scoped")),
       source_scope_key_(context->storage->InternString("source_scope")),
       fuchsia_source_(context->storage->InternString("fuchsia")),
       chrome_source_(context->storage->InternString("chrome")),
@@ -80,11 +82,13 @@ TrackId TrackTracker::InternGpuTrack(const tables::GpuTrackTable::Row& row) {
 
 TrackId TrackTracker::InternLegacyChromeAsyncTrack(
     StringId name,
-    base::Optional<uint32_t> upid,
+    uint32_t upid,
     int64_t source_id,
+    bool source_id_is_process_scoped,
     StringId source_scope) {
   ChromeTrackTuple tuple;
-  tuple.upid = upid;
+  if (source_id_is_process_scoped)
+    tuple.upid = upid;
   tuple.source_id = source_id;
   tuple.source_scope = source_scope;
 
@@ -92,15 +96,11 @@ TrackId TrackTracker::InternLegacyChromeAsyncTrack(
   if (it != chrome_tracks_.end())
     return it->second;
 
-  TrackId id;
-  if (upid.has_value()) {
-    tables::ProcessTrackTable::Row track(name);
-    track.upid = *upid;
-    id = context_->storage->mutable_process_track_table()->Insert(track);
-  } else {
-    tables::TrackTable::Row track(name);
-    id = context_->storage->mutable_track_table()->Insert(track);
-  }
+  // Legacy async tracks are always drawn in the context of a process, even if
+  // the ID's scope is global.
+  tables::ProcessTrackTable::Row track(name);
+  track.upid = upid;
+  TrackId id = context_->storage->mutable_process_track_table()->Insert(track);
   chrome_tracks_[tuple] = id;
 
   RowId row_id = TraceStorage::CreateRowId(TableId::kTrack, id);
@@ -108,6 +108,10 @@ TrackId TrackTracker::InternLegacyChromeAsyncTrack(
                                  Variadic::String(chrome_source_));
   context_->args_tracker->AddArg(row_id, source_id_key_, source_id_key_,
                                  Variadic::Integer(source_id));
+  context_->args_tracker->AddArg(
+      row_id, source_id_is_process_scoped_key_,
+      source_id_is_process_scoped_key_,
+      Variadic::Boolean(source_id_is_process_scoped));
   context_->args_tracker->AddArg(row_id, source_scope_key_, source_scope_key_,
                                  Variadic::String(source_scope));
   return id;
@@ -144,6 +148,10 @@ TrackId TrackTracker::InternLegacyChromeProcessInstantTrack(UniquePid upid) {
   row.upid = upid;
   auto id = context_->storage->mutable_process_track_table()->Insert(row);
   chrome_process_instant_tracks_[upid] = id;
+
+  RowId row_id = TraceStorage::CreateRowId(TableId::kTrack, id);
+  context_->args_tracker->AddArg(row_id, source_key_, source_key_,
+                                 Variadic::String(chrome_source_));
   return id;
 }
 
@@ -151,6 +159,11 @@ TrackId TrackTracker::GetOrCreateLegacyChromeGlobalInstantTrack() {
   if (!chrome_global_instant_track_id_) {
     chrome_global_instant_track_id_ =
         context_->storage->mutable_track_table()->Insert({});
+
+    RowId row_id = TraceStorage::CreateRowId(TableId::kTrack,
+                                             *chrome_global_instant_track_id_);
+    context_->args_tracker->AddArg(row_id, source_key_, source_key_,
+                                   Variadic::String(chrome_source_));
   }
   return *chrome_global_instant_track_id_;
 }

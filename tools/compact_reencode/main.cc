@@ -72,17 +72,11 @@ void ReEncodeBundle(protos::pbzero::TracePacket* packet_out,
   if (bundle.has_cpu())
     bundle_out->set_cpu(bundle.cpu());
 
-  static constexpr size_t kMaxElements = 2560;
-  protozero::StackAllocated<protozero::PackedVarIntBuffer, kMaxElements>
-      switch_timestamp;
-  protozero::StackAllocated<protozero::PackedVarIntBuffer, kMaxElements>
-      switch_prev_state;
-  protozero::StackAllocated<protozero::PackedVarIntBuffer, kMaxElements>
-      switch_next_pid;
-  protozero::StackAllocated<protozero::PackedVarIntBuffer, kMaxElements>
-      switch_next_prio;
-  protozero::StackAllocated<protozero::PackedVarIntBuffer, kMaxElements>
-      switch_next_comm_index;
+  protozero::PackedVarInt switch_timestamp;
+  protozero::PackedVarInt switch_prev_state;
+  protozero::PackedVarInt switch_next_pid;
+  protozero::PackedVarInt switch_next_prio;
+  protozero::PackedVarInt switch_next_comm_index;
 
   uint64_t last_switch_timestamp = 0;
 
@@ -98,10 +92,9 @@ void ReEncodeBundle(protos::pbzero::TracePacket* packet_out,
   };
 
   for (auto event_it = bundle.event(); event_it; ++event_it) {
-    protos::pbzero::FtraceEvent::Decoder event(event_it->data(),
-                                               event_it->size());
+    protos::pbzero::FtraceEvent::Decoder event(*event_it);
     if (!event.has_sched_switch()) {
-      CopyField(bundle_out, *event_it);
+      CopyField(bundle_out, event_it.field());
     } else {
       switch_timestamp.Append(event.timestamp() - last_switch_timestamp);
       last_switch_timestamp = event.timestamp();
@@ -134,9 +127,7 @@ std::string ReEncode(const std::string& raw) {
   protozero::HeapBuffered<protos::pbzero::Trace> output;
 
   for (auto packet_it = trace.packet(); packet_it; ++packet_it) {
-    const auto* data = packet_it->data();
-    size_t size = packet_it->size();
-    protozero::ProtoDecoder packet(data, size);
+    protozero::ProtoDecoder packet(*packet_it);
     protos::pbzero::TracePacket* packet_out = output->add_packet();
 
     for (auto field = packet.ReadField(); field.valid();

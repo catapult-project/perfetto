@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import {Actions} from '../common/actions';
+import {HttpRpcState} from '../common/http_rpc_engine';
 import {
   FrontendLocalState as FrontendState,
   OmniboxState,
@@ -22,6 +23,7 @@ import {
 } from '../common/state';
 import {TimeSpan} from '../common/time';
 
+import {Tab} from './details_panel';
 import {globals} from './globals';
 import {TimeScale} from './time_scale';
 
@@ -95,8 +97,10 @@ export class FrontendLocalState {
   visibleTracks = new Set<string>();
   prevVisibleTracks = new Set<string>();
   searchIndex = -1;
-  scrollToTrackId: undefined|string|number = undefined;
-  private scrollBarWidth: undefined|number = undefined;
+  currentTab?: Tab;
+  scrollToTrackId?: string|number;
+  httpRpcState: HttpRpcState = {connected: false};
+  private scrollBarWidth?: number;
 
   private _omniboxState: OmniboxState = {
     lastUpdate: 0,
@@ -174,6 +178,11 @@ export class FrontendLocalState {
     globals.rafScheduler.scheduleFullRedraw();
   }
 
+  setHttpRpcState(httpRpcState: HttpRpcState) {
+    this.httpRpcState = httpRpcState;
+    globals.rafScheduler.scheduleFullRedraw();
+  }
+
   // Called when beginning a canvas redraw.
   clearVisibleTracks() {
     this.prevVisibleTracks = new Set(this.visibleTracks);
@@ -208,7 +217,8 @@ export class FrontendLocalState {
   selectTimeRange(startSec: number, endSec: number) {
     this._selectedTimeRange = {startSec, endSec, lastUpdate: Date.now() / 1000};
     this.selectTimeRangeDebounced();
-    globals.rafScheduler.scheduleRedraw();
+    globals.frontendLocalState.currentTab = 'time_range';
+    globals.rafScheduler.scheduleFullRedraw();
   }
 
   removeTimeRange() {
@@ -218,7 +228,8 @@ export class FrontendLocalState {
       lastUpdate: Date.now() / 1000
     };
     this.selectTimeRangeDebounced();
-    globals.rafScheduler.scheduleRedraw();
+    globals.frontendLocalState.currentTab = undefined;
+    globals.rafScheduler.scheduleFullRedraw();
   }
 
   get selectedTimeRange(): SelectedTimeRange {

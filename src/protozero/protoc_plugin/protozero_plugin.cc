@@ -212,21 +212,21 @@ class GeneratorJob {
       case FieldDescriptor::TYPE_ENUM:
       case FieldDescriptor::TYPE_SINT32:
       case FieldDescriptor::TYPE_SINT64:
-        return "::protozero::PackedVarIntBuffer";
+        return "::protozero::PackedVarInt";
 
       case FieldDescriptor::TYPE_FIXED32:
-        return "::protozero::PackedFixedSizeBuffer<uint32_t>";
+        return "::protozero::PackedFixedSizeInt<uint32_t>";
       case FieldDescriptor::TYPE_SFIXED32:
-        return "::protozero::PackedFixedSizeBuffer<int32_t>";
+        return "::protozero::PackedFixedSizeInt<int32_t>";
       case FieldDescriptor::TYPE_FLOAT:
-        return "::protozero::PackedFixedSizeBuffer<float>";
+        return "::protozero::PackedFixedSizeInt<float>";
 
       case FieldDescriptor::TYPE_FIXED64:
-        return "::protozero::PackedFixedSizeBuffer<uint64_t>";
+        return "::protozero::PackedFixedSizeInt<uint64_t>";
       case FieldDescriptor::TYPE_SFIXED64:
-        return "::protozero::PackedFixedSizeBuffer<int64_t>";
+        return "::protozero::PackedFixedSizeInt<int64_t>";
       case FieldDescriptor::TYPE_DOUBLE:
-        return "::protozero::PackedFixedSizeBuffer<double>";
+        return "::protozero::PackedFixedSizeInt<double>";
 
       case FieldDescriptor::TYPE_STRING:
       case FieldDescriptor::TYPE_MESSAGE:
@@ -679,9 +679,11 @@ class GeneratorJob {
             field->name(), "id", std::to_string(field->number()));
       } else if (field->is_repeated()) {
         stub_h_->Print(
-            "::protozero::RepeatedFieldIterator $name$() const { return "
-            "GetRepeated($id$); }\n",
-            "name", field->name(), "id", std::to_string(field->number()));
+            "::protozero::RepeatedFieldIterator<$cpp_type$> $name$() const { "
+            "return "
+            "GetRepeated<$cpp_type$>($id$); }\n",
+            "name", field->name(), "cpp_type", cpp_type, "id",
+            std::to_string(field->number()));
       } else {
         stub_h_->Print(
             "$cpp_type$ $name$() const { return at<$id$>().$getter$(); }\n",

@@ -16,6 +16,7 @@
 
 #include "src/tracing/test/api_test_support.h"
 
+#include "perfetto/base/time.h"
 #include "perfetto/ext/base/proc_utils.h"
 
 namespace perfetto {
@@ -23,6 +24,10 @@ namespace test {
 
 int32_t GetCurrentProcessId() {
   return static_cast<int32_t>(base::GetProcessId());
+}
+
+uint64_t GetWallTimeNs() {
+  return static_cast<uint64_t>(perfetto::base::GetWallTimeNs().count());
 }
 
 }  // namespace test
