@@ -34,6 +34,16 @@ const NODE_HEIGHT_DEFAULT = 15;
 export const HEAP_PROFILE_COLOR = 'hsl(224, 45%, 70%)';
 export const HEAP_PROFILE_HOVERED_COLOR = 'hsl(224, 45%, 55%)';
 
+export function findRootSize(data: CallsiteInfo[]) {
+  let totalSize = 0;
+  let i = 0;
+  while (i < data.length && data[i].depth === 0) {
+    totalSize += data[i].totalSize;
+    i++;
+  }
+  return totalSize;
+}
+
 export class Flamegraph {
   private isThumbnail = false;
   private flamegraphData: CallsiteInfo[];
@@ -49,12 +59,6 @@ export class Flamegraph {
   private hoveredCallsite?: CallsiteInfo;
   private clickedCallsite?: CallsiteInfo;
 
-  // For each node, we use this map to get information about it's parent
-  // (total size of it, width and where it starts in graph) so we can
-  // calculate it's own position in graph.
-  // This one is store for base flamegraph when no clicking has happend.
-  private baseMap = new Map<number, Node>();
-
   constructor(flamegraphData: CallsiteInfo[]) {
     this.flamegraphData = flamegraphData;
     this.findMaxDepth();
@@ -62,16 +66,6 @@ export class Flamegraph {
 
   private findMaxDepth() {
     this.maxDepth = Math.max(...this.flamegraphData.map(value => value.depth));
-  }
-
-  private findTotalSize() {
-    let totalSize = 0;
-    this.flamegraphData.forEach((value: CallsiteInfo) => {
-      if (value.parentHash === -1) {
-        totalSize += value.totalSize;
-      }
-    });
-    return totalSize;
   }
 
   hash(s: string): number {
@@ -83,14 +77,14 @@ export class Flamegraph {
     return hash & 0xff;
   }
 
-  generateColor(name: string|undefined, isGreyedOut = false): string {
+  generateColor(name: string, isGreyedOut = false): string {
     if (this.isThumbnail) {
       return HEAP_PROFILE_COLOR;
     }
     if (isGreyedOut) {
       return '#d9d9d9';
     }
-    if (name === undefined || name === 'root') {
+    if (name === 'unknown' || name === 'root') {
       return '#c0c0c0';
     }
     const hue = this.hash(name);
@@ -101,15 +95,16 @@ export class Flamegraph {
    * Caller will have to call draw method ater updating data to have updated
    * graph.
    */
-  updateDataIfChanged(flamegraphData: CallsiteInfo[]) {
+  updateDataIfChanged(
+      flamegraphData: CallsiteInfo[], clickedCallsite?: CallsiteInfo) {
     if (this.flamegraphData === flamegraphData) {
       return;
     }
     this.flamegraphData = flamegraphData;
-    this.clickedCallsite = undefined;
+    this.clickedCallsite = clickedCallsite;
     this.findMaxDepth();
     // Finding total size of roots.
-    this.totalSize = this.findTotalSize();
+    this.totalSize = findRootSize(flamegraphData);
   }
 
   draw(
@@ -137,45 +132,35 @@ export class Flamegraph {
     // Draw root node.
     ctx.fillStyle = this.generateColor('root', false);
     ctx.fillRect(x, currentY, width, nodeHeight);
+    ctx.font = `${this.textSize}px Google Sans`;
+    const text = cropText(
+        `root: ${
+            this.displaySize(
+                this.totalSize, unit, unit === 'B' ? 1024 : 1000)}`,
+        charWidth,
+        width - 2);
+    ctx.fillStyle = 'black';
+    ctx.fillText(text, x + 5, currentY + nodeHeight - 4);
     currentY += nodeHeight;
 
-    const clickedNode = this.clickedCallsite !== undefined ?
-        this.baseMap.get(this.clickedCallsite.hash) :
-        undefined;
 
     for (let i = 0; i < this.flamegraphData.length; i++) {
       if (currentY > height) {
         break;
       }
       const value = this.flamegraphData[i];
-      const parentNode = nodesMap.get(value.parentHash);
+      const parentNode = nodesMap.get(value.parentId);
       if (parentNode === undefined) {
         continue;
       }
-      // If node is clicked, determine if we should draw current node.
-      let shouldDraw = true;
-      let isFullWidth = false;
-      let isGreyedOut = false;
 
-      const oldNode = this.baseMap.get(value.hash);
-      // We want to display full shape if it's thumbnail.
-      if (!this.isThumbnail && clickedNode !== undefined &&
-          this.clickedCallsite !== undefined && oldNode !== undefined) {
-        isFullWidth = value.depth <= this.clickedCallsite.depth;
-        isGreyedOut = value.depth < this.clickedCallsite.depth;
-        shouldDraw = isFullWidth ? (oldNode.x <= clickedNode.x) &&
-                ((oldNode.x + oldNode.width >=
-                  clickedNode.x + clickedNode.width)) :
-                                   (oldNode.x >= clickedNode.x) &&
-                ((oldNode.x + oldNode.width <=
-                  clickedNode.x + clickedNode.width));
-      }
+      const isClicked = !this.isThumbnail && this.clickedCallsite !== undefined;
+      const isFullWidth =
+          isClicked && value.depth <= this.clickedCallsite!.depth;
+      const isGreyedOut =
+          isClicked && value.depth < this.clickedCallsite!.depth;
 
-      if (!shouldDraw) {
-        continue;
-      }
-
-      const parent = value.parentHash;
+      const parent = value.parentId;
       const parentSize = parent === -1 ? this.totalSize : parentNode.size;
       // Calculate node's width based on its proportion in parent.
       const width =
@@ -185,18 +170,19 @@ export class Flamegraph {
       currentY = nodeHeight * (value.depth + 1);
 
       // Draw node.
-      ctx.fillStyle = this.generateColor(value.name, isGreyedOut);
+      const name = this.getCallsiteName(value);
+      ctx.fillStyle = this.generateColor(name, isGreyedOut);
       ctx.fillRect(currentX, currentY, width, nodeHeight);
 
       // Set current node's data in map for children to use.
-      nodesMap.set(value.hash, {
+      nodesMap.set(value.id, {
         width,
         nextXForChildren: currentX,
         size: value.totalSize,
         x: currentX
       });
       // Update next x coordinate in parent.
-      nodesMap.set(value.parentHash, {
+      nodesMap.set(value.parentId, {
         width: parentNode.width,
         nextXForChildren: currentX + width,
         size: parentNode.size,
@@ -209,7 +195,6 @@ export class Flamegraph {
       }
 
       // Draw name.
-      const name = this.getCallsiteName(value);
       ctx.font = `${this.textSize}px Google Sans`;
       const text = cropText(name, charWidth, width - 2);
       ctx.fillStyle = 'black';
@@ -241,34 +226,90 @@ export class Flamegraph {
       }
     }
 
-    if (clickedNode === undefined) {
-      this.baseMap = nodesMap;
-    }
-
     if (this.hoveredX > -1 && this.hoveredY > -1 && this.hoveredCallsite) {
       // Draw the tooltip.
-      const line1 = this.getCallsiteName(this.hoveredCallsite);
+      const lines: string[] = [];
+      let lineSplitter: LineSplitter;
+      const nameText = this.getCallsiteName(this.hoveredCallsite);
+      lineSplitter =
+          splitIfTooBig(nameText, width, ctx.measureText(nameText).width);
+      const nameTextWidth = lineSplitter.lineWidth;
+      lines.push(...lineSplitter.lines);
+
+      const mappingText = this.hoveredCallsite.mapping;
+      lineSplitter =
+          splitIfTooBig(mappingText, width, ctx.measureText(mappingText).width);
+      const mappingTextWidth = lineSplitter.lineWidth;
+      lines.push(...lineSplitter.lines);
+
       const percentage = this.hoveredCallsite.totalSize / this.totalSize * 100;
-      const line2 = `total: ${this.hoveredCallsite.totalSize}${unit} (${
-          percentage.toFixed(2)}%)`;
+      const totalSizeText = `total: ${
+          this.displaySize(
+              this.hoveredCallsite.totalSize,
+              unit,
+              unit === 'B' ? 1024 : 1000)} (${percentage.toFixed(2)}%)`;
+      lineSplitter = splitIfTooBig(
+          totalSizeText, width, ctx.measureText(totalSizeText).width);
+      const totalSizeTextWidth = lineSplitter.lineWidth;
+      lines.push(...lineSplitter.lines);
+
+      let selfSizeWidth = 0;
+      if (this.hoveredCallsite.selfSize > 0) {
+        const selfSizeText = `self: ${
+            this.displaySize(
+                this.hoveredCallsite.selfSize,
+                unit,
+                unit === 'B' ? 1024 : 1000)} (${percentage.toFixed(2)}%)`;
+        lineSplitter = splitIfTooBig(
+            selfSizeText, width, ctx.measureText(selfSizeText).width);
+        selfSizeWidth = lineSplitter.lineWidth;
+        lines.push(...lineSplitter.lines);
+      }
+
+      const rectWidth = Math.max(
+                            nameTextWidth,
+                            mappingTextWidth,
+                            totalSizeTextWidth,
+                            selfSizeWidth) +
+          16;
+      const rectXStart = this.hoveredX + 8 + rectWidth > width ?
+          width - rectWidth - 8 :
+          this.hoveredX + 8;
+      const rectHeight = nodeHeight * (lines.length + 1);
+      const rectYStart = this.hoveredY + 4 + rectHeight > height ?
+          height - rectHeight - 8 :
+          this.hoveredY + 4;
+
       ctx.font = '12px Google Sans';
-      const line1Width = ctx.measureText(line1).width;
-      const line2Width = ctx.measureText(line2).width;
-      const rectWidth = Math.max(line1Width, line2Width);
-      const rectYStart = this.hoveredY + 10;
-      const rectHeight = nodeHeight * 3;
-      const rectYEnd = rectYStart + rectHeight;
       ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-      ctx.fillRect(this.hoveredX + 5, rectYStart, rectWidth + 16, rectHeight);
+      ctx.fillRect(rectXStart, rectYStart, rectWidth, rectHeight);
       ctx.fillStyle = 'hsl(200, 50%, 40%)';
       ctx.textAlign = 'left';
-      ctx.fillText(line1, this.hoveredX + 8, rectYStart + 18 /* 8 + 10s */);
-      ctx.fillText(line2, this.hoveredX + 8, rectYEnd - 8);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        ctx.fillText(line, rectXStart + 4, rectYStart + (i + 1) * 18);
+      }
     }
   }
 
   private getCallsiteName(value: CallsiteInfo): string {
-    return value.name === undefined ? 'unknown' : value.name;
+    return value.name === undefined || value.name === '' ? 'unknown' :
+                                                           value.name;
+  }
+
+  private displaySize(totalSize: number, unit: string, step = 1024): string {
+    if (unit === '') return totalSize.toLocaleString();
+    if (totalSize === 0) return `0 ${unit}`;
+    const units = [
+      ['', 0],
+      ['K', step],
+      ['M', Math.pow(step, 2)],
+      ['G', Math.pow(step, 3)]
+    ];
+    let unitsIndex = Math.trunc(Math.log(totalSize) / Math.log(step));
+    unitsIndex = unitsIndex > units.length - 1 ? units.length - 1 : unitsIndex;
+    return `${(totalSize / +units[unitsIndex][1]).toLocaleString()} ${
+        units[unitsIndex][0]}${unit}`;
   }
 
   onMouseMove({x, y}: {x: number, y: number}) {
@@ -288,12 +329,13 @@ export class Flamegraph {
     this.hoveredCallsite = undefined;
   }
 
-  onMouseClick({x, y}: {x: number, y: number}) {
+  // Returns id of clicked callsite if any.
+  onMouseClick({x, y}: {x: number, y: number}): number {
     if (this.isThumbnail) {
-      return true;
+      return -1;
     }
-    this.clickedCallsite = this.findSelectedCallsite(x, y);
-    return this.clickedCallsite !== undefined;
+    const clickedCallsite = this.findSelectedCallsite(x, y);
+    return clickedCallsite === undefined ? -1 : clickedCallsite.id;
   }
 
   private findSelectedCallsite(x: number, y: number): CallsiteInfo|undefined {
@@ -328,4 +370,24 @@ export class Flamegraph {
   enableThumbnail(isThumbnail: boolean) {
     this.isThumbnail = isThumbnail;
   }
+}
+
+export interface LineSplitter {
+  lineWidth: number;
+  lines: string[];
+}
+
+export function splitIfTooBig(
+    line: string, width: number, lineWidth: number): LineSplitter {
+  if (line === '') return {lineWidth, lines: []};
+  const lines: string[] = [];
+  const charWidth = lineWidth / line.length;
+  const maxWidth = width - 32;
+  const maxLineLen = Math.trunc(maxWidth / charWidth);
+  while (line.length > 0) {
+    lines.push(line.slice(0, maxLineLen));
+    line = line.slice(maxLineLen);
+  }
+  lineWidth = Math.min(maxWidth, lineWidth);
+  return {lineWidth, lines};
 }

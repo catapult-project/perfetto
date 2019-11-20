@@ -61,6 +61,8 @@
                                  &g_category_state_storage[0]);               \
   extern const ::perfetto::internal::TrackEventCategoryRegistry               \
       kCategoryRegistry;                                                      \
+  static_assert(kConstExprCategoryRegistry.ValidateCategories(),              \
+                "Invalid category names found");                              \
   }  // namespace internal
 
 // In a .cc file, declares storage for each category's runtime state.
@@ -94,5 +96,10 @@
     ::PERFETTO_TRACK_EVENT_NAMESPACE::TrackEvent::TraceForCategory<       \
         PERFETTO_GET_CATEGORY_INDEX(category)>(instances, ##__VA_ARGS__); \
   })
+
+// Generate a unique variable name with a given prefix.
+#define PERFETTO_INTERNAL_CONCAT2(a, b) a##b
+#define PERFETTO_INTERNAL_CONCAT(a, b) PERFETTO_INTERNAL_CONCAT2(a, b)
+#define PERFETTO_INTERNAL_UID(prefix) PERFETTO_INTERNAL_CONCAT(prefix, __LINE__)
 
 #endif  // INCLUDE_PERFETTO_TRACING_INTERNAL_TRACK_EVENT_MACROS_H_

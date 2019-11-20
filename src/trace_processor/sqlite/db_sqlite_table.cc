@@ -119,6 +119,34 @@ int DbSqliteTable::BestIndex(const QueryConstraints& qc, BestIndexInfo* info) {
   return SQLITE_OK;
 }
 
+int DbSqliteTable::ModifyConstraints(QueryConstraints* qc) {
+  using C = QueryConstraints::Constraint;
+
+  // Reorder constraints to consider the constraints on columns which are
+  // cheaper to filter first.
+  auto* cs = qc->mutable_constraints();
+  std::sort(cs->begin(), cs->end(), [this](const C& a, const C& b) {
+    uint32_t a_idx = static_cast<uint32_t>(a.column);
+    uint32_t b_idx = static_cast<uint32_t>(b.column);
+    const auto& a_col = table_->GetColumn(a_idx);
+    const auto& b_col = table_->GetColumn(b_idx);
+
+    // Id columns are always very cheap to filter on so try and get them
+    // first.
+    if (a_col.IsId() && !b_col.IsId())
+      return true;
+
+    // Sorted columns are also quite cheap to filter so order them after
+    // any id columns.
+    if (a_col.IsSorted() && !b_col.IsSorted())
+      return true;
+
+    // TODO(lalitm): introduce more orderings here based on empirical data.
+    return false;
+  });
+  return SQLITE_OK;
+}
+
 double DbSqliteTable::EstimateCost(const QueryConstraints& qc) {
   // Currently our cost estimation algorithm is quite simplistic but is good
   // enough for the simplest cases.
@@ -133,7 +161,7 @@ double DbSqliteTable::EstimateCost(const QueryConstraints& qc) {
   // This means we have at least one constraint. Check if any of the constraints
   // is an equality constraint on an id column.
   auto id_filter = [this](const QueryConstraints::Constraint& c) {
-    uint32_t col_idx = static_cast<uint32_t>(c.iColumn);
+    uint32_t col_idx = static_cast<uint32_t>(c.column);
     const auto& col = table_->GetColumn(col_idx);
     return sqlite_utils::IsOpEq(c.op) && col.IsId();
   };
@@ -158,16 +186,35 @@ DbSqliteTable::Cursor::Cursor(DbSqliteTable* table)
     : SqliteTable::Cursor(table), initial_db_table_(table->table_) {}
 
 int DbSqliteTable::Cursor::Filter(const QueryConstraints& qc,
-                                  sqlite3_value** argv) {
+                                  sqlite3_value** argv,
+                                  FilterHistory history) {
   // Clear out the iterator before filtering to ensure the destructor is run
   // before the table's destructor.
   iterator_ = base::nullopt;
+
+  if (history == FilterHistory::kSame && qc.constraints().size() == 1 &&
+      sqlite_utils::IsOpEq(qc.constraints().front().op)) {
+    // If we've seen the same constraint set with a single equality constraint
+    // more than |kRepeatedThreshold| times, we assume we will see it more
+    // in the future and thus cache a table sorted on the column. That way,
+    // future equality constraints can binary search for the value instead of
+    // doing a full table scan.
+    constexpr uint32_t kRepeatedThreshold = 3;
+    if (!sorted_cache_table_ && repeated_cache_count_++ > kRepeatedThreshold) {
+      const auto& c = qc.constraints().front();
+      uint32_t col = static_cast<uint32_t>(c.column);
+      sorted_cache_table_ = initial_db_table_->Sort({Order{col, false}});
+    }
+  } else {
+    sorted_cache_table_ = base::nullopt;
+    repeated_cache_count_ = 0;
+  }
 
   // We reuse this vector to reduce memory allocations on nested subqueries.
   constraints_.resize(qc.constraints().size());
   for (size_t i = 0; i < qc.constraints().size(); ++i) {
     const auto& cs = qc.constraints()[i];
-    uint32_t col = static_cast<uint32_t>(cs.iColumn);
+    uint32_t col = static_cast<uint32_t>(cs.column);
 
     FilterOp op = SqliteOpToFilterOp(cs.op);
     SqlValue value = SqliteValueToSqlValue(argv[i]);
@@ -183,7 +230,11 @@ int DbSqliteTable::Cursor::Filter(const QueryConstraints& qc,
     orders_[i] = Order{col, static_cast<bool>(ob.desc)};
   }
 
-  db_table_ = initial_db_table_->Filter(constraints_).Sort(orders_);
+  // Try and use the sorted cache table (if it exists) to speed up the sorting.
+  // Otherwise, just use the original table.
+  auto* source =
+      sorted_cache_table_ ? &*sorted_cache_table_ : &*initial_db_table_;
+  db_table_ = source->Filter(constraints_).Sort(orders_);
   iterator_ = db_table_->IterateRows();
 
   return SQLITE_OK;

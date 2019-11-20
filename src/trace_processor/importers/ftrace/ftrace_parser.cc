@@ -184,12 +184,32 @@ void FtraceParser::ParseFtraceStats(ConstBytes blob) {
 
 PERFETTO_ALWAYS_INLINE
 util::Status FtraceParser::ParseFtraceEvent(uint32_t cpu,
-                                            int64_t ts,
-                                            const TraceBlobView& event) {
+                                            const TimestampedTracePiece& ttp) {
+  using protos::pbzero::FtraceEvent;
+  int64_t ts = ttp.timestamp;
+
+  // Handle the (optional) alternative encoding format for sched_switch.
+  if (ttp.inline_event.type == InlineEvent::Type::kSchedSwitch) {
+    const auto& event = ttp.inline_event.sched_switch;
+    context_->sched_tracker->PushSchedSwitchCompact(
+        cpu, ts, event.prev_state, static_cast<uint32_t>(event.next_pid),
+        event.next_prio, event.next_comm);
+    return util::OkStatus();
+  }
+
+  // Handle the (optional) alternative encoding format for sched_waking.
+  if (ttp.inline_event.type == InlineEvent::Type::kSchedWaking) {
+    const auto& event = ttp.inline_event.sched_waking;
+    context_->sched_tracker->PushSchedWakingCompact(
+        cpu, ts, static_cast<uint32_t>(event.pid), event.target_cpu, event.prio,
+        event.comm);
+    return util::OkStatus();
+  }
+
+  const TraceBlobView& event = ttp.blob_view;
   ProtoDecoder decoder(event.data(), event.length());
   uint64_t raw_pid = 0;
-  if (auto pid_field =
-          decoder.FindField(protos::pbzero::FtraceEvent::kPidFieldNumber)) {
+  if (auto pid_field = decoder.FindField(FtraceEvent::kPidFieldNumber)) {
     raw_pid = pid_field.as_uint64();
   } else {
     return util::ErrStatus("Pid field not found in ftrace packet");
@@ -197,126 +217,125 @@ util::Status FtraceParser::ParseFtraceEvent(uint32_t cpu,
   uint32_t pid = static_cast<uint32_t>(raw_pid);
 
   for (auto fld = decoder.ReadField(); fld.valid(); fld = decoder.ReadField()) {
-    bool is_metadata_field =
-        fld.id() == protos::pbzero::FtraceEvent::kPidFieldNumber ||
-        fld.id() == protos::pbzero::FtraceEvent::kTimestampFieldNumber;
+    bool is_metadata_field = fld.id() == FtraceEvent::kPidFieldNumber ||
+                             fld.id() == FtraceEvent::kTimestampFieldNumber;
     if (is_metadata_field)
       continue;
 
     ConstBytes data = fld.as_bytes();
-    if (fld.id() == protos::pbzero::FtraceEvent::kGenericFieldNumber) {
+    if (fld.id() == FtraceEvent::kGenericFieldNumber) {
       ParseGenericFtrace(ts, cpu, pid, data);
-    } else if (fld.id() !=
-               protos::pbzero::FtraceEvent::kSchedSwitchFieldNumber) {
+    } else if (fld.id() != FtraceEvent::kSchedSwitchFieldNumber) {
+      // sched_switch parsing populates the raw table by itself
       ParseTypedFtraceToRaw(fld.id(), ts, cpu, pid, data);
     }
 
     switch (fld.id()) {
-      case protos::pbzero::FtraceEvent::kSchedSwitchFieldNumber: {
+      case FtraceEvent::kSchedSwitchFieldNumber: {
         ParseSchedSwitch(cpu, ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kSchedWakeupFieldNumber: {
+      case FtraceEvent::kSchedWakeupFieldNumber: {
         ParseSchedWakeup(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kSchedWakingFieldNumber: {
+      case FtraceEvent::kSchedWakingFieldNumber: {
         ParseSchedWaking(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kSchedProcessFreeFieldNumber: {
+      case FtraceEvent::kSchedProcessFreeFieldNumber: {
         ParseSchedProcessFree(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kCpuFrequencyFieldNumber: {
+      case FtraceEvent::kCpuFrequencyFieldNumber: {
         ParseCpuFreq(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kGpuFrequencyFieldNumber: {
+      case FtraceEvent::kGpuFrequencyFieldNumber: {
         ParseGpuFreq(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kCpuIdleFieldNumber: {
+      case FtraceEvent::kCpuIdleFieldNumber: {
         ParseCpuIdle(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kPrintFieldNumber: {
+      case FtraceEvent::kPrintFieldNumber: {
         ParsePrint(cpu, ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kZeroFieldNumber: {
+      case FtraceEvent::kZeroFieldNumber: {
         ParseZero(cpu, ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kRssStatFieldNumber: {
+      case FtraceEvent::kRssStatFieldNumber: {
         ParseRssStat(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kIonHeapGrowFieldNumber: {
+      case FtraceEvent::kIonHeapGrowFieldNumber: {
         ParseIonHeapGrowOrShrink(ts, pid, data, true);
         break;
       }
-      case protos::pbzero::FtraceEvent::kIonHeapShrinkFieldNumber: {
+      case FtraceEvent::kIonHeapShrinkFieldNumber: {
         ParseIonHeapGrowOrShrink(ts, pid, data, false);
         break;
       }
-      case protos::pbzero::FtraceEvent::kSignalGenerateFieldNumber: {
+      case FtraceEvent::kSignalGenerateFieldNumber: {
         ParseSignalGenerate(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kSignalDeliverFieldNumber: {
+      case FtraceEvent::kSignalDeliverFieldNumber: {
         ParseSignalDeliver(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kLowmemoryKillFieldNumber: {
+      case FtraceEvent::kLowmemoryKillFieldNumber: {
         ParseLowmemoryKill(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kOomScoreAdjUpdateFieldNumber: {
+      case FtraceEvent::kOomScoreAdjUpdateFieldNumber: {
         ParseOOMScoreAdjUpdate(ts, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kMmEventRecordFieldNumber: {
+      case FtraceEvent::kMmEventRecordFieldNumber: {
         ParseMmEventRecord(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kSysEnterFieldNumber: {
+      case FtraceEvent::kSysEnterFieldNumber: {
         ParseSysEvent(ts, pid, true, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kSysExitFieldNumber: {
+      case FtraceEvent::kSysExitFieldNumber: {
         ParseSysEvent(ts, pid, false, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kTaskNewtaskFieldNumber: {
+      case FtraceEvent::kTaskNewtaskFieldNumber: {
         ParseTaskNewTask(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kTaskRenameFieldNumber: {
+      case FtraceEvent::kTaskRenameFieldNumber: {
         ParseTaskRename(data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kBinderTransactionFieldNumber: {
+      case FtraceEvent::kBinderTransactionFieldNumber: {
         ParseBinderTransaction(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kBinderTransactionReceivedFieldNumber: {
+      case FtraceEvent::kBinderTransactionReceivedFieldNumber: {
         ParseBinderTransactionReceived(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kBinderTransactionAllocBufFieldNumber: {
+      case FtraceEvent::kBinderTransactionAllocBufFieldNumber: {
         ParseBinderTransactionAllocBuf(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kBinderLockFieldNumber: {
+      case FtraceEvent::kBinderLockFieldNumber: {
         ParseBinderLock(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kBinderUnlockFieldNumber: {
+      case FtraceEvent::kBinderUnlockFieldNumber: {
         ParseBinderUnlock(ts, pid, data);
         break;
       }
-      case protos::pbzero::FtraceEvent::kBinderLockedFieldNumber: {
+      case FtraceEvent::kBinderLockedFieldNumber: {
         ParseBinderLocked(ts, pid, data);
         break;
       }
@@ -474,24 +493,27 @@ void FtraceParser::ParseCpuFreq(int64_t ts, ConstBytes blob) {
   protos::pbzero::CpuFrequencyFtraceEvent::Decoder freq(blob.data, blob.size);
   uint32_t cpu = freq.cpu_id();
   uint32_t new_freq = freq.state();
-  context_->event_tracker->PushCounter(ts, new_freq, cpu_freq_name_id_, cpu,
-                                       RefType::kRefCpuId);
+  TrackId track =
+      context_->track_tracker->InternCpuCounterTrack(cpu_freq_name_id_, cpu);
+  context_->event_tracker->PushCounter(ts, new_freq, track);
 }
 
 void FtraceParser::ParseGpuFreq(int64_t ts, ConstBytes blob) {
   protos::pbzero::GpuFrequencyFtraceEvent::Decoder freq(blob.data, blob.size);
   uint32_t gpu = freq.gpu_id();
   uint32_t new_freq = freq.state();
-  context_->event_tracker->PushCounter(ts, new_freq, gpu_freq_name_id_, gpu,
-                                       RefType::kRefGpuId);
+  TrackId track =
+      context_->track_tracker->InternGpuCounterTrack(gpu_freq_name_id_, gpu);
+  context_->event_tracker->PushCounter(ts, new_freq, track);
 }
 
 void FtraceParser::ParseCpuIdle(int64_t ts, ConstBytes blob) {
   protos::pbzero::CpuIdleFtraceEvent::Decoder idle(blob.data, blob.size);
   uint32_t cpu = idle.cpu_id();
   uint32_t new_state = idle.state();
-  context_->event_tracker->PushCounter(ts, new_state, cpu_idle_name_id_, cpu,
-                                       RefType::kRefCpuId);
+  TrackId track =
+      context_->track_tracker->InternCpuCounterTrack(cpu_idle_name_id_, cpu);
+  context_->event_tracker->PushCounter(ts, new_state, track);
 }
 
 void FtraceParser::ParsePrint(uint32_t,
@@ -524,8 +546,8 @@ void FtraceParser::ParseRssStat(int64_t ts, uint32_t pid, ConstBytes blob) {
 
   if (size >= 0) {
     UniqueTid utid = context_->process_tracker->GetOrCreateThread(pid);
-    context_->event_tracker->PushCounter(ts, size, rss_members_[member], utid,
-                                         RefType::kRefUtid, true);
+    context_->event_tracker->PushProcessCounterForThread(
+        ts, size, rss_members_[member], utid);
   } else {
     context_->storage->IncrementStats(stats::rss_stat_negative_size);
   }
@@ -555,17 +577,18 @@ void FtraceParser::ParseIonHeapGrowOrShrink(int64_t ts,
   }
 
   // Push the global counter.
-  context_->event_tracker->PushCounter(ts, total_bytes, global_name_id, 0,
-                                       RefType::kRefNoRef);
+  TrackId track =
+      context_->track_tracker->InternGlobalCounterTrack(global_name_id);
+  context_->event_tracker->PushCounter(ts, total_bytes, track);
 
   // Push the change counter.
   // TODO(b/121331269): these should really be instant events. For now we
   // manually reset them to 0 after 1ns.
   UniqueTid utid = context_->process_tracker->GetOrCreateThread(pid);
-  context_->event_tracker->PushCounter(ts, change_bytes, change_name_id, utid,
-                                       RefType::kRefUtid);
-  context_->event_tracker->PushCounter(ts + 1, 0, change_name_id, utid,
-                                       RefType::kRefUtid);
+  track =
+      context_->track_tracker->InternThreadCounterTrack(change_name_id, utid);
+  context_->event_tracker->PushCounter(ts, change_bytes, track);
+  context_->event_tracker->PushCounter(ts + 1, 0, track);
 
   // We are reusing the same function for ion_heap_grow and ion_heap_shrink.
   // It is fine as the arguments are the same, but we need to be sure that the
@@ -638,8 +661,8 @@ void FtraceParser::ParseOOMScoreAdjUpdate(int64_t ts, ConstBytes blob) {
   int16_t oom_adj = static_cast<int16_t>(evt.oom_score_adj());
   uint32_t tid = static_cast<uint32_t>(evt.pid());
   UniqueTid utid = context_->process_tracker->GetOrCreateThread(tid);
-  context_->event_tracker->PushCounter(ts, oom_adj, oom_score_adj_id_, utid,
-                                       RefType::kRefUtid, true);
+  context_->event_tracker->PushProcessCounterForThread(ts, oom_adj,
+                                                       oom_score_adj_id_, utid);
 }
 
 void FtraceParser::ParseMmEventRecord(int64_t ts,
@@ -655,12 +678,12 @@ void FtraceParser::ParseMmEventRecord(int64_t ts,
   }
 
   const auto& counter_names = mm_event_counter_names_[type];
-  context_->event_tracker->PushCounter(ts, evt.count(), counter_names.count,
-                                       utid, RefType::kRefUtid, true);
-  context_->event_tracker->PushCounter(ts, evt.max_lat(), counter_names.max_lat,
-                                       utid, RefType::kRefUtid, true);
-  context_->event_tracker->PushCounter(ts, evt.avg_lat(), counter_names.avg_lat,
-                                       utid, RefType::kRefUtid, true);
+  context_->event_tracker->PushProcessCounterForThread(
+      ts, evt.count(), counter_names.count, utid);
+  context_->event_tracker->PushProcessCounterForThread(
+      ts, evt.max_lat(), counter_names.max_lat, utid);
+  context_->event_tracker->PushProcessCounterForThread(
+      ts, evt.avg_lat(), counter_names.avg_lat, utid);
 }
 
 void FtraceParser::ParseSysEvent(int64_t ts,

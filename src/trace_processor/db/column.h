@@ -71,17 +71,9 @@ class Column {
     // Indicates that this column has no special properties.
     kNoFlag = 0,
 
-    // Indiciates that the column is an "id" column. Specifically, this means
-    // the backing data for this column has the property that data[i] = i;
-    //
-    // Note: generally, this flag should not be passed by users of this class.
-    // Instead they should use the Column::IdColumn method to create an id
-    // column.
-    kId = 1 << 0,
-
     // Indicates the data in the column is sorted. This can be used to speed
     // up filtering and skip sorting.
-    kSorted = 1 << 1,
+    kSorted = 1 << 0,
 
     // Indicates the data in the column is non-null. That is, the SparseVector
     // passed in will never have any null entries. This is only used for
@@ -90,7 +82,7 @@ class Column {
     //
     // This is used to speed up filters as we can safely index SparseVector
     // directly if this flag is set.
-    kNonNull = 1 << 2
+    kNonNull = 1 << 1,
   };
 
   template <typename T>
@@ -150,11 +142,22 @@ class Column {
     PERFETTO_FATAL("For GCC");
   }
 
+  // Sorts |idx| in ascending or descending order (determined by |desc|) based
+  // on the contents of this column.
+  void StableSort(bool desc, std::vector<uint32_t>* idx) const {
+    if (desc) {
+      StableSort<true /* desc */>(idx);
+    } else {
+      StableSort<false /* desc */>(idx);
+    }
+  }
+
   // Updates the given RowMap by only keeping rows where this column meets the
   // given filter constraint.
   void FilterInto(FilterOp op, SqlValue value, RowMap* rm) const {
-    // TODO(lalitm): add special logic here to deal with kId and kSorted flags.
-    if (type_ == ColumnType::kId && op == FilterOp::kEq) {
+    if (IsId() && op == FilterOp::kEq) {
+      // If this is an equality constraint on an id column, try and find the
+      // single row with the id (if it exists).
       auto opt_idx = IndexOf(value);
       if (opt_idx) {
         rm->Intersect(RowMap::SingleRow(*opt_idx));
@@ -163,6 +166,48 @@ class Column {
       }
       return;
     }
+
+    if (IsSorted() && value.type == type()) {
+      // If the column is sorted and the value has the same type as the column,
+      // we should be able to just do a binary search to find the range of rows
+      // instead of a full table scan.
+      const Iterator b(this, 0);
+      const Iterator e(this, row_map().size());
+      switch (op) {
+        case FilterOp::kEq: {
+          uint32_t beg = std::distance(b, std::lower_bound(b, e, value));
+          uint32_t end = std::distance(b, std::upper_bound(b, e, value));
+          rm->Intersect(RowMap(beg, end));
+          return;
+        }
+        case FilterOp::kLe: {
+          uint32_t end = std::distance(b, std::upper_bound(b, e, value));
+          rm->Intersect(RowMap(0, end));
+          return;
+        }
+        case FilterOp::kLt: {
+          uint32_t end = std::distance(b, std::lower_bound(b, e, value));
+          rm->Intersect(RowMap(0, end));
+          return;
+        }
+        case FilterOp::kGe: {
+          uint32_t beg = std::distance(b, std::lower_bound(b, e, value));
+          rm->Intersect(RowMap(beg, row_map().size()));
+          return;
+        }
+        case FilterOp::kGt: {
+          uint32_t beg = std::distance(b, std::upper_bound(b, e, value));
+          rm->Intersect(RowMap(beg, row_map().size()));
+          return;
+        }
+        case FilterOp::kNe:
+        case FilterOp::kIsNull:
+        case FilterOp::kIsNotNull:
+        case FilterOp::kLike:
+          break;
+      }
+    }
+
     switch (type_) {
       case ColumnType::kInt32: {
         if (IsNullable()) {
@@ -200,10 +245,13 @@ class Column {
   }
 
   // Returns true if this column is considered an id column.
-  bool IsId() const { return (flags_ & Flag::kId) != 0; }
+  bool IsId() const { return type_ == ColumnType::kId; }
 
   // Returns true if this column is a nullable column.
   bool IsNullable() const { return (flags_ & Flag::kNonNull) == 0; }
+
+  // Returns true if this column is a sorted column.
+  bool IsSorted() const { return (flags_ & Flag::kSorted) != 0; }
 
   const RowMap& row_map() const;
   const char* name() const { return name_; }
@@ -280,6 +328,49 @@ class Column {
 
     // Types generated on the fly.
     kId,
+  };
+
+  // Iterator over a column which conforms to std iterator interface
+  // to allow using std algorithms (e.g. upper_bound, lower_bound etc.).
+  class Iterator {
+   public:
+    using iterator_category = std::random_access_iterator_tag;
+    using value_type = SqlValue;
+    using difference_type = uint32_t;
+    using pointer = uint32_t*;
+    using reference = uint32_t&;
+
+    Iterator(const Column* col, uint32_t row) : col_(col), row_(row) {}
+
+    Iterator(const Iterator&) = default;
+    Iterator& operator=(const Iterator&) = default;
+
+    bool operator==(const Iterator& other) const { return other.row_ == row_; }
+    bool operator!=(const Iterator& other) const { return !(*this == other); }
+    bool operator<(const Iterator& other) const { return other.row_ < row_; }
+    bool operator>(const Iterator& other) const { return other < *this; }
+    bool operator<=(const Iterator& other) const { return !(other < *this); }
+    bool operator>=(const Iterator& other) const { return !(*this < other); }
+
+    SqlValue operator*() const { return col_->Get(row_); }
+    Iterator& operator++() {
+      row_++;
+      return *this;
+    }
+    Iterator& operator--() {
+      row_--;
+      return *this;
+    }
+
+    Iterator& operator+=(uint32_t diff) {
+      row_ += diff;
+      return *this;
+    }
+    uint32_t operator-(const Iterator& other) { return row_ - other.row_; }
+
+   private:
+    const Column* col_ = nullptr;
+    uint32_t row_ = 0;
   };
 
   friend class Table;
@@ -497,6 +588,63 @@ class Column {
       case FilterOp::kIsNotNull:
         PERFETTO_FATAL("Should be handled above");
     }
+  }
+
+  template <bool desc>
+  void StableSort(std::vector<uint32_t>* out) const {
+    switch (type_) {
+      case ColumnType::kInt32: {
+        if (IsNullable()) {
+          StableSort<desc, int32_t, true /* is_nullable */>(out);
+        } else {
+          StableSort<desc, int32_t, false /* is_nullable */>(out);
+        }
+        break;
+      }
+      case ColumnType::kUint32: {
+        if (IsNullable()) {
+          StableSort<desc, uint32_t, true /* is_nullable */>(out);
+        } else {
+          StableSort<desc, uint32_t, false /* is_nullable */>(out);
+        }
+        break;
+      }
+      case ColumnType::kInt64: {
+        if (IsNullable()) {
+          StableSort<desc, int64_t, true /* is_nullable */>(out);
+        } else {
+          StableSort<desc, int64_t, false /* is_nullable */>(out);
+        }
+        break;
+      }
+      case ColumnType::kString: {
+        row_map().StableSort(out, [this](uint32_t a_idx, uint32_t b_idx) {
+          auto a_str = GetStringPoolStringAtIdx(a_idx);
+          auto b_str = GetStringPoolStringAtIdx(b_idx);
+          return desc ? b_str < a_str : a_str < b_str;
+        });
+        break;
+      }
+      case ColumnType::kId:
+        row_map().StableSort(out, [](uint32_t a_idx, uint32_t b_idx) {
+          return desc ? b_idx < a_idx : a_idx < b_idx;
+        });
+    }
+  }
+
+  template <bool desc, typename T, bool is_nullable>
+  void StableSort(std::vector<uint32_t>* out) const {
+    const auto& sv = sparse_vector<T>();
+    row_map().StableSort(out, [&sv](uint32_t a_idx, uint32_t b_idx) {
+      if (is_nullable) {
+        auto a_val = sv.Get(a_idx);
+        auto b_val = sv.Get(b_idx);
+        return desc ? b_val < a_val : a_val < b_val;
+      }
+      auto a_val = sv.GetNonNull(a_idx);
+      auto b_val = sv.GetNonNull(b_idx);
+      return desc ? b_val < a_val : a_val < b_val;
+    });
   }
 
   template <typename T>

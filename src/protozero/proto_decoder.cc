@@ -60,7 +60,10 @@ ParseOneField(const uint8_t* const buffer, const uint8_t* const end) {
   if (PERFETTO_LIKELY(*pos < 0x80)) {  // Fastpath for fields with ID < 16.
     preamble = *(pos++);
   } else {
-    pos = ParseVarInt(pos, end, &preamble);
+    const uint8_t* next = ParseVarInt(pos, end, &preamble);
+    if (PERFETTO_UNLIKELY(pos == next))
+      return res;
+    pos = next;
   }
 
   uint32_t field_id = static_cast<uint32_t>(preamble >> kFieldTypeNumBits);
@@ -208,7 +211,7 @@ void TypedProtoDecoderBase::ExpandHeapStorage() {
   PERFETTO_CHECK(new_capacity > size_);
   std::unique_ptr<Field[]> new_storage(new Field[new_capacity]);
 
-  static_assert(PERFETTO_IS_TRIVIALLY_COPYABLE(Field),
+  static_assert(std::is_trivially_copyable<Field>::value,
                 "Field must be trivially copyable");
   memcpy(&new_storage[0], fields_, sizeof(Field) * size_);
 

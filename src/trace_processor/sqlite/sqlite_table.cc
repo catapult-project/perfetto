@@ -19,6 +19,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <algorithm>
+#include <map>
 
 #include "perfetto/base/logging.h"
 
@@ -58,57 +59,66 @@ int SqliteTable::OpenInternal(sqlite3_vtab_cursor** ppCursor) {
 }
 
 int SqliteTable::BestIndexInternal(sqlite3_index_info* idx) {
-  QueryConstraints query_constraints;
-
-  for (int i = 0; i < idx->nOrderBy; i++) {
-    int column = idx->aOrderBy[i].iColumn;
-    bool desc = idx->aOrderBy[i].desc;
-    query_constraints.AddOrderBy(column, desc);
-  }
+  QueryConstraints qc;
 
   for (int i = 0; i < idx->nConstraint; i++) {
     const auto& cs = idx->aConstraint[i];
     if (!cs.usable)
       continue;
-    query_constraints.AddConstraint(cs.iColumn, cs.op);
-
-    // argvIndex is 1-based so use the current size of the vector.
-    int argv_index = static_cast<int>(query_constraints.constraints().size());
-    idx->aConstraintUsage[i].argvIndex = argv_index;
+    qc.AddConstraint(cs.iColumn, cs.op, i);
   }
 
-  BestIndexInfo info;
-  info.omit.resize(query_constraints.constraints().size());
-
-  int ret = BestIndex(query_constraints, &info);
-
-  if (SqliteTable::debug) {
-    PERFETTO_LOG(
-        "[%s::BestIndex] constraints=%s orderByConsumed=%d estimatedCost=%d",
-        name_.c_str(), query_constraints.ToNewSqlite3String().get(),
-        info.order_by_consumed, info.estimated_cost);
+  for (int i = 0; i < idx->nOrderBy; i++) {
+    int column = idx->aOrderBy[i].iColumn;
+    bool desc = idx->aOrderBy[i].desc;
+    qc.AddOrderBy(column, desc);
   }
 
+  int ret = ModifyConstraints(&qc);
   if (ret != SQLITE_OK)
     return ret;
 
-  idx->orderByConsumed = info.order_by_consumed;
+  BestIndexInfo info;
+  info.sqlite_omit_constraint.resize(qc.constraints().size());
+
+  ret = BestIndex(qc, &info);
+  if (ret != SQLITE_OK)
+    return ret;
+
+  idx->orderByConsumed = qc.order_by().empty() || info.sqlite_omit_order_by;
   idx->estimatedCost = info.estimated_cost;
 
-  size_t j = 0;
-  for (int i = 0; i < idx->nConstraint; i++) {
-    const auto& cs = idx->aConstraint[i];
-    if (cs.usable)
-      idx->aConstraintUsage[i].omit = info.omit[j++];
+  // First pass: mark all constraints as omitted to ensure that any pruned
+  // constraints are not checked for by SQLite.
+  for (int i = 0; i < idx->nConstraint; ++i) {
+    auto& u = idx->aConstraintUsage[i];
+    u.omit = true;
   }
 
-  if (!info.order_by_consumed)
-    query_constraints.ClearOrderBy();
+  // Second pass: actually set the correct omit and index values for all
+  // retained constraints.
+  for (uint32_t i = 0; i < qc.constraints().size(); ++i) {
+    auto& u = idx->aConstraintUsage[qc.constraints()[i].a_constraint_idx];
+    u.omit = info.sqlite_omit_constraint[i];
+    u.argvIndex = static_cast<int>(i) + 1;
+  }
 
-  idx->idxStr = query_constraints.ToNewSqlite3String().release();
+  auto out_qc_str = qc.ToNewSqlite3String();
+  if (SqliteTable::debug) {
+    PERFETTO_LOG(
+        "[%s::BestIndex] constraints=%s orderByConsumed=%d estimatedCost=%d",
+        name_.c_str(), out_qc_str.get(), idx->orderByConsumed,
+        info.estimated_cost);
+  }
+
+  idx->idxStr = out_qc_str.release();
   idx->needToFreeIdxStr = true;
   idx->idxNum = ++best_index_num_;
 
+  return SQLITE_OK;
+}
+
+int SqliteTable::ModifyConstraints(QueryConstraints*) {
   return SQLITE_OK;
 }
 
@@ -120,9 +130,7 @@ int SqliteTable::Update(int, sqlite3_value**, sqlite3_int64*) {
   return SQLITE_READONLY;
 }
 
-const QueryConstraints& SqliteTable::ParseConstraints(int idxNum,
-                                                      const char* idxStr,
-                                                      int argc) {
+bool SqliteTable::ReadConstraints(int idxNum, const char* idxStr, int argc) {
   bool cache_hit = true;
   if (idxNum != qc_hash_) {
     qc_cache_ = QueryConstraints::FromString(idxStr);
@@ -133,7 +141,7 @@ const QueryConstraints& SqliteTable::ParseConstraints(int idxNum,
     PERFETTO_LOG("[%s::ParseConstraints] constraints=%s argc=%d cache_hit=%d",
                  name_.c_str(), idxStr, argc, cache_hit);
   }
-  return qc_cache_;
+  return cache_hit;
 }
 
 SqliteTable::Cursor::Cursor(SqliteTable* table) : table_(table) {

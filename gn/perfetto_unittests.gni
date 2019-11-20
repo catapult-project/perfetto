@@ -20,6 +20,7 @@ perfetto_unittests_targets = [
   "src/base:unittests",
   "src/protozero:unittests",
   "src/tracing:unittests",
+  "src/profiling:unittests",
 ]
 
 if (enable_perfetto_tools && current_toolchain == host_toolchain) {
@@ -53,6 +54,10 @@ if (enable_perfetto_heapprofd) {
     "src/profiling/memory:unittests",
     "src/profiling/memory:ring_buffer_unittests",
   ]
+}
+
+if (enable_perfetto_traced_perf) {
+  perfetto_unittests_targets += [ "src/profiling/perf:producer_unittests" ]
 }
 
 if (enable_perfetto_trace_processor) {

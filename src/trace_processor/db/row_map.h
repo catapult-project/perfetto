@@ -127,6 +127,9 @@ class RowMap {
       }
     }
 
+    Iterator(Iterator&&) noexcept = default;
+    Iterator& operator=(Iterator&&) = default;
+
     // Forwards the iterator to the next row of the RowMap.
     void Next() {
       switch (rm_->mode_) {
@@ -190,6 +193,9 @@ class RowMap {
     }
 
    private:
+    Iterator(const Iterator&) = delete;
+    Iterator& operator=(const Iterator&) = delete;
+
     // Only one of the below will be non-null depending on the mode of the
     // RowMap.
     std::unique_ptr<RangeIterator> range_it_;
@@ -391,6 +397,18 @@ class RowMap {
       return;
     }
 
+    if (mode_ == Mode::kRange && other.mode_ == Mode::kRange) {
+      // If both RowMaps have ranges, we can just take the smallest intersection
+      // of them as the new RowMap.
+      // This case is important to optimize as it comes up with sorted columns.
+      start_idx_ = std::max(start_idx_, other.start_idx_);
+      end_idx_ = std::min(end_idx_, other.end_idx_);
+
+      if (end_idx_ <= start_idx_)
+        *this = RowMap();
+      return;
+    }
+
     // TODO(lalitm): improve efficiency of this if we end up needing it.
     RemoveIf([&other](uint32_t row) { return !other.Contains(row); });
   }
@@ -431,6 +449,26 @@ class RowMap {
       case Mode::kIndexVector:
         FilterInto(out, IndexVectorIterator(this), p);
         break;
+    }
+  }
+
+  template <typename Comparator>
+  void StableSort(std::vector<uint32_t>* out, Comparator c) const {
+    switch (mode_) {
+      case Mode::kRange: {
+        StableSort(out, c, [this](uint32_t off) { return start_idx_ + off; });
+        break;
+      }
+      case Mode::kBitVector: {
+        StableSort(out, c, [this](uint32_t off) {
+          return bit_vector_.IndexOfNthSet(off);
+        });
+        break;
+      }
+      case Mode::kIndexVector: {
+        StableSort(out, c, [this](uint32_t off) { return index_vector_[off]; });
+        break;
+      }
     }
   }
 
@@ -528,6 +566,13 @@ class RowMap {
         break;
       }
     }
+  }
+
+  template <typename Comparator, typename Indexer>
+  void StableSort(std::vector<uint32_t>* out, Comparator c, Indexer i) const {
+    std::stable_sort(
+        out->begin(), out->end(),
+        [&c, &i](uint32_t a, uint32_t b) { return c(i(a), i(b)); });
   }
 
   RowMap SelectRowsSlow(const RowMap& selector) const;

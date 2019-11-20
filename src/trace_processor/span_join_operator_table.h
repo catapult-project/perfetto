@@ -227,7 +227,9 @@ class SpanJoinOperatorTable : public SqliteTable {
     Cursor(SpanJoinOperatorTable*, sqlite3* db);
     ~Cursor() override = default;
 
-    int Filter(const QueryConstraints& qc, sqlite3_value** argv) override;
+    int Filter(const QueryConstraints& qc,
+               sqlite3_value** argv,
+               FilterHistory) override;
     int Column(sqlite3_context* context, int N) override;
     int Next() override;
     int Eof() override;
@@ -238,6 +240,8 @@ class SpanJoinOperatorTable : public SqliteTable {
 
     Cursor(Cursor&&) noexcept = default;
     Cursor& operator=(Cursor&&) = default;
+
+    int FindOverlappingSpan();
 
     bool IsOverlappingSpan();
     Query::StepRet StepUntilRealSlice();

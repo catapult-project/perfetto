@@ -51,6 +51,10 @@ if (enable_perfetto_heapprofd) {
   }
 }
 
+if (enable_perfetto_traced_perf) {
+  all_targets += [ "src/profiling/perf:traced_perf" ]
+}
+
 if (perfetto_build_with_android) {
   all_targets += [ "src/android_internal/:libperfetto_android_internal" ]
 }
@@ -211,18 +215,23 @@ if (build_with_chromium) {
   component("libperfetto") {
     public_configs = [ "gn:public_config" ]
     deps = [
+      "src/trace_processor:export_json",
+      "src/trace_processor:storage",
       "src/tracing",
     ]
     configs -= [ "//build/config/compiler:chromium_code" ]
     configs += [ "//build/config/compiler:no_chromium_code" ]
     public_deps = [
+      "include/perfetto/ext/trace_processor:export_json",
       "include/perfetto/ext/tracing/core",
+      "include/perfetto/trace_processor:storage",
       "protos/perfetto/common:zero",
       "protos/perfetto/trace:zero",
       "protos/perfetto/trace/chrome:zero",
       "protos/perfetto/trace/interned_data:zero",
       "protos/perfetto/trace/profiling:zero",
       "protos/perfetto/trace/track_event:zero",
+      "src/tracing:sliced_protobuf_input_stream",
     ]
   }
   if (enable_perfetto_trace_processor_sqlite) {
@@ -237,18 +246,5 @@ if (build_with_chromium) {
         "include/perfetto/trace_processor",
       ]
     }
-  }
-  component("libproto_to_json") {
-    public_configs = [ "gn:public_config" ]
-    deps = [
-      "src/trace_processor:export_json",
-      "src/trace_processor:storage",
-    ]
-    configs -= [ "//build/config/compiler:chromium_code" ]
-    configs += [ "//build/config/compiler:no_chromium_code" ]
-    public_deps = [
-      "include/perfetto/ext/trace_processor:export_json",
-      "include/perfetto/trace_processor:storage",
-    ]
   }
 }

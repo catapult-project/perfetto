@@ -24,10 +24,12 @@ import {TrackButton, TrackButtonAttrs} from '../../frontend/track_panel';
 import {trackRegistry} from '../../frontend/track_registry';
 
 import {
+  ALLOC_SPACE_MEMORY_ALLOCATED_KEY,
   Config,
   Data,
   HEAP_PROFILE_FLAMEGRAPH_TRACK_KIND,
-  HeapProfileFlamegraphKey
+  HeapProfileFlamegraphKey,
+  SPACE_MEMORY_ALLOCATED_NOT_FREED_KEY
 } from './common';
 
 const MARGIN = 10;
@@ -35,6 +37,7 @@ const MARGIN = 10;
 export class HeapProfileFlamegraphTrack extends Track<Config, Data> {
   static readonly kind = HEAP_PROFILE_FLAMEGRAPH_TRACK_KIND;
   private flamegraph: Flamegraph;
+  private currentViewingOption = SPACE_MEMORY_ALLOCATED_NOT_FREED_KEY;
 
   static create(trackState: TrackState): HeapProfileFlamegraphTrack {
     return new HeapProfileFlamegraphTrack(trackState);
@@ -42,7 +45,7 @@ export class HeapProfileFlamegraphTrack extends Track<Config, Data> {
 
   constructor(trackState: TrackState) {
     super(trackState);
-    this.flamegraph = new Flamegraph(new Array());
+    this.flamegraph = new Flamegraph([]);
     this.flamegraph.enableThumbnail(this.config.isMinimized);
   }
 
@@ -53,9 +56,13 @@ export class HeapProfileFlamegraphTrack extends Track<Config, Data> {
   private changeFlamegraphData() {
     const data = this.data();
     if (data === undefined) {
-      this.flamegraph.updateDataIfChanged(new Array());
+      this.flamegraph.updateDataIfChanged([]);
     } else {
-      this.flamegraph.updateDataIfChanged(data.flamegraph);
+      this.flamegraph.updateDataIfChanged(
+          data.flamegraph, data.clickedCallsite);
+      if (data.viewingOption !== undefined) {
+        this.currentViewingOption = data.viewingOption;
+      }
     }
   }
 
@@ -93,11 +100,18 @@ export class HeapProfileFlamegraphTrack extends Track<Config, Data> {
       return;
     }
     this.changeFlamegraphData();
-    this.flamegraph.draw(ctx, this.getWidth(), this.getHeight());
+    const unit =
+        this.currentViewingOption === SPACE_MEMORY_ALLOCATED_NOT_FREED_KEY ||
+            this.currentViewingOption === ALLOC_SPACE_MEMORY_ALLOCATED_KEY ?
+        'B' :
+        '';
+    this.flamegraph.draw(ctx, this.getWidth(), this.getHeight(), 0, 0, unit);
   }
 
   onMouseClick({x, y}: {x: number, y: number}): boolean {
-    this.flamegraph.onMouseClick({x, y});
+    this.config.expandedId = this.flamegraph.onMouseClick({x, y});
+    globals.dispatch(Actions.updateTrackConfig(
+        {id: this.trackState.id, config: this.config}));
     return true;
   }
 
@@ -112,19 +126,21 @@ export class HeapProfileFlamegraphTrack extends Track<Config, Data> {
 
   getTrackShellButtons(): Array<m.Vnode<TrackButtonAttrs>> {
     const buttons: Array<m.Vnode<TrackButtonAttrs>> = [];
-    buttons.push(m(TrackButton, {
-      action: () => {
-        const newIsMinimized = !this.config.isMinimized;
-        this.config.isMinimized = newIsMinimized;
-        Actions.updateTrackConfig(
-            {id: this.trackState.id, config: this.config});
-        this.flamegraph.enableThumbnail(newIsMinimized);
-        globals.rafScheduler.scheduleFullRedraw();
-      },
-      i: this.config.isMinimized ? 'expand_more' : 'expand_less',
-      tooltip: this.config.isMinimized ? 'Maximize' : 'Minimize',
-      selected: this.config.isMinimized,
-    }));
+    buttons.push(
+        // Minimize button
+        m(TrackButton, {
+          action: () => {
+            const newIsMinimized = !this.config.isMinimized;
+            this.config.isMinimized = newIsMinimized;
+            Actions.updateTrackConfig(
+                {id: this.trackState.id, config: this.config});
+            this.flamegraph.enableThumbnail(newIsMinimized);
+            globals.rafScheduler.scheduleFullRedraw();
+          },
+          i: this.config.isMinimized ? 'expand_more' : 'expand_less',
+          tooltip: this.config.isMinimized ? 'Maximize' : 'Minimize',
+          selected: this.config.isMinimized,
+        }));
     return buttons;
   }
 }

@@ -588,8 +588,9 @@ void ProtoTraceParser::ParseMetatraceEvent(int64_t ts, ConstBytes blob) {
       sprintf(fallback, "Counter %d", cid);
       name_id = context_->storage->InternString(fallback);
     }
-    context_->event_tracker->PushCounter(ts, event.counter_value(), name_id,
-                                         utid, RefType::kRefUtid);
+    TrackId track =
+        context_->track_tracker->InternThreadCounterTrack(name_id, utid);
+    context_->event_tracker->PushCounter(ts, event.counter_value(), track);
   }
 
   if (event.has_overruns())
@@ -602,15 +603,13 @@ void ProtoTraceParser::ParseTraceConfig(ConstBytes blob) {
   // TODO(eseckler): Propagate statuses from modules.
   context_->android_probes_module->ParseTraceConfig(trace_config);
 
-  if (trace_config.trace_uuid().size != 0) {
-    ConstBytes bytes = trace_config.trace_uuid();
-    base::Optional<base::Uuid> uuid = base::BytesToUuid(bytes.data, bytes.size);
-    if (uuid.has_value()) {
-      std::string str = base::UuidToPrettyString(uuid.value());
-      StringId id = context_->storage->InternString(base::StringView(str));
-      context_->storage->SetMetadata(metadata::trace_uuid,
-                                     Variadic::String(id));
-    }
+  int64_t uuid_msb = trace_config.trace_uuid_msb();
+  int64_t uuid_lsb = trace_config.trace_uuid_lsb();
+  if (uuid_msb != 0 || uuid_lsb != 0) {
+    base::Uuid uuid(uuid_lsb, uuid_msb);
+    std::string str = uuid.ToPrettyString();
+    StringId id = context_->storage->InternString(base::StringView(str));
+    context_->storage->SetMetadata(metadata::trace_uuid, Variadic::String(id));
   }
 }
 
@@ -629,20 +628,26 @@ void ProtoTraceParser::ParseModuleSymbols(ConstBytes blob) {
   for (auto addr_it = module_symbols.address_symbols(); addr_it; ++addr_it) {
     protos::pbzero::AddressSymbols::Decoder address_symbols(*addr_it);
 
-    ssize_t frame_row = -1;
+    uint32_t symbol_set_id = context_->storage->symbol_table().size();
+    bool frame_found = false;
     for (int64_t mapping_row : mapping_rows) {
-      frame_row = context_->storage->stack_profile_frames().FindFrameRow(
-          static_cast<size_t>(mapping_row), address_symbols.address());
-      if (frame_row != -1)
-        break;
+      std::vector<int64_t> frame_rows =
+          context_->storage->stack_profile_frames().FindFrameRow(
+              static_cast<size_t>(mapping_row), address_symbols.address());
+
+      for (const int64_t frame_row : frame_rows) {
+        PERFETTO_DCHECK(frame_row >= 0);
+        context_->storage->mutable_stack_profile_frames()->SetSymbolSetId(
+            static_cast<size_t>(frame_row), symbol_set_id);
+        frame_found = true;
+      }
     }
-    if (frame_row == -1) {
+
+    if (!frame_found) {
       context_->storage->IncrementStats(stats::stackprofile_invalid_frame_id);
       continue;
     }
-    uint32_t symbol_set_id = context_->storage->symbol_table().size();
-    context_->storage->mutable_stack_profile_frames()->SetSymbolSetId(
-        static_cast<size_t>(frame_row), symbol_set_id);
+
     for (auto line_it = address_symbols.lines(); line_it; ++line_it) {
       protos::pbzero::Line::Decoder line(*line_it);
       context_->storage->mutable_symbol_table()->Insert(

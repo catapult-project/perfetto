@@ -14,17 +14,13 @@
  * limitations under the License.
  */
 
-#include "perfetto/tracing/track_event_context.h"
-
-#include "protos/perfetto/trace/track_event/track_event.pbzero.h"
+#ifndef SRC_PROFILING_PERF_TRACED_PERF_H_
+#define SRC_PROFILING_PERF_TRACED_PERF_H_
 
 namespace perfetto {
 
-TrackEventContext::TrackEventContext(
-    TrackEventContext::TracePacketHandle trace_packet)
-    : trace_packet_(std::move(trace_packet)),
-      track_event_(trace_packet_->set_track_event()) {}
-
-TrackEventContext::~TrackEventContext() = default;
+int TracedPerfMain(int argc, char** argv);
 
 }  // namespace perfetto
+
+#endif  // SRC_PROFILING_PERF_TRACED_PERF_H_

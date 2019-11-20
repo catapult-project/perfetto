@@ -80,8 +80,11 @@ void HeapGraphTracker::FinalizeProfile() {
     }
     context_->storage->mutable_heap_graph_object_table()->Insert(
         {current_upid_, current_ts_, static_cast<int64_t>(obj.object_id),
-         static_cast<int64_t>(obj.self_size), -1, 0, -1, 0, it->second,
-         base::nullopt});
+         static_cast<int64_t>(obj.self_size), /*retained_size=*/-1,
+         /*unique_retained_size=*/-1, /*reference_set_id=*/-1,
+         /*reachable=*/0, /*type_name=*/it->second,
+         /*deobfuscated_type_name=*/base::nullopt,
+         /*root_type=*/base::nullopt});
     int64_t row = context_->storage->heap_graph_object_table().size() - 1;
     object_id_to_row_.emplace(obj.object_id, row);
     walker_.AddNode(row, obj.self_size);
@@ -95,6 +98,7 @@ void HeapGraphTracker::FinalizeProfile() {
 
     int64_t reference_set_id =
         context_->storage->heap_graph_reference_table().size();
+    std::set<int64_t> seen_owned;
     for (const SourceObject::Reference& ref : obj.references) {
       // This is true for unset reference fields.
       if (ref.owned_object_id == 0)
@@ -107,7 +111,10 @@ void HeapGraphTracker::FinalizeProfile() {
         continue;
 
       int64_t owned_row = it->second;
-      walker_.AddEdge(owner_row, owned_row);
+      bool inserted;
+      std::tie(std::ignore, inserted) = seen_owned.emplace(owned_row);
+      if (inserted)
+        walker_.AddEdge(owner_row, owned_row);
 
       auto field_name_it = interned_field_names_.find(ref.field_name_id);
       if (field_name_it == interned_field_names_.end()) {
@@ -118,7 +125,8 @@ void HeapGraphTracker::FinalizeProfile() {
       }
       StringPool::Id field_name = field_name_it->second;
       context_->storage->mutable_heap_graph_reference_table()->Insert(
-          {reference_set_id, owner_row, owned_row, field_name});
+          {reference_set_id, owner_row, owned_row, field_name,
+           /*deobfuscated_field_name=*/base::nullopt});
     }
     context_->storage->mutable_heap_graph_object_table()
         ->mutable_reference_set_id()

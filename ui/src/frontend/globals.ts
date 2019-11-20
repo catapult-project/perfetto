@@ -46,11 +46,13 @@ export interface CounterDetails {
 }
 
 export interface CallsiteInfo {
-  hash: number;
-  parentHash: number;
+  id: number;
+  parentId: number;
   depth: number;
   name?: string;
   totalSize: number;
+  selfSize: number;
+  mapping: string;
 }
 
 export interface HeapProfileDetails {

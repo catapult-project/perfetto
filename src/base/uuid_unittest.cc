@@ -24,32 +24,43 @@ namespace perfetto {
 namespace base {
 namespace {
 
+TEST(Uuid, DefaultConstructorIsBlank) {
+  Uuid a;
+  Uuid b;
+  EXPECT_EQ(a, b);
+  EXPECT_EQ(a.msb(), 0);
+  EXPECT_EQ(a.lsb(), 0);
+}
+
 TEST(Uuid, TwoUuidsShouldBeDifferent) {
   Uuid a = Uuidv4();
   Uuid b = Uuidv4();
   EXPECT_NE(a, b);
+  EXPECT_EQ(a, a);
+  EXPECT_EQ(b, b);
 }
 
 TEST(Uuid, CanRoundTripUuid) {
   Uuid uuid = Uuidv4();
-  EXPECT_EQ(StringToUuid(UuidToString(uuid)), uuid);
+  EXPECT_EQ(Uuid(uuid.ToString()), uuid);
 }
 
-TEST(Uuid, BytesToUuid) {
-  std::string empty = "";
-  std::string too_short = "abc";
-  std::string uuid = "abcdefghijklmnop";
+TEST(Uuid, SetGet) {
+  Uuid a = Uuidv4();
+  Uuid b;
+  b.set_lsb_msb(a.lsb(), a.msb());
+  EXPECT_EQ(a, b);
+}
 
-  EXPECT_EQ(BytesToUuid(empty.data(), empty.size()), nullopt);
-  EXPECT_EQ(BytesToUuid(uuid.data(), uuid.size()),
-            Optional<Uuid>(StringToUuid(uuid)));
+TEST(Uuid, LsbMsbConstructor) {
+  Uuid uuid(-6605018796207623390, 1314564453825188563);
+  EXPECT_EQ(uuid.ToPrettyString(), "123e4567-e89b-12d3-a456-426655443322");
 }
 
 TEST(Uuid, UuidToPrettyString) {
-  EXPECT_EQ(
-      UuidToPrettyString(StringToUuid(
-          "\x12\x3e\x45\x67\xe8\x9b\x12\xd3\xa4\x56\x42\x66\x55\x44\x33\x22")),
-      "123e4567-e89b-12d3-a456-426655443322");
+  Uuid uuid;
+  uuid.set_lsb_msb(-6605018796207623390, 1314564453825188563);
+  EXPECT_EQ(uuid.ToPrettyString(), "123e4567-e89b-12d3-a456-426655443322");
 }
 
 }  // namespace

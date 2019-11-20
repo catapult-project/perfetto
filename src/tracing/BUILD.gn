@@ -22,9 +22,6 @@ source_set("tracing") {
   public_deps = [
     ":common",
     "../../include/perfetto/ext/tracing/core",
-    "../../protos/perfetto/common:lite",
-    "../../protos/perfetto/trace:minimal_lite",
-    "../../protos/perfetto/trace:trusted_lite",
     "../../protos/perfetto/trace:zero",
     "../../protos/perfetto/trace/interned_data:zero",
     "../../protos/perfetto/trace/track_event:zero",
@@ -32,7 +29,8 @@ source_set("tracing") {
   deps = [
     "../../gn:default_deps",
     "../../include/perfetto/tracing",
-    "../../protos/perfetto/config:lite",
+    "../../protos/perfetto/common:zero",
+    "../../protos/perfetto/config:zero",
     "../../protos/perfetto/trace/perfetto:zero",  # For MetatraceWriter.
     "../base",
     "../protozero",
@@ -50,7 +48,6 @@ source_set("tracing") {
     "core/shared_memory_abi.cc",
     "core/shared_memory_arbiter_impl.cc",
     "core/shared_memory_arbiter_impl.h",
-    "core/sliced_protobuf_input_stream.cc",
     "core/startup_trace_writer.cc",
     "core/startup_trace_writer_registry.cc",
     "core/trace_buffer.cc",
@@ -62,11 +59,33 @@ source_set("tracing") {
     "core/tracing_service_impl.h",
     "core/virtual_destructors.cc",
   ]
+  assert_no_deps = [ "//gn:protobuf_lite" ]
+}
+
+# TODO(primiano): Remove this target as soon as chromium's
+# track_event_json_exporter.cc (which is the only user of this file) is no more.
+# This causes a dependency on libprotobuf, which we want to avoid for our
+# codebase.
+source_set("sliced_protobuf_input_stream") {
+  public_deps = [
+    "../../include/perfetto/base",
+    "../../include/perfetto/ext/tracing/core",
+    "../../protos/perfetto/common:lite",
+  ]
+  deps = [
+    ":tracing",
+    "../../gn:default_deps",
+  ]
+  sources = [
+    "../../include/perfetto/ext/tracing/core/sliced_protobuf_input_stream.h",
+    "core/sliced_protobuf_input_stream.cc",
+  ]
 }
 
 perfetto_unittest_source_set("unittests") {
   testonly = true
   deps = [
+    ":sliced_protobuf_input_stream",
     ":test_support",
     ":tracing",
     "../../gn:default_deps",
@@ -232,7 +251,7 @@ source_set("client_api") {
   deps = [
     ":common",
     "../../include/perfetto/tracing/core",
-    "../../protos/perfetto/config:lite",
+    "../../protos/perfetto/config:cpp",
     "../base",
     "../tracing",
   ]
@@ -242,6 +261,7 @@ source_set("client_api") {
   ]
   sources = [
     "data_source.cc",
+    "event_context.cc",
     "internal/in_process_tracing_backend.cc",
     "internal/in_process_tracing_backend.h",
     "internal/tracing_muxer_impl.cc",
@@ -250,7 +270,6 @@ source_set("client_api") {
     "platform.cc",
     "tracing.cc",
     "track_event_category_registry.cc",
-    "track_event_context.cc",
     "virtual_destructors.cc",
   ]
 
@@ -275,6 +294,7 @@ if (enable_perfetto_integration_tests) {
       "../../include/perfetto/tracing/core",
       "../../protos/perfetto/trace:lite",
       "../../protos/perfetto/trace:zero",
+      "../../protos/perfetto/trace/interned_data:zero",
       "../base",
       "test:api_test_support",
     ]

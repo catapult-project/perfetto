@@ -43,8 +43,11 @@ namespace protozero {
 class ProtoDecoder {
  public:
   // Creates a ProtoDecoder using the given |buffer| with size |length| bytes.
-  ProtoDecoder(const uint8_t* buffer, size_t length)
-      : begin_(buffer), end_(buffer + length), read_ptr_(buffer) {}
+  ProtoDecoder(const void* buffer, size_t length)
+      : begin_(reinterpret_cast<const uint8_t*>(buffer)),
+        end_(begin_ + length),
+        read_ptr_(begin_) {}
+  ProtoDecoder(const std::string& str) : ProtoDecoder(str.data(), str.size()) {}
   ProtoDecoder(const ConstBytes& cb) : ProtoDecoder(cb.data, cb.size) {}
 
   // Reads the next field from the buffer and advances the read cursor. If a
@@ -113,6 +116,7 @@ class RepeatedFieldIterator {
     iter_->get(&val);
     return val;
   }
+  const Field* operator->() const { return iter_; }
 
   RepeatedFieldIterator& operator++() {
     PERFETTO_DCHECK(iter_ != end_);
@@ -328,7 +332,7 @@ class TypedProtoDecoderBase : public ProtoDecoder {
     // implicit initializers on all the ~1000 entries. We need it to initialize
     // only on the first |max_field_id| fields, the remaining capacity doesn't
     // require initialization.
-    static_assert(PERFETTO_IS_TRIVIALLY_CONSTRUCTIBLE(Field) &&
+    static_assert(std::is_trivially_constructible<Field>::value &&
                       std::is_trivially_destructible<Field>::value &&
                       std::is_trivial<Field>::value,
                   "Field must be a trivial aggregate type");

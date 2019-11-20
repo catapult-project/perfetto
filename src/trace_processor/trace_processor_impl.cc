@@ -25,7 +25,6 @@
 #include "perfetto/ext/base/string_utils.h"
 #include "src/trace_processor/android_logs_table.h"
 #include "src/trace_processor/args_table.h"
-#include "src/trace_processor/counter_definitions_table.h"
 #include "src/trace_processor/counter_values_table.h"
 #include "src/trace_processor/cpu_profile_stack_sample_table.h"
 #include "src/trace_processor/heap_profile_allocation_table.h"
@@ -55,6 +54,10 @@
 
 #if PERFETTO_BUILDFLAG(PERFETTO_TP_JSON)
 #include "src/trace_processor/export_json.h"
+#endif
+
+#if !PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+#include <cxxabi.h>
 #endif
 
 // In Android and Chromium tree builds, we don't have the percentile module.
@@ -136,9 +139,35 @@ void CreateBuiltinTables(sqlite3* db) {
 void CreateBuiltinViews(sqlite3* db) {
   char* error = nullptr;
   sqlite3_exec(db,
+               "CREATE VIEW counter_definitions AS "
+               "SELECT "
+               "  *, "
+               "  id AS counter_id "
+               "FROM counter_track",
+               0, 0, &error);
+  if (error) {
+    PERFETTO_ELOG("Error initializing: %s", error);
+    sqlite3_free(error);
+  }
+
+  sqlite3_exec(db,
+               "CREATE VIEW counter_values AS "
+               "SELECT "
+               "  *, "
+               "  track_id as counter_id "
+               "FROM counter",
+               0, 0, &error);
+  if (error) {
+    PERFETTO_ELOG("Error initializing: %s", error);
+    sqlite3_free(error);
+  }
+
+  sqlite3_exec(db,
                "CREATE VIEW counters AS "
-               "SELECT * FROM counter_values "
-               "INNER JOIN counter_definitions USING(counter_id) "
+               "SELECT * "
+               "FROM counter_values v "
+               "INNER JOIN counter_track t "
+               "ON v.track_id = t.id "
                "ORDER BY ts;",
                0, 0, &error);
   if (error) {
@@ -150,7 +179,7 @@ void CreateBuiltinViews(sqlite3* db) {
                "CREATE VIEW slice AS "
                "SELECT "
                "  *, "
-               "  category as cat, "
+               "  category AS cat, "
                "  CASE ref_type "
                "    WHEN 'utid' THEN ref "
                "    ELSE NULL "
@@ -245,12 +274,47 @@ void Hash(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
   sqlite3_result_int64(ctx, static_cast<int64_t>(hash.digest()));
 }
 
+void Demangle(sqlite3_context* ctx, int argc, sqlite3_value** argv) {
+  if (argc != 1) {
+    sqlite3_result_error(ctx, "Unsupported number of arg passed to DEMANGLE",
+                         -1);
+    return;
+  }
+  sqlite3_value* value = argv[0];
+  if (sqlite3_value_type(value) != SQLITE_TEXT) {
+    sqlite3_result_error(ctx, "Unsupported type of arg passed to DEMANGLE", -1);
+    return;
+  }
+  const char* ptr = reinterpret_cast<const char*>(sqlite3_value_text(value));
+#if !PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+  int ignored = 0;
+  // This memory was allocated by malloc and will be passed to SQLite to free.
+  char* demangled_name = abi::__cxa_demangle(ptr, nullptr, nullptr, &ignored);
+  if (!demangled_name) {
+    sqlite3_result_null(ctx);
+    return;
+  }
+  sqlite3_result_text(ctx, demangled_name, -1, free);
+#else
+  sqlite3_result_text(ctx, ptr, -1, sqlite_utils::kSqliteTransient);
+#endif
+}
+
 void CreateHashFunction(sqlite3* db) {
   auto ret = sqlite3_create_function_v2(
       db, "HASH", -1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, &Hash,
       nullptr, nullptr, nullptr);
   if (ret) {
     PERFETTO_ELOG("Error initializing HASH");
+  }
+}
+
+void CreateDemangledNameFunction(sqlite3* db) {
+  auto ret = sqlite3_create_function_v2(
+      db, "DEMANGLE", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, &Demangle,
+      nullptr, nullptr, nullptr);
+  if (ret != SQLITE_OK) {
+    PERFETTO_ELOG("Error initializing DEMANGLE: %s", sqlite3_errmsg(db));
   }
 }
 
@@ -303,6 +367,7 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg)
   CreateJsonExportFunction(this->context_.storage.get(), db);
 #endif
   CreateHashFunction(db);
+  CreateDemangledNameFunction(db);
 
 #if PERFETTO_BUILDFLAG(PERFETTO_TP_METRICS)
   SetupMetrics(this, *db_, &sql_metrics_);
@@ -316,7 +381,6 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg)
   SliceTable::RegisterTable(*db_, context_.storage.get());
   SqlStatsTable::RegisterTable(*db_, context_.storage.get());
   ThreadTable::RegisterTable(*db_, context_.storage.get());
-  CounterDefinitionsTable::RegisterTable(*db_, context_.storage.get());
   CounterValuesTable::RegisterTable(*db_, context_.storage.get());
   SpanJoinOperatorTable::RegisterTable(*db_, context_.storage.get());
   WindowOperatorTable::RegisterTable(*db_, context_.storage.get());
@@ -332,6 +396,7 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg)
 
   // New style db-backed tables.
   const TraceStorage* storage = context_.storage.get();
+
   DbSqliteTable::RegisterTable(*db_, &storage->track_table(),
                                storage->track_table().table_name());
   DbSqliteTable::RegisterTable(*db_, &storage->thread_track_table(),
@@ -342,16 +407,37 @@ TraceProcessorImpl::TraceProcessorImpl(const Config& cfg)
                                storage->gpu_slice_table().table_name());
   DbSqliteTable::RegisterTable(*db_, &storage->gpu_track_table(),
                                storage->gpu_track_table().table_name());
-  DbSqliteTable::RegisterTable(*db_, &storage->symbol_table(),
-                               storage->symbol_table().table_name());
+
+  DbSqliteTable::RegisterTable(*db_, &storage->counter_track_table(),
+                               storage->counter_track_table().table_name());
+  DbSqliteTable::RegisterTable(
+      *db_, &storage->process_counter_track_table(),
+      storage->process_counter_track_table().table_name());
+  DbSqliteTable::RegisterTable(
+      *db_, &storage->thread_counter_track_table(),
+      storage->thread_counter_track_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->cpu_counter_track_table(),
+                               storage->cpu_counter_track_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->irq_counter_track_table(),
+                               storage->irq_counter_track_table().table_name());
+  DbSqliteTable::RegisterTable(
+      *db_, &storage->softirq_counter_track_table(),
+      storage->softirq_counter_track_table().table_name());
+  DbSqliteTable::RegisterTable(*db_, &storage->gpu_counter_track_table(),
+                               storage->gpu_counter_track_table().table_name());
+
   DbSqliteTable::RegisterTable(*db_, &storage->heap_graph_object_table(),
                                storage->heap_graph_object_table().table_name());
   DbSqliteTable::RegisterTable(
-      *db_, &storage->stack_profile_callsite_table(),
-      storage->stack_profile_callsite_table().table_name());
-  DbSqliteTable::RegisterTable(
       *db_, &storage->heap_graph_reference_table(),
       storage->heap_graph_reference_table().table_name());
+
+  DbSqliteTable::RegisterTable(*db_, &storage->symbol_table(),
+                               storage->symbol_table().table_name());
+  DbSqliteTable::RegisterTable(
+      *db_, &storage->stack_profile_callsite_table(),
+      storage->stack_profile_callsite_table().table_name());
+
   DbSqliteTable::RegisterTable(
       *db_, &storage->vulkan_memory_allocations_table(),
       storage->vulkan_memory_allocations_table().table_name());
