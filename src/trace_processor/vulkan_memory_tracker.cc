@@ -28,8 +28,8 @@ namespace trace_processor {
 
 VulkanMemoryTracker::VulkanMemoryTracker(TraceProcessorContext* context)
     : context_(context),
-      vulkan_driver_memory_counter_str_("Driver, scope = "),
-      vulkan_device_memory_counter_str_("Device, memory type = ") {
+      vulkan_driver_memory_counter_str_("Driver_Scope_"),
+      vulkan_device_memory_counter_str_("Device_MemoryType_") {
   SetupSourceAndTypeInternedStrings();
 }
 
@@ -95,7 +95,7 @@ StringId VulkanMemoryTracker::FindMemoryTypeCounterString(
       it = memory_type_allocation_counter_string_map_.find(memory_type);
       if (it == memory_type_allocation_counter_string_map_.end()) {
         type_counter_str = vulkan_device_memory_counter_str_ +
-                           std::to_string(memory_type) + ", allocated";
+                           std::to_string(memory_type) + "_Allocated";
         res = context_->storage->InternString(base::StringView(
             type_counter_str.c_str(), type_counter_str.length()));
         memory_type_allocation_counter_string_map_.emplace(memory_type, res);
@@ -107,7 +107,7 @@ StringId VulkanMemoryTracker::FindMemoryTypeCounterString(
       it = memory_type_bind_counter_string_map_.find(memory_type);
       if (it == memory_type_bind_counter_string_map_.end()) {
         type_counter_str = vulkan_device_memory_counter_str_ +
-                           std::to_string(memory_type) + ", bound";
+                           std::to_string(memory_type) + "_Bound";
         res = context_->storage->InternString(base::StringView(
             type_counter_str.c_str(), type_counter_str.length()));
         memory_type_bind_counter_string_map_.emplace(memory_type, res);
